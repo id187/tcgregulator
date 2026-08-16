@@ -6,7 +6,37 @@ import {
   THEMES,
   THEME_BY_ID,
 } from "./content.ts";
+import {
+  BUSINESS_ACTION_BY_TYPE,
+  getBusinessActionAvailability,
+  getBusinessActionScheduledEndDay,
+  getBusinessEnvironmentHealth,
+  getChampionshipBacklashRisk,
+  getPackOddsDetectionRisk,
+  getStrategicProjectRiskProfile,
+  isBusinessActionEffectActive,
+  isStrategicBusinessAction,
+} from "./business-actions.ts";
+import {
+  BAN_INTERVAL,
+  CAMPAIGN_END_DAY,
+  FIRST_BAN_DAY,
+  LAST_DECISION_DAY,
+  LAST_RELEASE_DAY,
+  RELEASE_INTERVAL,
+} from "./campaign.ts";
+import {
+  getDailyOperatingCost,
+  OPERATING_COST_START_DAY,
+} from "./finance.ts";
+import { withKoreanParticle } from "./korean-particles.ts";
+import {
+  getPublishedRestrictionPolicyProfile,
+  getRestrictionPolicyProfile,
+} from "./restriction-policy.ts";
 import type {
+  BusinessActionRecord,
+  BusinessActionType,
   CommunityEvent,
   CommunityEventType,
   ExpectedTier,
@@ -25,15 +55,15 @@ import type {
   ThemeRuntime,
 } from "./types.ts";
 
-const END_DAY = 1000;
-const RELEASE_INTERVAL = 30;
-const FIRST_BAN_DAY = 45;
-const BAN_INTERVAL = 90;
 const SHARE_FLOOR = 0.005;
 const SHARE_CEILING = 0.55;
 const DAILY_SHARE_LIMIT = 0.012;
 const COMMUNITY_LIMIT = 500;
 const UNPLEASANTNESS_RUNTIME_SCALE = 0.65;
+const INITIAL_OPERATING_CASH = 2.5;
+const OPERATING_CASH_MARGIN = 0.32;
+const CATALOG_DAILY_SPEND_PER_USER = 350;
+const PACK_ODDS_REVENUE_MULTIPLIER = 1.25;
 const STARTING_THEME_IDS = [
   "cycle",
   "white-night",
@@ -72,10 +102,6 @@ const PROLOGUE_RELEASE_PLAN = [
   optionIndex: number;
   powerAdjustment: PowerAdjustment;
 }[];
-const PROLOGUE_RESTRICTIONS: Record<string, RestrictionLimit> = {
-  "machine-revolution-siege-g09": 0,
-};
-
 /**
  * Resolves the fixed tutorial choices against the actual DAY 30 slate.
  *
@@ -131,14 +157,85 @@ export function isPrologueReleaseSelection(
   }
 }
 
-/** Returns a fresh copy so callers cannot mutate the tutorial contract. */
+function prologueBandRestrictionChanges(
+  state: GameState,
+  themeIds: readonly ThemeId[],
+  count: number,
+): [string, RestrictionLimit][] {
+  const candidatesByTheme = themeIds.map((themeId) => {
+    const runtime = state.themes[themeId];
+    const content = THEME_BY_ID[themeId];
+    if (!runtime || !content) return [];
+    return content.parts
+      .filter(
+        (part) =>
+          runtime.releasedPartIds.includes(part.id) &&
+          (runtime.legalLimits[part.id] ?? 3) === 3 &&
+          part.preferredCopies >= 2,
+      )
+      .map((part) => {
+        const nextLimit = (part.preferredCopies >= 3 ? 2 : 1) as RestrictionLimit;
+        const impact =
+          part.powerWeight *
+          part.inclusion *
+          Math.max(
+            0,
+            copyAvailability(part, 3) - copyAvailability(part, nextLimit),
+          );
+        return { partId: part.id, nextLimit, impact };
+      })
+      .sort(
+        (left, right) =>
+          right.impact - left.impact || left.partId.localeCompare(right.partId),
+      );
+  });
+  const selected: [string, RestrictionLimit][] = [];
+  for (const candidates of candidatesByTheme) {
+    const candidate = candidates[0];
+    if (!candidate) continue;
+    selected.push([candidate.partId, candidate.nextLimit]);
+    if (selected.length === count) return selected;
+  }
+  const alreadySelected = new Set(selected.map(([partId]) => partId));
+  const fallback = candidatesByTheme
+    .flat()
+    .filter((candidate) => !alreadySelected.has(candidate.partId))
+    .sort(
+      (left, right) =>
+        right.impact - left.impact || left.partId.localeCompare(right.partId),
+    );
+  for (const candidate of fallback) {
+    selected.push([candidate.partId, candidate.nextLimit]);
+    if (selected.length === count) break;
+  }
+  return selected;
+}
+
+/**
+ * Builds the guided first list from the live DAY 45 ranking. The first review
+ * has no prior restrictions to release, so it demonstrates broad, shallow
+ * coverage instead: two meaningful cuts in ranks 0-2 and two in ranks 3-5.
+ */
 export function getPrologueRestrictionChanges(
   state: GameState,
 ): Record<string, RestrictionLimit> {
   if (state.day !== 45 || state.phase !== "ban-edit" || !isBanDay(state.day)) {
     throw new Error("Prologue restriction choices are only available at the DAY 45 review.");
   }
-  return { ...PROLOGUE_RESTRICTIONS };
+  const ranked = [...state.activeThemeIds].sort(
+    (left, right) =>
+      state.themes[right].share - state.themes[left].share ||
+      left.localeCompare(right),
+  );
+  const changes = Object.fromEntries([
+    ...prologueBandRestrictionChanges(state, ranked.slice(0, 3), 2),
+    ...prologueBandRestrictionChanges(state, ranked.slice(3, 6), 2),
+  ]) as Record<string, RestrictionLimit>;
+  const profile = getRestrictionPolicyProfile(state, changes);
+  if (profile.changeCount !== 4 || profile.quality !== "balanced") {
+    throw new Error("The prologue restriction review needs four balanced shallow cuts.");
+  }
+  return changes;
 }
 
 /** Returns whether a single restriction edit matches the guided DAY 45 edit. */
@@ -280,11 +377,230 @@ export function canProposeSupport(
   ) {
     return false;
   }
-  return getNextReleaseDay(state.day) <= END_DAY;
+  return getNextReleaseDay(state.day) <= LAST_RELEASE_DAY;
 }
 
 function totalUsers(state: GameState): number {
   return state.users.tier + state.users.casual + state.users.collector;
+}
+
+function activeBusinessRecords(
+  state: GameState,
+  day = state.day,
+): BusinessActionRecord[] {
+  return state.operations.records.filter((record) =>
+    isBusinessActionEffectActive(record, day),
+  );
+}
+
+function businessUserRateModifiers(state: GameState): {
+  tier: number;
+  casual: number;
+  collector: number;
+} {
+  const modifiers = { tier: 0, casual: 0, collector: 0 };
+  for (const record of activeBusinessRecords(state)) {
+    switch (record.type) {
+      case "tv-cm":
+        modifiers.tier += 0.0002;
+        modifiers.casual += 0.0012;
+        modifiers.collector += 0.0004;
+        break;
+      case "animation-promotion":
+        modifiers.tier += 0.0004;
+        modifiers.casual += 0.0018;
+        modifiers.collector += 0.0016;
+        break;
+      case "championship":
+        if (record.outcome === "success") {
+          modifiers.tier += 0.0012;
+          modifiers.casual += 0.00045;
+          modifiers.collector += 0.0002;
+        } else if (record.outcome === "backlash") {
+          modifiers.tier -= 0.0018;
+          modifiers.casual -= 0.0008;
+          modifiers.collector -= 0.00035;
+        }
+        break;
+      case "store-tour":
+        modifiers.tier += 0.0001;
+        modifiers.casual += 0.0008;
+        modifiers.collector += 0.00025;
+        break;
+      case "pack-odds":
+      case "season-overhaul":
+      case "global-launch":
+      case "first-print-expansion":
+        break;
+    }
+  }
+  return modifiers;
+}
+
+function businessBuyerRateBonus(state: GameState): number {
+  return activeBusinessRecords(state).reduce((bonus, record) => {
+    switch (record.type) {
+      case "tv-cm":
+        return bonus + 0.01;
+      case "animation-promotion":
+        return bonus + 0.025;
+      case "championship":
+        return bonus + (record.outcome === "success" ? 0.008 : -0.008);
+      case "store-tour":
+        return bonus + 0.006;
+      case "pack-odds":
+        return bonus;
+      case "season-overhaul":
+        return bonus + (record.outcome === "success" ? 0.008 : record.outcome === "backlash" ? -0.006 : 0);
+      case "global-launch":
+        return bonus + (record.outcome === "success" ? 0.01 : record.outcome === "backlash" ? -0.008 : 0);
+      case "first-print-expansion":
+        return bonus + (record.outcome === "success" ? 0.015 : record.outcome === "backlash" ? -0.012 : 0);
+    }
+  }, 0);
+}
+
+function businessTrustRecovery(state: GameState): number {
+  return activeBusinessRecords(state).reduce((recovery, record) => {
+    if (record.type === "store-tour") return recovery + 0.08;
+    if (record.type === "animation-promotion") return recovery + 0.015;
+    if (record.type === "championship" && record.outcome === "success") {
+      return recovery + 0.025;
+    }
+    return recovery;
+  }, 0);
+}
+
+function hasPackOddsAdjustmentForRelease(
+  state: GameState,
+  releaseDay: number,
+): boolean {
+  return state.operations.records.some(
+    (record) =>
+      record.type === "pack-odds" &&
+      record.appliedDay === releaseDay &&
+      state.day >= releaseDay &&
+      state.day <= record.endsDay &&
+      (record.outcome === "active" || record.outcome === "clean"),
+  );
+}
+
+function applyPendingPackOddsToCurrentRelease(state: GameState): void {
+  const pending = state.operations.records.find(
+    (record) => record.type === "pack-odds" && record.outcome === "pending",
+  );
+  if (!pending) return;
+
+  pending.appliedDay = state.day;
+  pending.endsDay = state.day + 29;
+  pending.outcome = "active";
+}
+
+/**
+ * Resolves delayed business outcomes and retires duration-based effects.
+ *
+ * This runs on ordinary and decision days. Outcomes are never rolled when an
+ * action is purchased, so every action starts affecting the simulation on the
+ * following in-game day even if that day is a release or restriction gate.
+ */
+function updateBusinessActionLifecycle(state: GameState): void {
+  for (const record of state.operations.records) {
+    if (
+      record.type === "championship" &&
+      record.outcome === "active" &&
+      state.day > record.startedDay
+    ) {
+      const risk = record.risk ?? getChampionshipBacklashRisk(state);
+      const roll = keyedRandom(
+        state.seed,
+        "championship-outcome",
+        record.id,
+        record.startedDay,
+      );
+      record.outcome = roll < risk ? "backlash" : "success";
+      record.resolvedDay = state.day;
+    }
+
+    if (
+      record.type === "pack-odds" &&
+      record.outcome === "active" &&
+      record.appliedDay !== undefined &&
+      state.day > record.appliedDay
+    ) {
+      const risk = record.risk ?? 0.3;
+      const roll = keyedRandom(
+        state.seed,
+        "pack-odds-detection",
+        record.id,
+        record.appliedDay,
+      );
+      const detected = roll < risk;
+      record.outcome = detected ? "detected" : "clean";
+      record.resolvedDay = state.day;
+      if (detected) {
+        state.purchaseTrust = round(
+          clamp(state.purchaseTrust - 10, 0, 100),
+          4,
+        );
+      }
+    }
+
+    if (
+      isStrategicBusinessAction(record.type) &&
+      record.outcome === "active"
+    ) {
+      const definition = BUSINESS_ACTION_BY_TYPE[record.type];
+      const resolutionDay = record.startedDay + (definition.resolutionDelay ?? 1);
+      if (state.day >= resolutionDay) {
+        const risk = record.risk ?? 1;
+        const roll = keyedRandom(
+          state.seed,
+          "strategic-project-outcome",
+          record.type,
+          record.id,
+          record.startedDay,
+        );
+        const success = roll >= risk;
+        record.outcome = success ? "success" : "backlash";
+        record.resolvedDay = state.day;
+
+        if (success) {
+          const cashReturn = definition.successReturn ?? 0;
+          record.cashReturn = cashReturn;
+          state.finance.cash = round(state.finance.cash + cashReturn, 4);
+          if (record.type === "season-overhaul") {
+            state.users.tier = round(state.users.tier * 1.1, 2);
+            state.users.casual = round(state.users.casual * 1.1, 2);
+            state.users.collector = round(state.users.collector * 1.1, 2);
+            state.purchaseTrust = round(clamp(state.purchaseTrust + 5, 0, 100), 4);
+          } else if (record.type === "global-launch") {
+            state.users.casual = round(state.users.casual * 1.04, 2);
+            state.users.collector = round(state.users.collector * 1.14, 2);
+            state.purchaseTrust = round(clamp(state.purchaseTrust + 3, 0, 100), 4);
+          } else {
+            state.users.collector = round(state.users.collector * 1.06, 2);
+            state.purchaseTrust = round(clamp(state.purchaseTrust + 1, 0, 100), 4);
+          }
+        } else if (record.type === "season-overhaul") {
+          state.users.tier = round(state.users.tier * 0.93, 2);
+          state.users.casual = round(state.users.casual * 0.93, 2);
+          state.users.collector = round(state.users.collector * 0.93, 2);
+          state.purchaseTrust = round(clamp(state.purchaseTrust - 10, 0, 100), 4);
+        } else if (record.type === "global-launch") {
+          state.users.casual = round(state.users.casual * 0.97, 2);
+          state.users.collector = round(state.users.collector * 0.9, 2);
+          state.purchaseTrust = round(clamp(state.purchaseTrust - 7, 0, 100), 4);
+        } else {
+          state.users.collector = round(state.users.collector * 0.96, 2);
+          state.purchaseTrust = round(clamp(state.purchaseTrust - 5, 0, 100), 4);
+        }
+      }
+    }
+
+    if (record.outcome === "active" && state.day > record.endsDay) {
+      record.outcome = "completed";
+    }
+  }
 }
 
 function cloneState(state: GameState): GameState {
@@ -308,6 +624,15 @@ function cloneState(state: GameState): GameState {
     ),
     users: { ...state.users },
     finance: { ...state.finance },
+    operations: {
+      ...state.operations,
+      records: state.operations.records.map((record) => ({
+        ...record,
+        ...(record.riskContext
+          ? { riskContext: { ...record.riskContext } }
+          : {}),
+      })),
+    },
     community: state.community.map((event) => ({ ...event })),
     activeThemeIds: [...state.activeThemeIds],
     supportRequests: state.supportRequests.map((request) => ({ ...request })),
@@ -330,13 +655,19 @@ function cloneState(state: GameState): GameState {
 }
 
 export function isReleaseDay(day: number): boolean {
-  return Number.isInteger(day) && day > 0 && day % RELEASE_INTERVAL === 0;
+  return (
+    Number.isInteger(day) &&
+    day > 0 &&
+    day <= LAST_RELEASE_DAY &&
+    day % RELEASE_INTERVAL === 0
+  );
 }
 
 export function isBanDay(day: number): boolean {
   return (
     Number.isInteger(day) &&
     day >= FIRST_BAN_DAY &&
+    day <= LAST_DECISION_DAY &&
     (day - FIRST_BAN_DAY) % BAN_INTERVAL === 0
   );
 }
@@ -861,18 +1192,37 @@ function updateTopTheme(state: GameState): void {
  * the pre-change meta snapshot can affect users.
  */
 function restrictionTierShock(state: GameState): number {
+  const decisionDay = state.day - 1;
+  const policyProfile = getPublishedRestrictionPolicyProfile(state, decisionDay);
+  const publishedDecisionCount =
+    policyProfile.directionMix.tighten +
+    policyProfile.directionMix.loosen +
+    policyProfile.directionMix.unchanged;
+  if (publishedDecisionCount === 0) return 0;
+  const policyShockPenalty =
+    policyProfile.quality === "narrow"
+      ? 0.0015
+      : policyProfile.quality === "incomplete"
+        ? 0.001
+        : 0;
+  const staleOmissionPenalty = policyProfile.staleReliefComplete ? 0 : 0.0005;
   const decisions = state.community.filter(
     (event) =>
-      event.day === state.day - 1 &&
+      event.day === decisionDay &&
       (event.type === "restriction-applied" ||
         event.type === "cosmetic-restriction") &&
       Boolean(event.partId) &&
       Number.isInteger(event.previousValue) &&
       Number.isInteger(event.value),
   );
-  if (decisions.length === 0) return 0;
+  if (decisions.length === 0) {
+    return round(
+      clamp(policyShockPenalty + staleOmissionPenalty, 0, 0.035),
+      7,
+    );
+  }
 
-  const snapshot = state.history.find((entry) => entry.day === state.day - 1);
+  const snapshot = state.history.find((entry) => entry.day === decisionDay);
   const snapshotShares = snapshot?.shares ?? Object.fromEntries(
     state.activeThemeIds.map((themeId) => [themeId, state.themes[themeId].share]),
   );
@@ -950,7 +1300,17 @@ function restrictionTierShock(state: GameState): number {
     combinedShock += grossShock * (1 - reliefFraction);
   }
 
-  return round(clamp(combinedShock, 0, 0.035), 7);
+  const qualityMultiplier = policyProfile.quality === "balanced" ? 0.7 : 1;
+  return round(
+    clamp(
+      combinedShock * qualityMultiplier +
+        policyShockPenalty +
+        staleOmissionPenalty,
+      0,
+      0.035,
+    ),
+    7,
+  );
 }
 
 function updateUsers(state: GameState): void {
@@ -1037,19 +1397,31 @@ function updateUsers(state: GameState): void {
   );
 
   const tierBefore = state.users.tier;
+  const businessRates = businessUserRateModifiers(state);
   const shockRate = restrictionTierShock(state);
   const shockedTierUsers = tierBefore * shockRate;
   const movedToCasual = shockedTierUsers * 0.25;
   state.users.tier = round(
-    Math.max(0, tierBefore * (1 + tierRate) - shockedTierUsers),
+    Math.max(
+      0,
+      tierBefore * (1 + tierRate + businessRates.tier) - shockedTierUsers,
+    ),
     2,
   );
   state.users.casual = round(
-    Math.max(0, state.users.casual * (1 + casualRate) + movedToCasual),
+    Math.max(
+      0,
+      state.users.casual * (1 + casualRate + businessRates.casual) +
+        movedToCasual,
+    ),
     2,
   );
   state.users.collector = round(
-    Math.max(0, state.users.collector * (1 + collectorRate)),
+    Math.max(
+      0,
+      state.users.collector *
+        (1 + collectorRate + businessRates.collector),
+    ),
     2,
   );
 }
@@ -1074,10 +1446,13 @@ function releaseTargetShare(
 
 function updateFinance(state: GameState): void {
   const activeUsers = totalUsers(state);
-  let revenue = (activeUsers * 45) / 100_000_000;
+  let revenue =
+    (activeUsers * CATALOG_DAILY_SPEND_PER_USER) / 100_000_000;
+  const buyerRateBonus = businessBuyerRateBonus(state);
   for (const batch of state.releaseHistory) {
     const age = state.day - batch.day;
     if (age < 0 || age >= 30) continue;
+    let batchRevenue = 0;
     for (const product of batch.products) {
       const content = THEME_BY_ID[product.themeId];
       const runtime = state.themes[product.themeId];
@@ -1093,7 +1468,8 @@ function updateFinance(state: GameState): void {
           0.075 * novelty +
           0.04 * (content.appeal / 100) -
           0.08 * (modeledFatigue / 100) -
-          0.12 * (1 - state.purchaseTrust / 100),
+          0.12 * (1 - state.purchaseTrust / 100) +
+          buyerRateBonus,
         0.02,
         0.38,
       );
@@ -1101,8 +1477,12 @@ function updateFinance(state: GameState): void {
         55_000 + 20_000 * novelty + 18_000 * tuningHype;
       const potential =
         (activeUsers * buyerRate * averageSpend) / 100_000_000;
-      revenue += potential * salesCurve(age);
+      batchRevenue += potential * salesCurve(age);
     }
+    if (hasPackOddsAdjustmentForRelease(state, batch.day)) {
+      batchRevenue *= PACK_ODDS_REVENUE_MULTIPLIER;
+    }
+    revenue += batchRevenue;
   }
 
   const noise =
@@ -1116,6 +1496,21 @@ function updateFinance(state: GameState): void {
     4,
   );
   state.finance.cumulative = round(state.finance.cumulative + revenue, 4);
+  const dailyOperatingCost = getDailyOperatingCost(state.day, activeUsers);
+  const operatingCash = round(
+    revenue * OPERATING_CASH_MARGIN - dailyOperatingCost,
+    4,
+  );
+  state.finance.todayOperatingCost = dailyOperatingCost;
+  state.finance.cumulativeOperatingCosts = round(
+    state.finance.cumulativeOperatingCosts + dailyOperatingCost,
+    4,
+  );
+  state.finance.todayOperatingCash = operatingCash;
+  state.finance.cash = round(
+    Math.max(0, state.finance.cash + operatingCash),
+    4,
+  );
 }
 
 export function getExpectedTier(power: number): ExpectedTier {
@@ -1508,6 +1903,7 @@ function submitRelease(
   }
 
   state.releaseHistory.push({ day: state.day, products });
+  applyPendingPackOddsToCurrentRelease(state);
   state.releaseSlate = null;
   state.phase = "running";
   settleDecisionDay(state);
@@ -1575,7 +1971,20 @@ function decayTemporaryState(state: GameState): void {
     const runtime = state.themes[content.id];
     runtime.freshness = round(Math.max(0, runtime.freshness - 2.5), 3);
   }
-  state.purchaseTrust = round(Math.min(90, state.purchaseTrust + 0.015), 4);
+  const packOddsDetectedToday = state.operations.records.some(
+    (record) =>
+      record.type === "pack-odds" &&
+      record.outcome === "detected" &&
+      record.resolvedDay === state.day,
+  );
+  if (packOddsDetectedToday) return;
+  state.purchaseTrust = round(
+    Math.min(
+      90,
+      state.purchaseTrust + 0.015 + businessTrustRecovery(state),
+    ),
+    4,
+  );
 }
 
 function recordHistory(state: GameState): void {
@@ -1592,6 +2001,346 @@ function recordHistory(state: GameState): void {
 }
 
 function assertState(state: GameState): void {
+  if (state.schemaVersion !== 6) {
+    throw new Error(`Unsupported game-state schema: ${state.schemaVersion}.`);
+  }
+  if (
+    !Number.isInteger(state.day) ||
+    state.day < 1 ||
+    state.day > CAMPAIGN_END_DAY
+  ) {
+    throw new Error(`Campaign day must be between 1 and ${CAMPAIGN_END_DAY}.`);
+  }
+  if (state.day === CAMPAIGN_END_DAY && state.phase !== "ended") {
+    throw new Error(`The campaign must be ended on DAY ${CAMPAIGN_END_DAY}.`);
+  }
+  if (
+    state.phase === "ended" &&
+    state.day < CAMPAIGN_END_DAY &&
+    totalUsers(state) > 0
+  ) {
+    throw new Error("The campaign cannot end early while players remain.");
+  }
+  for (const [name, value] of Object.entries({
+    today: state.finance.today,
+    rolling30: state.finance.rolling30,
+    cumulative: state.finance.cumulative,
+    cash: state.finance.cash,
+    todayOperatingCash: state.finance.todayOperatingCash,
+    todayOperatingCost: state.finance.todayOperatingCost,
+    cumulativeOperatingCosts: state.finance.cumulativeOperatingCosts,
+    cumulativeExpenses: state.finance.cumulativeExpenses,
+  })) {
+    if (!Number.isFinite(value)) {
+      throw new Error(`Non-finite finance value: ${name}.`);
+    }
+  }
+  if (
+    state.finance.today < 0 ||
+    state.finance.rolling30 < 0 ||
+    state.finance.cumulative < 0 ||
+    state.finance.cash < -1e-6 ||
+    state.finance.todayOperatingCost < 0 ||
+    state.finance.cumulativeOperatingCosts < 0 ||
+    state.finance.cumulativeExpenses < 0
+  ) {
+    throw new Error("Finance values cannot be negative.");
+  }
+  const latestSettledHistory = state.history.at(-1);
+  const expectedTodayOperatingCost = getDailyOperatingCost(
+    latestSettledHistory?.day ?? state.day,
+    latestSettledHistory?.totalUsers ?? totalUsers(state),
+  );
+  if (
+    state.day < OPERATING_COST_START_DAY &&
+    (state.finance.todayOperatingCost !== 0 ||
+      state.finance.cumulativeOperatingCosts !== 0)
+  ) {
+    throw new Error("Operating costs cannot be charged before the handover.");
+  }
+  if (
+    state.finance.todayOperatingCost !== 0 &&
+    Math.abs(
+      state.finance.todayOperatingCost - expectedTodayOperatingCost,
+    ) > 0.0001
+  ) {
+    throw new Error("Today's operating cost does not match the audience size.");
+  }
+  if (
+    state.finance.cumulativeOperatingCosts + 0.0001 <
+    state.finance.todayOperatingCost
+  ) {
+    throw new Error("Cumulative operating costs are inconsistent.");
+  }
+  if (
+    !Number.isInteger(state.operations.nextActionId) ||
+    state.operations.nextActionId !== state.operations.records.length + 1
+  ) {
+    throw new Error("Business-action sequence is inconsistent.");
+  }
+  const actionIds = new Set<string>();
+  const actionDays = new Set<number>();
+  const lastActionDayByType = new Map<BusinessActionType, number>();
+  let previousActionDay = -1;
+  let pendingPackOdds = 0;
+  let strategicProjectCount = 0;
+  let actionSpend = 0;
+  for (const [index, record] of state.operations.records.entries()) {
+    const definition = BUSINESS_ACTION_BY_TYPE[record.type];
+    if (!definition) throw new Error(`Unknown business action: ${record.type}.`);
+    const expectedId = `business-action-${index + 1}`;
+    if (record.id !== expectedId || actionIds.has(record.id)) {
+      throw new Error(`Invalid business-action ID: ${record.id}.`);
+    }
+    actionIds.add(record.id);
+    if (
+      actionDays.has(record.startedDay) ||
+      record.startedDay <= previousActionDay
+    ) {
+      throw new Error(`More than one business action on DAY ${record.startedDay}.`);
+    }
+    actionDays.add(record.startedDay);
+    previousActionDay = record.startedDay;
+    const expectedEndsDay = getBusinessActionScheduledEndDay(
+      record.startedDay,
+      record.type,
+    );
+    if (
+      !Number.isInteger(record.startedDay) ||
+      record.startedDay < 1 ||
+      record.startedDay >= LAST_DECISION_DAY ||
+      record.startedDay > state.day ||
+      !Number.isInteger(record.endsDay) ||
+      record.endsDay !== expectedEndsDay ||
+      record.endsDay > CAMPAIGN_END_DAY ||
+      !Number.isFinite(record.cost) ||
+      Math.abs(record.cost - definition.cost) > 1e-9
+    ) {
+      throw new Error(`Invalid business-action record: ${record.id}.`);
+    }
+    if (
+      definition.minimumDay !== undefined &&
+      record.startedDay < definition.minimumDay
+    ) {
+      throw new Error(`Business action started before its unlock day: ${record.id}.`);
+    }
+    const lastSameTypeDay = lastActionDayByType.get(record.type);
+    if (
+      lastSameTypeDay !== undefined &&
+      record.startedDay - lastSameTypeDay < definition.cooldown
+    ) {
+      throw new Error(`Business-action cooldown was violated: ${record.id}.`);
+    }
+    lastActionDayByType.set(record.type, record.startedDay);
+    if (
+      record.risk !== undefined &&
+      (!Number.isFinite(record.risk) || record.risk < 0 || record.risk > 1)
+    ) {
+      throw new Error(`Invalid business-action risk: ${record.id}.`);
+    }
+    if (
+      record.resolvedDay !== undefined &&
+      (!Number.isInteger(record.resolvedDay) ||
+        record.resolvedDay <= record.startedDay ||
+        record.resolvedDay > state.day)
+    ) {
+      throw new Error(`Invalid business-action resolution day: ${record.id}.`);
+    }
+    if (
+      record.cashReturn !== undefined &&
+      (!Number.isFinite(record.cashReturn) || record.cashReturn < 0)
+    ) {
+      throw new Error(`Invalid business-action cash return: ${record.id}.`);
+    }
+    switch (record.type) {
+      case "tv-cm":
+      case "animation-promotion":
+      case "store-tour":
+        if (
+          record.outcome !== "active" &&
+          record.outcome !== "completed"
+        ) {
+          throw new Error(`Invalid duration-action outcome: ${record.id}.`);
+        }
+        if (
+          record.risk !== undefined ||
+          record.environmentHealth !== undefined ||
+          record.appliedDay !== undefined ||
+          record.riskContext !== undefined ||
+          record.cashReturn !== undefined
+        ) {
+          throw new Error(`Unexpected duration-action metadata: ${record.id}.`);
+        }
+        if (record.resolvedDay !== undefined) {
+          throw new Error(`Invalid duration-action resolution: ${record.id}.`);
+        }
+        break;
+      case "championship":
+        if (
+          record.outcome !== "active" &&
+          record.outcome !== "success" &&
+          record.outcome !== "backlash"
+        ) {
+          throw new Error(`Invalid championship outcome: ${record.id}.`);
+        }
+        if (
+          record.risk === undefined ||
+          record.environmentHealth === undefined ||
+          !Number.isFinite(record.environmentHealth) ||
+          record.environmentHealth < 0 ||
+          record.environmentHealth > 100 ||
+          record.appliedDay !== undefined
+          || record.riskContext !== undefined
+          || record.cashReturn !== undefined
+        ) {
+          throw new Error(`Invalid championship metadata: ${record.id}.`);
+        }
+        if (
+          (record.outcome === "active") !==
+          (record.resolvedDay === undefined)
+        ) {
+          throw new Error(`Invalid championship resolution: ${record.id}.`);
+        }
+        break;
+      case "season-overhaul":
+      case "global-launch":
+      case "first-print-expansion": {
+        strategicProjectCount += 1;
+        const resolutionDelay = definition.resolutionDelay;
+        const context = record.riskContext;
+        if (
+          record.risk === undefined ||
+          !context ||
+          resolutionDelay === undefined ||
+          record.environmentHealth !== undefined ||
+          record.appliedDay !== undefined
+        ) {
+          throw new Error(`Invalid strategic-project metadata: ${record.id}.`);
+        }
+        if (
+          !Number.isFinite(context.environmentHealth) ||
+          context.environmentHealth < 0 ||
+          context.environmentHealth > 100 ||
+          !Number.isFinite(context.purchaseTrust) ||
+          context.purchaseTrust < 0 ||
+          context.purchaseTrust > 100 ||
+          !Number.isFinite(context.releaseQuality) ||
+          context.releaseQuality < 0 ||
+          context.releaseQuality > 100 ||
+          !["balanced", "incomplete", "narrow", "none"].includes(
+            context.policyQuality,
+          ) ||
+          !["early", "middle", "late"].includes(context.timing) ||
+          !["environment", "trust", "policy", "release", "timing", "execution"].includes(
+            context.primaryRisk,
+          ) ||
+          !["environment", "trust", "policy", "release", "timing", "execution"].includes(
+            context.primaryStrength,
+          )
+        ) {
+          throw new Error(`Invalid strategic-project risk context: ${record.id}.`);
+        }
+        const resolutionDay = record.startedDay + resolutionDelay;
+        if (
+          record.type === "first-print-expansion" &&
+          (record.startedDay % RELEASE_INTERVAL !== 0 ||
+            !state.releaseHistory.some((batch) => batch.day === record.startedDay))
+        ) {
+          throw new Error(`First-print expansion did not follow a release: ${record.id}.`);
+        }
+        if (resolutionDay > LAST_DECISION_DAY) {
+          throw new Error(`Strategic project resolves after the mandate: ${record.id}.`);
+        }
+        if (record.outcome === "active") {
+          if (record.resolvedDay !== undefined || record.cashReturn !== undefined) {
+            throw new Error(`Invalid unresolved strategic project: ${record.id}.`);
+          }
+          if (state.day >= resolutionDay) {
+            throw new Error(`Overdue strategic project: ${record.id}.`);
+          }
+        } else if (
+          record.outcome === "success" ||
+          record.outcome === "backlash"
+        ) {
+          if (record.resolvedDay !== resolutionDay) {
+            throw new Error(`Invalid strategic-project resolution: ${record.id}.`);
+          }
+          if (
+            record.outcome === "success"
+              ? Math.abs((record.cashReturn ?? -1) - (definition.successReturn ?? 0)) > 1e-9
+              : record.cashReturn !== undefined
+          ) {
+            throw new Error(`Invalid strategic-project return: ${record.id}.`);
+          }
+        } else {
+          throw new Error(`Invalid strategic-project outcome: ${record.id}.`);
+        }
+        break;
+      }
+      case "pack-odds": {
+        if (
+          record.outcome !== "pending" &&
+          record.outcome !== "active" &&
+          record.outcome !== "clean" &&
+          record.outcome !== "detected"
+        ) {
+          throw new Error(`Invalid pack-odds outcome: ${record.id}.`);
+        }
+        if (
+          record.risk === undefined ||
+          record.environmentHealth !== undefined ||
+          record.riskContext !== undefined ||
+          record.cashReturn !== undefined
+        ) {
+          throw new Error(`Invalid pack-odds metadata: ${record.id}.`);
+        }
+        const isPending = record.outcome === "pending";
+        const isAwaitingResolution = record.outcome === "active";
+        const isResolved =
+          record.outcome === "clean" || record.outcome === "detected";
+        if (
+          (isPending &&
+            (record.appliedDay !== undefined ||
+              record.resolvedDay !== undefined)) ||
+          ((isAwaitingResolution || isResolved) &&
+            (!Number.isInteger(record.appliedDay) ||
+              record.appliedDay! < record.startedDay ||
+              record.appliedDay! > state.day)) ||
+          (isAwaitingResolution && record.resolvedDay !== undefined) ||
+          (isResolved && record.resolvedDay === undefined)
+        ) {
+          throw new Error(`Invalid pack-odds lifecycle: ${record.id}.`);
+        }
+        const scheduledReleaseDay = getNextReleaseDay(record.startedDay);
+        if (scheduledReleaseDay > LAST_RELEASE_DAY) {
+          throw new Error(`Pack-odds action has no release slot: ${record.id}.`);
+        }
+        if (
+          isPending &&
+          (state.day > scheduledReleaseDay ||
+            (state.day === scheduledReleaseDay &&
+              state.phase !== "release-edit"))
+        ) {
+          throw new Error(`Overdue pending pack-odds action: ${record.id}.`);
+        }
+        if (isPending) pendingPackOdds += 1;
+        break;
+      }
+    }
+    actionSpend += record.cost;
+  }
+  if (pendingPackOdds > 1) {
+    throw new Error("Only one pack-odds adjustment may be pending.");
+  }
+  if (strategicProjectCount > 1) {
+    throw new Error("Only one strategic project may be attempted per campaign.");
+  }
+  if (
+    Math.abs(round(actionSpend, 4) - state.finance.cumulativeExpenses) > 1e-6
+  ) {
+    throw new Error("Business-action spend does not match finance history.");
+  }
+
   const ids = themeIds(state);
   if (ids.length < 1 || new Set(ids).size !== ids.length) {
     throw new Error("Active theme IDs must be unique and non-empty.");
@@ -1638,15 +2387,17 @@ function assertState(state: GameState): void {
 }
 
 function settleDecisionDay(state: GameState): void {
+  updateBusinessActionLifecycle(state);
   updateFinance(state);
   recordHistory(state);
-  if (state.day >= END_DAY || totalUsers(state) <= 0) {
+  if (state.day >= CAMPAIGN_END_DAY || totalUsers(state) <= 0) {
     state.phase = "ended";
   }
   assertState(state);
 }
 
 function resolveCurrentDay(state: GameState): void {
+  updateBusinessActionLifecycle(state);
   applyReleaseEffectsForCurrentDay(state);
   appendRestrictionReactionsForCurrentDay(state);
   decayTemporaryState(state);
@@ -1661,7 +2412,7 @@ function resolveCurrentDay(state: GameState): void {
   updateFinance(state);
   recordHistory(state);
 
-  if (state.day >= END_DAY || totalUsers(state) <= 0) {
+  if (state.day >= CAMPAIGN_END_DAY || totalUsers(state) <= 0) {
     state.phase = "ended";
   }
   assertState(state);
@@ -1674,7 +2425,7 @@ function advanceDays(state: GameState, days: number): void {
   if (state.phase !== "running") return;
 
   for (let elapsed = 0; elapsed < days; elapsed += 1) {
-    if (state.phase !== "running" || state.day >= END_DAY) break;
+    if (state.phase !== "running" || state.day >= CAMPAIGN_END_DAY) break;
     state.day += 1;
     if (totalUsers(state) <= 0) {
       updateFinance(state);
@@ -1684,11 +2435,13 @@ function advanceDays(state: GameState, days: number): void {
       break;
     }
     if (isReleaseDay(state.day)) {
+      updateBusinessActionLifecycle(state);
       generateReleaseSlate(state);
       state.phase = "release-edit";
       break;
     }
     if (isBanDay(state.day)) {
+      updateBusinessActionLifecycle(state);
       state.phase = "ban-edit";
       break;
     }
@@ -1712,6 +2465,7 @@ function submitBan(
     throw new Error("Restrictions can only be submitted on a regular restriction day.");
   }
 
+  const policyProfile = getRestrictionPolicyProfile(state, changes);
   let totalPowerLoss = 0;
   let appliedChangeCount = 0;
   for (const [partId, nextLimit] of Object.entries(changes)) {
@@ -1767,8 +2521,25 @@ function submitBan(
     });
   }
 
+  const impactTrustLoss =
+    Math.min(12, totalPowerLoss * 0.32) *
+    (policyProfile.quality === "balanced" ? 0.75 : 1);
+  const policyTrustLoss =
+    policyProfile.quality === "narrow"
+      ? 2
+      : policyProfile.quality === "incomplete"
+        ? 1.25
+        : 0;
+  const staleOmissionTrustLoss = policyProfile.staleReliefComplete ? 0 : 1;
   state.purchaseTrust = round(
-    clamp(state.purchaseTrust - Math.min(12, totalPowerLoss * 0.32), 0, 100),
+    clamp(
+      state.purchaseTrust -
+        impactTrustLoss -
+        policyTrustLoss -
+        staleOmissionTrustLoss,
+      0,
+      100,
+    ),
     4,
   );
   state.phase = "running";
@@ -1795,7 +2566,7 @@ function proposeSupport(
     throw new Error("Support proposals have a 30-day cooldown.");
   }
   const eligibleReleaseDay = getNextReleaseDay(state.day);
-  if (eligibleReleaseDay > END_DAY) {
+  if (eligibleReleaseDay > LAST_RELEASE_DAY) {
     throw new Error("There is no release slot left in this campaign.");
   }
   const request: SupportRequest = {
@@ -1816,6 +2587,54 @@ function proposeSupport(
     themeId,
     proposalId: request.id,
   });
+}
+
+function runBusinessAction(
+  state: GameState,
+  actionType: BusinessActionType,
+): void {
+  const definition = BUSINESS_ACTION_BY_TYPE[actionType];
+  if (!definition) throw new Error(`Unknown business action: ${actionType}.`);
+
+  const availability = getBusinessActionAvailability(state, actionType);
+  if (!availability.available) {
+    throw new Error(
+      availability.reason ?? "This business action is not currently available.",
+    );
+  }
+
+  const id = `business-action-${state.operations.nextActionId}`;
+  const record: BusinessActionRecord = {
+    id,
+    type: actionType,
+    startedDay: state.day,
+    endsDay: getBusinessActionScheduledEndDay(state.day, actionType),
+    cost: definition.cost,
+    outcome: actionType === "pack-odds" ? "pending" : "active",
+  };
+
+  if (actionType === "championship") {
+    record.environmentHealth = round(getBusinessEnvironmentHealth(state), 4);
+    record.risk = round(getChampionshipBacklashRisk(state), 4);
+  } else if (actionType === "pack-odds") {
+    record.risk = round(getPackOddsDetectionRisk(state), 4);
+  } else if (isStrategicBusinessAction(actionType)) {
+    const profile = getStrategicProjectRiskProfile(state, actionType);
+    record.risk = profile.risk;
+    record.riskContext = profile.context;
+  }
+
+  state.operations.records.push(record);
+  state.operations.nextActionId += 1;
+  state.finance.cash = round(state.finance.cash - definition.cost, 4);
+  state.finance.todayOperatingCash = round(
+    state.finance.todayOperatingCash - definition.cost,
+    4,
+  );
+  state.finance.cumulativeExpenses = round(
+    state.finance.cumulativeExpenses + definition.cost,
+    4,
+  );
 }
 
 export function getBanDemand(theme: ThemeRuntime): number {
@@ -1889,15 +2708,15 @@ export function formatCommunityEvent(
     case "restriction-no-change":
       return `[운영 공지] 금제 변경 없음 — ${themeName} 현행 유지`;
     case "top-theme-changed":
-      return `${relatedName} 내려가고 요즘은 ${themeName}이 제일 많이 보이네`;
+      return `${relatedName} 내려가고 요즘은 ${withKoreanParticle(themeName, "이/가")} 제일 많이 보이네`;
     default:
       return event.body || `${themeName} 관련 소식`;
   }
 }
 
 export function createCampaignStart(seed = 0x5eed1234): GameState {
-  if (THEMES.length !== 100) {
-    throw new Error(`The campaign requires exactly 100 themes; received ${THEMES.length}.`);
+  if (THEMES.length !== 150) {
+    throw new Error(`The campaign requires exactly 150 themes; received ${THEMES.length}.`);
   }
   const startingThemes = STARTING_THEME_IDS.map((themeId) => {
     const content = THEME_BY_ID[themeId];
@@ -1930,7 +2749,7 @@ export function createCampaignStart(seed = 0x5eed1234): GameState {
   themes[currentTopThemeId].topStreakDays = 1;
 
   const state: GameState = {
-    schemaVersion: 3,
+    schemaVersion: 6,
     seed: seed >>> 0,
     day: 1,
     phase: "running",
@@ -1943,6 +2762,15 @@ export function createCampaignStart(seed = 0x5eed1234): GameState {
       today: 0,
       rolling30: 0,
       cumulative: 0,
+      cash: INITIAL_OPERATING_CASH,
+      todayOperatingCash: 0,
+      todayOperatingCost: 0,
+      cumulativeOperatingCosts: 0,
+      cumulativeExpenses: 0,
+    },
+    operations: {
+      nextActionId: 1,
+      records: [],
     },
     community: [],
     supportRequests: [],
@@ -1969,7 +2797,12 @@ export function createCampaignStart(seed = 0x5eed1234): GameState {
 /** Replays the fixed onboarding decisions through the first post-ban day. */
 export function createInitialGame(seed = 0x5eed1234): GameState {
   let state = createCampaignStart(seed);
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 29 });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
+  state = reduceGame(state, {
+    type: "RUN_BUSINESS_ACTION",
+    action: "tv-cm",
+  });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
   state = reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: getPrologueReleaseSelections(state),
@@ -2000,6 +2833,9 @@ export function reduceGame(state: GameState, command: GameCommand): GameState {
       break;
     case "SUBMIT_RELEASE":
       submitRelease(next, command.selections);
+      break;
+    case "RUN_BUSINESS_ACTION":
+      runBusinessAction(next, command.action);
       break;
     case "COMPLETE_HANDOVER":
       if (next.day < 46 || next.phase === "ended") {

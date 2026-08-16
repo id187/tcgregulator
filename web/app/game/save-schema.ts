@@ -5,7 +5,23 @@ import {
   THEMES,
   THEME_BY_ID,
 } from "./content.ts";
+import { BUSINESS_ACTION_BY_TYPE } from "./business-actions.ts";
+import {
+  BAN_INTERVAL,
+  CAMPAIGN_END_DAY,
+  FIRST_BAN_DAY,
+  LAST_DECISION_DAY,
+  LAST_RELEASE_DAY,
+  RELEASE_INTERVAL,
+} from "./campaign.ts";
+import {
+  getDailyOperatingCost,
+  OPERATING_COST_START_DAY,
+} from "./finance.ts";
 import type {
+  BusinessActionOutcome,
+  BusinessActionType,
+  BusinessRiskFactor,
   CommunityCategory,
   CommunityEventType,
   ExpectedTier,
@@ -19,12 +35,20 @@ import type {
 
 export const MAX_SAVE_BYTES = 4 * 1024 * 1024;
 
-const MAX_DAY = 1000;
-const MAX_ACTIVE_THEMES = 100;
+const MAX_DAY = CAMPAIGN_END_DAY;
+const MAX_ACTIVE_THEMES = THEMES.length;
 const MIN_ACTIVE_THEMES = 5;
 const MAX_SAFE_COUNTER = 1_000_000_000;
 const MAX_FINANCE_VALUE = 1_000_000_000_000;
-const RELEASE_INTERVAL = 30;
+const INITIAL_OPERATING_CASH = 2.5;
+const OPERATING_CASH_MARGIN = 0.32;
+const STARTING_THEME_IDS = new Set<ThemeId>([
+  "cycle",
+  "white-night",
+  "machine-revolution",
+  "ironblood",
+  "abyss",
+]);
 
 const TOP_LEVEL_KEYS = [
   "schemaVersion",
@@ -35,6 +59,7 @@ const TOP_LEVEL_KEYS = [
   "themes",
   "users",
   "finance",
+  "operations",
   "community",
   "supportRequests",
   "releaseSlate",
@@ -48,6 +73,19 @@ const TOP_LEVEL_KEYS = [
   "currentTopThemeId",
   "purchaseTrust",
   "handoverComplete",
+] as const;
+
+const LEGACY_V3_TOP_LEVEL_KEYS = TOP_LEVEL_KEYS.filter(
+  (key) => key !== "operations",
+);
+
+const LEGACY_V4_FINANCE_KEYS = [
+  "today",
+  "rolling30",
+  "cumulative",
+  "cash",
+  "todayOperatingCash",
+  "cumulativeExpenses",
 ] as const;
 
 const THEME_RUNTIME_KEYS = [
@@ -116,6 +154,51 @@ const COMMUNITY_TYPES = new Set<CommunityEventType>([
   "cosmetic-restriction",
   "restriction-no-change",
   "top-theme-changed",
+  "business-reaction",
+  "business-scandal",
+]);
+
+const BUSINESS_ACTION_TYPES = new Set<BusinessActionType>([
+  "tv-cm",
+  "animation-promotion",
+  "championship",
+  "store-tour",
+  "pack-odds",
+  "season-overhaul",
+  "global-launch",
+  "first-print-expansion",
+]);
+
+const BUSINESS_RISK_FACTORS = new Set<BusinessRiskFactor>([
+  "environment",
+  "trust",
+  "policy",
+  "release",
+  "timing",
+  "execution",
+]);
+
+const BUSINESS_POLICY_QUALITIES = new Set([
+  "balanced",
+  "incomplete",
+  "narrow",
+  "none",
+] as const);
+
+const BUSINESS_RISK_TIMINGS = new Set([
+  "early",
+  "middle",
+  "late",
+] as const);
+
+const BUSINESS_ACTION_OUTCOMES = new Set<BusinessActionOutcome>([
+  "active",
+  "pending",
+  "completed",
+  "success",
+  "backlash",
+  "clean",
+  "detected",
 ]);
 
 const SUPPORT_DIRECTIONS = new Set<SupportDirection>([
@@ -187,6 +270,11 @@ export class SaveSchemaError extends Error {
 
 function fail(path: string, message: string): never {
   throw new SaveSchemaError(`${path}: ${message}`);
+}
+
+function round(value: number, digits = 4): number {
+  const scale = 10 ** digits;
+  return Math.round(value * scale) / scale;
 }
 
 function expectRecord(
@@ -291,8 +379,111 @@ function expectNullableDay(
   return day;
 }
 
+function migrateLegacyV3(value: UnknownRecord): UnknownRecord {
+  const legacy = expectRecord(value, "$", LEGACY_V3_TOP_LEVEL_KEYS);
+  expectNumber(legacy.day, "$.day", 1, 419, true);
+  expectString(legacy.phase, "$.phase", 20);
+  const finance = expectRecord(legacy.finance, "$.finance", [
+    "today",
+    "rolling30",
+    "cumulative",
+  ]);
+  const today = expectNumber(
+    finance.today,
+    "$.finance.today",
+    0,
+    MAX_FINANCE_VALUE,
+  );
+  const cumulative = expectNumber(
+    finance.cumulative,
+    "$.finance.cumulative",
+    0,
+    MAX_FINANCE_VALUE,
+  );
+
+  return {
+    ...legacy,
+    schemaVersion: 6,
+    phase: reopenFormerCampaignEnd(legacy),
+    finance: {
+      ...finance,
+      cash: round(INITIAL_OPERATING_CASH + cumulative * OPERATING_CASH_MARGIN),
+      todayOperatingCash: round(today * OPERATING_CASH_MARGIN),
+      todayOperatingCost: 0,
+      cumulativeOperatingCosts: 0,
+      cumulativeExpenses: 0,
+    },
+    operations: {
+      nextActionId: 1,
+      records: [],
+    },
+  };
+}
+
+function reopenFormerCampaignEnd(legacy: UnknownRecord): unknown {
+  if (legacy.day !== 419 || legacy.phase !== "ended") return legacy.phase;
+  const users = expectRecord(legacy.users, "$.users", [
+    "tier",
+    "casual",
+    "collector",
+  ]);
+  const userTotal =
+    expectNumber(users.tier, "$.users.tier", 0, MAX_SAFE_COUNTER) +
+    expectNumber(users.casual, "$.users.casual", 0, MAX_SAFE_COUNTER) +
+    expectNumber(users.collector, "$.users.collector", 0, MAX_SAFE_COUNTER);
+  return userTotal > 0 ? "running" : legacy.phase;
+}
+
+function migrateLegacyV4(value: UnknownRecord): UnknownRecord {
+  const legacy = expectRecord(value, "$", TOP_LEVEL_KEYS);
+  expectNumber(legacy.day, "$.day", 1, 419, true);
+  expectString(legacy.phase, "$.phase", 20);
+  const finance = expectRecord(
+    legacy.finance,
+    "$.finance",
+    LEGACY_V4_FINANCE_KEYS,
+  );
+  return {
+    ...legacy,
+    schemaVersion: 6,
+    phase: reopenFormerCampaignEnd(legacy),
+    finance: {
+      ...finance,
+      todayOperatingCost: 0,
+      cumulativeOperatingCosts: 0,
+    },
+  };
+}
+
+function migrateLegacyV5(value: UnknownRecord): UnknownRecord {
+  const legacy = expectRecord(value, "$", TOP_LEVEL_KEYS);
+  expectNumber(legacy.day, "$.day", 1, 419, true);
+  expectString(legacy.phase, "$.phase", 20);
+
+  return {
+    ...legacy,
+    schemaVersion: 6,
+    phase: reopenFormerCampaignEnd(legacy),
+  };
+}
+
+function normalizeSaveVersion(value: unknown): UnknownRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    fail("$", "must be an object");
+  }
+  const record = value as UnknownRecord;
+  if (record.schemaVersion === 6) return record;
+  if (record.schemaVersion === 5) return migrateLegacyV5(record);
+  if (record.schemaVersion === 4) return migrateLegacyV4(record);
+  if (record.schemaVersion === 3) return migrateLegacyV3(record);
+  fail(
+    "$.schemaVersion",
+    "must equal 6 or be a migratable schema v3/v4/v5 save",
+  );
+}
+
 function isReleaseDay(day: number): boolean {
-  return day > 0 && day % RELEASE_INTERVAL === 0;
+  return day > 0 && day <= LAST_RELEASE_DAY && day % RELEASE_INTERVAL === 0;
 }
 
 function expectedTierForPower(power: number): ExpectedTier {
@@ -445,6 +636,386 @@ function validateThemeRuntime(
   }
 }
 
+function validateOperations(
+  value: unknown,
+  currentDay: number,
+  currentPhase: GameState["phase"],
+): number {
+  const operations = expectRecord(value, "$.operations", [
+    "nextActionId",
+    "records",
+  ]);
+  const records = expectArray(
+    operations.records,
+    "$.operations.records",
+    MAX_DAY,
+  );
+  const nextActionId = expectNumber(
+    operations.nextActionId,
+    "$.operations.nextActionId",
+    1,
+    MAX_SAFE_COUNTER,
+    true,
+  );
+  if (nextActionId !== records.length + 1) {
+    fail(
+      "$.operations.nextActionId",
+      "must be one greater than the number of retained action records",
+    );
+  }
+
+  let previousStartedDay = -1;
+  let totalExpenses = 0;
+  let strategicProjectCount = 0;
+  const previousDayByType = new Map<BusinessActionType, number>();
+
+  records.forEach((recordValue, index) => {
+    const path = `$.operations.records[${index}]`;
+    const record = expectRecord(
+      recordValue,
+      path,
+      ["id", "type", "startedDay", "endsDay", "cost", "outcome"],
+      [
+        "risk",
+        "environmentHealth",
+        "riskContext",
+        "cashReturn",
+        "appliedDay",
+        "resolvedDay",
+      ],
+    );
+    const id = expectString(record.id, `${path}.id`, 128);
+    const expectedId = `business-action-${index + 1}`;
+    if (id !== expectedId) {
+      fail(`${path}.id`, `must equal ${expectedId}`);
+    }
+
+    const type = expectEnum(record.type, `${path}.type`, BUSINESS_ACTION_TYPES);
+    const definition = BUSINESS_ACTION_BY_TYPE[type];
+    const startedDay = expectNumber(
+      record.startedDay,
+      `${path}.startedDay`,
+      1,
+      currentDay,
+      true,
+    );
+    if (startedDay >= LAST_DECISION_DAY) {
+      fail(`${path}.startedDay`, `must be before DAY ${LAST_DECISION_DAY}`);
+    }
+    if (startedDay <= previousStartedDay) {
+      fail(`${path}.startedDay`, "must be strictly increasing and unique by day");
+    }
+    previousStartedDay = startedDay;
+
+    const previousTypeDay = previousDayByType.get(type);
+    if (
+      previousTypeDay !== undefined &&
+      startedDay - previousTypeDay < definition.cooldown
+    ) {
+      fail(
+        `${path}.startedDay`,
+        `must respect the ${definition.cooldown}-day ${type} cooldown`,
+      );
+    }
+    previousDayByType.set(type, startedDay);
+
+    const expectedAppliedDay =
+      (Math.floor(startedDay / RELEASE_INTERVAL) + 1) * RELEASE_INTERVAL;
+    if (type === "pack-odds" && expectedAppliedDay > LAST_RELEASE_DAY) {
+      fail(`${path}.startedDay`, "must leave a regular release inside the campaign");
+    }
+    const expectedEndsDay =
+      type === "pack-odds"
+        ? expectedAppliedDay + definition.duration - 1
+        : startedDay + definition.duration;
+    const endsDay = expectNumber(
+      record.endsDay,
+      `${path}.endsDay`,
+      1,
+      CAMPAIGN_END_DAY,
+      true,
+    );
+    if (endsDay !== expectedEndsDay) {
+      fail(
+        `${path}.endsDay`,
+        type === "pack-odds"
+          ? "must cover the affected release's thirty-day sales window"
+          : `must equal startedDay + ${definition.duration}`,
+      );
+    }
+
+    const cost = expectNumber(
+      record.cost,
+      `${path}.cost`,
+      0,
+      MAX_FINANCE_VALUE,
+    );
+    if (Math.abs(cost - definition.cost) > 1e-9) {
+      fail(`${path}.cost`, `must equal the configured ${type} cost`);
+    }
+    totalExpenses += cost;
+
+    const outcome = expectEnum(
+      record.outcome,
+      `${path}.outcome`,
+      BUSINESS_ACTION_OUTCOMES,
+    );
+    const risk =
+      record.risk === undefined
+        ? undefined
+        : expectNumber(record.risk, `${path}.risk`, 0, 1);
+    const environmentHealth =
+      record.environmentHealth === undefined
+        ? undefined
+        : expectNumber(
+            record.environmentHealth,
+            `${path}.environmentHealth`,
+            0,
+            100,
+          );
+    const riskContext = record.riskContext === undefined
+      ? undefined
+      : expectRecord(record.riskContext, `${path}.riskContext`, [
+          "environmentHealth",
+          "purchaseTrust",
+          "releaseQuality",
+          "policyQuality",
+          "timing",
+          "primaryRisk",
+          "primaryStrength",
+        ]);
+    if (riskContext) {
+      expectNumber(
+        riskContext.environmentHealth,
+        `${path}.riskContext.environmentHealth`,
+        0,
+        100,
+      );
+      expectNumber(
+        riskContext.purchaseTrust,
+        `${path}.riskContext.purchaseTrust`,
+        0,
+        100,
+      );
+      expectNumber(
+        riskContext.releaseQuality,
+        `${path}.riskContext.releaseQuality`,
+        0,
+        100,
+      );
+      expectEnum(
+        riskContext.policyQuality,
+        `${path}.riskContext.policyQuality`,
+        BUSINESS_POLICY_QUALITIES,
+      );
+      expectEnum(
+        riskContext.timing,
+        `${path}.riskContext.timing`,
+        BUSINESS_RISK_TIMINGS,
+      );
+      expectEnum(
+        riskContext.primaryRisk,
+        `${path}.riskContext.primaryRisk`,
+        BUSINESS_RISK_FACTORS,
+      );
+      expectEnum(
+        riskContext.primaryStrength,
+        `${path}.riskContext.primaryStrength`,
+        BUSINESS_RISK_FACTORS,
+      );
+    }
+    const cashReturn = record.cashReturn === undefined
+      ? undefined
+      : expectNumber(
+          record.cashReturn,
+          `${path}.cashReturn`,
+          0,
+          MAX_FINANCE_VALUE,
+        );
+    const appliedDay =
+      record.appliedDay === undefined
+        ? undefined
+        : expectNumber(
+            record.appliedDay,
+            `${path}.appliedDay`,
+            1,
+            currentDay,
+            true,
+          );
+    const resolvedDay =
+      record.resolvedDay === undefined
+        ? undefined
+        : expectNumber(
+            record.resolvedDay,
+            `${path}.resolvedDay`,
+            1,
+            currentDay,
+            true,
+          );
+
+    if (type === "championship") {
+      if (risk === undefined || environmentHealth === undefined) {
+        fail(path, "championship records require risk and environmentHealth");
+      }
+      if (
+        appliedDay !== undefined ||
+        riskContext !== undefined ||
+        cashReturn !== undefined
+      ) {
+        fail(`${path}.appliedDay`, "is not valid for championship records");
+      }
+      if (outcome === "active") {
+        if (resolvedDay !== undefined || currentDay !== startedDay) {
+          fail(
+            path,
+            "an active championship must be unresolved on its execution day",
+          );
+        }
+      } else if (outcome === "success" || outcome === "backlash") {
+        if (resolvedDay !== startedDay + 1) {
+          fail(
+            `${path}.resolvedDay`,
+            "must be the day after championship execution",
+          );
+        }
+      } else {
+        fail(`${path}.outcome`, "is not valid for a championship");
+      }
+      return;
+    }
+
+    if (
+      type === "season-overhaul" ||
+      type === "global-launch" ||
+      type === "first-print-expansion"
+    ) {
+      strategicProjectCount += 1;
+      if (strategicProjectCount > 1) {
+        fail(path, "only one strategic project may be attempted per campaign");
+      }
+      if (
+        definition.minimumDay !== undefined &&
+        startedDay < definition.minimumDay
+      ) {
+        fail(`${path}.startedDay`, `must be on or after DAY ${definition.minimumDay}`);
+      }
+      if (startedDay + (definition.resolutionDelay ?? 0) > LAST_DECISION_DAY) {
+        fail(`${path}.startedDay`, "must leave time to resolve before the final decision");
+      }
+      if (
+        type === "first-print-expansion" &&
+        startedDay % RELEASE_INTERVAL !== 0
+      ) {
+        fail(`${path}.startedDay`, "must be a regular release day");
+      }
+      if (risk === undefined || riskContext === undefined) {
+        fail(path, "strategic projects require risk and a launch-day riskContext");
+      }
+      if (environmentHealth !== undefined || appliedDay !== undefined) {
+        fail(path, "strategic projects cannot contain unrelated result fields");
+      }
+      const resolutionDay = startedDay + (definition.resolutionDelay ?? 0);
+      if (outcome === "active") {
+        if (resolvedDay !== undefined || cashReturn !== undefined) {
+          fail(path, "an unresolved strategic project cannot contain result fields");
+        }
+        if (currentDay >= resolutionDay) {
+          fail(`${path}.outcome`, "cannot remain active on or after its result day");
+        }
+      } else if (outcome === "success" || outcome === "backlash") {
+        if (resolvedDay !== resolutionDay) {
+          fail(`${path}.resolvedDay`, "must equal the configured strategic result day");
+        }
+        if (
+          outcome === "success"
+            ? Math.abs((cashReturn ?? -1) - (definition.successReturn ?? 0)) > 1e-9
+            : cashReturn !== undefined
+        ) {
+          fail(`${path}.cashReturn`, "does not match the strategic-project outcome");
+        }
+      } else {
+        fail(`${path}.outcome`, "is not valid for a strategic project");
+      }
+      return;
+    }
+
+    if (type === "pack-odds") {
+      if (risk === undefined) {
+        fail(`${path}.risk`, "is required for pack-odds records");
+      }
+      if (
+        environmentHealth !== undefined ||
+        riskContext !== undefined ||
+        cashReturn !== undefined
+      ) {
+        fail(
+          `${path}.environmentHealth`,
+          "is not valid for pack-odds records",
+        );
+      }
+      if (outcome === "pending") {
+        if (appliedDay !== undefined || resolvedDay !== undefined) {
+          fail(path, "pending pack odds cannot already contain result days");
+        }
+        if (
+          currentDay > expectedAppliedDay ||
+          (currentDay === expectedAppliedDay &&
+            currentPhase !== "release-edit")
+        ) {
+          fail(`${path}.outcome`, "cannot remain pending after its release day");
+        }
+      } else if (outcome === "active") {
+        if (appliedDay !== expectedAppliedDay || resolvedDay !== undefined) {
+          fail(
+            path,
+            "active pack odds require only the scheduled release as appliedDay",
+          );
+        }
+        if (currentDay !== appliedDay) {
+          fail(`${path}.outcome`, "is only valid on its applied release day");
+        }
+      } else if (outcome === "clean" || outcome === "detected") {
+        if (
+          appliedDay !== expectedAppliedDay ||
+          resolvedDay !== expectedAppliedDay + 1
+        ) {
+          fail(
+            path,
+            "resolved pack odds require their scheduled release and next-day result",
+          );
+        }
+      } else {
+        fail(`${path}.outcome`, "is not valid for pack-odds records");
+      }
+      return;
+    }
+
+    if (
+      risk !== undefined ||
+      environmentHealth !== undefined ||
+      riskContext !== undefined ||
+      cashReturn !== undefined ||
+      appliedDay !== undefined ||
+      resolvedDay !== undefined
+    ) {
+      fail(path, `${type} records cannot contain risk or result snapshot fields`);
+    }
+    if (outcome === "active") {
+      if (currentDay > endsDay) {
+        fail(`${path}.outcome`, "cannot remain active after endsDay");
+      }
+    } else if (outcome === "completed") {
+      if (currentDay <= endsDay) {
+        fail(`${path}.outcome`, "cannot complete on or before endsDay");
+      }
+    } else {
+      fail(`${path}.outcome`, `is not valid for ${type}`);
+    }
+  });
+
+  return round(totalExpenses);
+}
+
 function validateSupportRequests(
   value: unknown,
   currentDay: number,
@@ -495,7 +1066,7 @@ function validateSupportRequests(
       request.eligibleReleaseDay,
       `${path}.eligibleReleaseDay`,
       1,
-      MAX_DAY,
+      LAST_RELEASE_DAY,
       true,
     );
     const expectedEligibleDay =
@@ -859,10 +1430,11 @@ function validateHistory(
   value: unknown,
   currentDay: number,
   activeThemeIds: readonly ThemeId[],
-) {
+): { lastDay: number; lastTotalUsers: number } {
   const history = expectArray(value, "$.history", MAX_DAY + 1);
   const activeThemeSet = new Set(activeThemeIds);
   let previousDay = -1;
+  let lastTotalUsers = 0;
 
   history.forEach((entryValue, index) => {
     const path = `$.history[${index}]`;
@@ -876,7 +1448,12 @@ function validateHistory(
     const day = expectNumber(entry.day, `${path}.day`, 0, currentDay, true);
     if (day <= previousDay) fail(`${path}.day`, "must be strictly increasing");
     previousDay = day;
-    expectNumber(entry.totalUsers, `${path}.totalUsers`, 0, MAX_SAFE_COUNTER);
+    lastTotalUsers = expectNumber(
+      entry.totalUsers,
+      `${path}.totalUsers`,
+      0,
+      MAX_SAFE_COUNTER,
+    );
     expectNumber(entry.revenue, `${path}.revenue`, 0, MAX_FINANCE_VALUE);
     const topThemeId = expectThemeId(entry.topThemeId, `${path}.topThemeId`);
 
@@ -911,16 +1488,15 @@ function validateHistory(
       fail(`${path}.shares`, "must add up to 1");
     }
   });
+  return { lastDay: previousDay, lastTotalUsers };
 }
 
 export function parseGameState(value: unknown): GameState {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    fail("$", "must be an object");
+  const normalized = normalizeSaveVersion(value);
+  const state = expectRecord(normalized, "$", TOP_LEVEL_KEYS);
+  if (state.schemaVersion !== 6) {
+    fail("$.schemaVersion", "must equal 6 after migration");
   }
-  if ((value as UnknownRecord).schemaVersion !== 3) {
-    fail("$.schemaVersion", "must equal 3");
-  }
-  const state = expectRecord(value, "$", TOP_LEVEL_KEYS);
   expectNumber(state.seed, "$.seed", 0, 0xffffffff, true);
   const day = expectNumber(state.day, "$.day", 0, MAX_DAY, true);
   const phase = expectEnum(state.phase, "$.phase", PHASES);
@@ -945,15 +1521,85 @@ export function parseGameState(value: unknown): GameState {
   expectNumber(users.tier, "$.users.tier", 0, MAX_SAFE_COUNTER);
   expectNumber(users.casual, "$.users.casual", 0, MAX_SAFE_COUNTER);
   expectNumber(users.collector, "$.users.collector", 0, MAX_SAFE_COUNTER);
+  const userTotal =
+    (users.tier as number) +
+    (users.casual as number) +
+    (users.collector as number);
+  const settledHistory = validateHistory(state.history, day, activeThemeIds);
 
   const finance = expectRecord(state.finance, "$.finance", [
     "today",
     "rolling30",
     "cumulative",
+    "cash",
+    "todayOperatingCash",
+    "todayOperatingCost",
+    "cumulativeOperatingCosts",
+    "cumulativeExpenses",
   ]);
   expectNumber(finance.today, "$.finance.today", 0, MAX_FINANCE_VALUE);
   expectNumber(finance.rolling30, "$.finance.rolling30", 0, MAX_FINANCE_VALUE);
   expectNumber(finance.cumulative, "$.finance.cumulative", 0, MAX_FINANCE_VALUE);
+  expectNumber(finance.cash, "$.finance.cash", 0, MAX_FINANCE_VALUE);
+  expectNumber(
+    finance.todayOperatingCash,
+    "$.finance.todayOperatingCash",
+    -MAX_FINANCE_VALUE,
+    MAX_FINANCE_VALUE,
+  );
+  const todayOperatingCost = expectNumber(
+    finance.todayOperatingCost,
+    "$.finance.todayOperatingCost",
+    0,
+    MAX_FINANCE_VALUE,
+  );
+  const cumulativeOperatingCosts = expectNumber(
+    finance.cumulativeOperatingCosts,
+    "$.finance.cumulativeOperatingCosts",
+    0,
+    MAX_FINANCE_VALUE,
+  );
+  const expectedTodayOperatingCost = getDailyOperatingCost(
+    settledHistory.lastDay >= 0 ? settledHistory.lastDay : day,
+    settledHistory.lastDay >= 0 ? settledHistory.lastTotalUsers : userTotal,
+  );
+  if (
+    day < OPERATING_COST_START_DAY &&
+    (todayOperatingCost !== 0 || cumulativeOperatingCosts !== 0)
+  ) {
+    fail(
+      "$.finance.cumulativeOperatingCosts",
+      `must remain zero before DAY ${OPERATING_COST_START_DAY}`,
+    );
+  }
+  if (
+    todayOperatingCost !== 0 &&
+    Math.abs(todayOperatingCost - expectedTodayOperatingCost) > 0.0001
+  ) {
+    fail(
+      "$.finance.todayOperatingCost",
+      "must match the operating cost for the recorded audience",
+    );
+  }
+  if (cumulativeOperatingCosts + 0.0001 < todayOperatingCost) {
+    fail(
+      "$.finance.cumulativeOperatingCosts",
+      "must not be lower than today's operating cost",
+    );
+  }
+  const cumulativeExpenses = expectNumber(
+    finance.cumulativeExpenses,
+    "$.finance.cumulativeExpenses",
+    0,
+    MAX_FINANCE_VALUE,
+  );
+  const operationExpenses = validateOperations(state.operations, day, phase);
+  if (Math.abs(cumulativeExpenses - operationExpenses) > 0.0001) {
+    fail(
+      "$.finance.cumulativeExpenses",
+      "must equal the total cost of all retained business-action records",
+    );
+  }
 
   const supportRequests = validateSupportRequests(
     state.supportRequests,
@@ -988,6 +1634,20 @@ export function parseGameState(value: unknown): GameState {
         supportDaysByTheme.set(product.themeId, supportDays);
       }
     }
+  }
+
+  const expectedActiveThemeIds = new Set<ThemeId>(STARTING_THEME_IDS);
+  for (const [themeId, debutDay] of debutDayByTheme) {
+    if (debutDay < day) expectedActiveThemeIds.add(themeId);
+  }
+  if (
+    expectedActiveThemeIds.size !== activeThemeSet.size ||
+    [...expectedActiveThemeIds].some((themeId) => !activeThemeSet.has(themeId))
+  ) {
+    fail(
+      "$.activeThemeIds",
+      "must equal the starting themes plus new-theme releases whose next-day effects have applied",
+    );
   }
 
   for (const themeId of activeThemeIds) {
@@ -1073,7 +1733,6 @@ export function parseGameState(value: unknown): GameState {
   }
 
   validateCommunity(state.community, day, activeThemeSet, supportRequests);
-  validateHistory(state.history, day, activeThemeIds);
 
   const recentRevenue = expectArray(state.recentRevenue, "$.recentRevenue", 30);
   recentRevenue.forEach((revenue, index) => {
@@ -1139,7 +1798,12 @@ export function parseGameState(value: unknown): GameState {
     fail("$.handoverComplete", "cannot be true before DAY 46");
   }
 
-  if (phase === "ban-edit" && (day < 45 || (day - 45) % 90 !== 0)) {
+  if (
+    phase === "ban-edit" &&
+    (day < FIRST_BAN_DAY ||
+      day > LAST_DECISION_DAY ||
+      (day - FIRST_BAN_DAY) % BAN_INTERVAL !== 0)
+  ) {
     fail("$.phase", "ban-edit is only valid on a restriction day");
   }
   if (phase === "release-edit") {
@@ -1150,10 +1814,25 @@ export function parseGameState(value: unknown): GameState {
     fail("$.releaseSlate", "is only valid during release-edit");
   }
 
+  if (day === CAMPAIGN_END_DAY && phase !== "ended") {
+    fail("$.phase", `must be ended on DAY ${CAMPAIGN_END_DAY}`);
+  }
+  if (phase === "ended" && day < CAMPAIGN_END_DAY && userTotal > 0) {
+    fail("$.phase", "cannot end early while players remain");
+  }
+
   return state as unknown as GameState;
 }
 
 export function isGameState(value: unknown): value is GameState {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    (value as UnknownRecord).schemaVersion !== 6
+  ) {
+    return false;
+  }
   try {
     parseGameState(value);
     return true;

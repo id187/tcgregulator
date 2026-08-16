@@ -4,6 +4,34 @@ import {
   THEMES,
   THEME_BY_ID,
 } from "./content.ts";
+import {
+  getAnimationPromotionCopy,
+  PACK_ODDS_DETECTED_COPY,
+  PACK_ODDS_RUMOR_COPY,
+  STORE_TOUR_COPY,
+  TOURNAMENT_BACKLASH_COPY,
+  TOURNAMENT_SUCCESS_COPY,
+  TV_CM_COPY,
+  VENTURE_BUSINESS_COPY,
+} from "./business-community-copy.ts";
+import type {
+  VentureActionType,
+  VentureRiskFactor,
+} from "./business-community-copy.ts";
+import {
+  BAN_INTERVAL,
+  FIRST_BAN_DAY,
+  LAST_DECISION_DAY,
+} from "./campaign.ts";
+import { interpolateKorean } from "./korean-particles.ts";
+import {
+  getPublishedRestrictionPolicyProfile,
+  getRestrictionHistoricalOutcome,
+} from "./restriction-policy.ts";
+import type {
+  RestrictionHistoricalOutcome,
+  RestrictionPolicyProfile,
+} from "./restriction-policy.ts";
 import type {
   CommunityCategory,
   CommunityEvent,
@@ -18,6 +46,25 @@ import type {
 const POSTS_PER_DAY = 20;
 const RELEASE_CONTEXT_QUOTA = [16, 12, 8, 5] as const;
 const RESTRICTION_CONTEXT_QUOTA = [16, 14, 12] as const;
+const BUSINESS_CONTEXT_QUOTA = {
+  "pack-detected": [18, 14, 10, 6],
+  "tournament-backlash": [20, 16, 12],
+  "tournament-success": [18, 14, 10],
+  "pack-rumor": [12],
+  "venture-waiting": [8, 5, 3],
+  "venture-success": [16, 12, 8, 5],
+  "venture-backlash": [20, 16, 12, 8],
+  animation: [10, 8, 6, 4, 2],
+  "tv-cm": [8, 6, 4, 2],
+  "store-tour": [8, 6, 4, 2],
+} as const;
+
+function fillCommunityCopy(
+  copy: string,
+  values: Readonly<Record<string, string>>,
+): string {
+  return interpolateKorean(copy, values);
+}
 
 const ROLE_EXPONENT: Record<PartContent["role"], number> = {
   starter1: 0.65,
@@ -60,8 +107,8 @@ type DailyTemplate = {
   text: string;
 };
 
-/** Eight board-like voices in each of eight subjects: 64 templates total. */
-const DAILY_TEMPLATES = [
+/** Original 64 board voices retained as the baseline of the larger pool. */
+const BASE_DAILY_TEMPLATES = [
   {
     key: "meta-01",
     group: "meta",
@@ -512,6 +559,204 @@ const DAILY_TEMPLATES = [
   },
 ] as const satisfies readonly DailyTemplate[];
 
+type DailyTemplateTuple = readonly [
+  key: string,
+  group: CopyGroup,
+  category: CommunityCategory,
+  type: CommunityEventType,
+  text: string,
+];
+
+/**
+ * Sixteen extra voices in each subject. Together with the baseline this keeps
+ * ordinary days on a 192-post cycle instead of repeating after only 64 posts.
+ */
+const DAILY_TEMPLATE_EXPANSIONS = [
+  // Meta and ladder talk ---------------------------------------------------
+  ["meta-09", "meta", "meta", "meta-analysis", "{theme} 표본 적을 때 승률만 보고 1티어 찍는 건 좀 성급하지"],
+  ["meta-10", "meta", "meta", "theme-popularity", "새벽 랭크랑 저녁 랭크 메타가 아예 다르네. 저녁엔 {theme} 천지임"],
+  ["meta-11", "meta", "meta", "meta-analysis", "{theme} 상대로 이기는 판도 매번 진땀이라 승률보다 피로도가 큼"],
+  ["meta-12", "meta", "meta", "top-theme-changed", "지난주는 {other}였는데 이번 주는 다들 {theme} 얘기만 하네"],
+  ["meta-13", "meta", "meta", "meta-analysis", "상위권만 보면 {theme} 강세인데 중간 구간에서는 잘 안 보이더라"],
+  ["meta-14", "meta", "meta", "theme-popularity", "오늘 매장 네 테이블 중 세 테이블이 {theme} 미러전이었음 ㅋㅋ"],
+  ["meta-15", "meta", "meta", "meta-analysis", "{theme} 점유율 {share}면 유행인지 고착인지 슬슬 구분할 때 된 듯"],
+  ["meta-16", "meta", "meta", "optimization-rumor", "유명 유저가 {theme} 리스트 올린 뒤로 같은 구축만 연속으로 만남"],
+  ["meta-17", "meta", "meta", "meta-analysis", "{other}가 {theme} 상대로 괜찮다는 소문 돌자마자 분포 움직이는 거 재밌네"],
+  ["meta-18", "meta", "meta", "meta-analysis", "체감 티어표랑 실제 입상표가 이렇게 다른 주도 드물다"],
+  ["meta-19", "meta", "meta", "theme-popularity", "{theme} 유저 늘어난 건 성능 때문인지 일러 때문인지 궁금함"],
+  ["meta-20", "meta", "meta", "top-theme-changed", "이번 메타 2등 자리가 계속 바뀌네. 오늘은 {other} 쪽인가"],
+  ["meta-21", "meta", "meta", "meta-analysis", "{theme} 미러가 많아질수록 선공형보다 후공형이 올라오는 느낌"],
+  ["meta-22", "meta", "meta", "meta-analysis", "한 주 전 데이터로 지금 환경 설명하려니 벌써 안 맞는 부분이 많다"],
+  ["meta-23", "meta", "meta", "theme-popularity", "{theme} 안 만난 날이 더 기억에 남는 단계까지 왔네"],
+  ["meta-24", "meta", "meta", "meta-analysis", "결국 {theme} 하나보다 그 덱을 의식한 카드들이 환경을 더 바꾸는 듯"],
+
+  // Deckbuilding and lab notes --------------------------------------------
+  ["deck-09", "deckbuilding", "meta", "optimization-rumor", "{part} 3장 넣으면 겹치고 2장 넣으면 안 보임. 확률이 나만 싫어함"],
+  ["deck-10", "deckbuilding", "meta", "optimization-rumor", "{theme} 후공형 굴려 본 사람? 선공 파츠 어디까지 덜어냄?"],
+  ["deck-11", "deckbuilding", "meta", "optimization-rumor", "샘플 핸드 백 번 돌렸는데 {part} {copies}장이 제일 덜 말린다"],
+  ["deck-12", "deckbuilding", "meta", "optimization-rumor", "{part}는 초동보다 후속 가치 때문에 빼면 안 되는 카드 같음"],
+  ["deck-13", "deckbuilding", "meta", "optimization-rumor", "{theme} 엑스트라 한 자리 남는데 {other}전용 카드 넣을 만함?"],
+  ["deck-14", "deckbuilding", "meta", "optimization-rumor", "유행 리스트 그대로 복사했더니 내 매장 메타에는 안 맞네"],
+  ["deck-15", "deckbuilding", "meta", "optimization-rumor", "{part} 한 장 스타트 기준 최소 전개 루트 정리해 봄"],
+  ["deck-16", "deckbuilding", "meta", "optimization-rumor", "패트랩 늘리니까 {theme}답게 굴러가는 판이 줄어서 고민이다"],
+  ["deck-17", "deckbuilding", "meta", "optimization-rumor", "{other} 많이 보이면 {part} 세 장, 아니면 두 장이 맞는 것 같음"],
+  ["deck-18", "deckbuilding", "meta", "optimization-rumor", "고점 포기하고 안정성 챙긴 {theme} 리스트가 오히려 승률 잘 나오네"],
+  ["deck-19", "deckbuilding", "meta", "optimization-rumor", "{part} 없이 굴리는 구축 봤는데 생각보다 자원 싸움이 좋더라"],
+  ["deck-20", "deckbuilding", "meta", "optimization-rumor", "메인 덱 41장 못 참는 병 있는데 이번 {theme}는 진짜 안 줄어듦"],
+  ["deck-21", "deckbuilding", "meta", "optimization-rumor", "사이드 교체하고 나면 {theme} 카드가 너무 적어지는 거 나만 불안함?"],
+  ["deck-22", "deckbuilding", "meta", "optimization-rumor", "{part} 두 장째가 이기는 판보다 첫 장이 썩는 판이 더 많아서 뺐음"],
+  ["deck-23", "deckbuilding", "meta", "optimization-rumor", "{theme} 장기전 플랜 챙기니까 빠른 덱 상대로 오히려 승률 떨어지네"],
+  ["deck-24", "deckbuilding", "meta", "optimization-rumor", "덱리 열 장 바꾸고 결국 첫날 구축으로 돌아옴. 최적화 어렵다"],
+
+  // Counterplay, matchup, and side-deck talk ------------------------------
+  ["counter-09", "counter", "counter", "counter-found", "{theme} 첫 효과보다 두 번째 연결에 끊는 게 훨씬 아프더라"],
+  ["counter-10", "counter", "counter", "counter-rumor", "{part} 막고 안심했는데 묘지에서 다시 시작함. 다음엔 거기 본다"],
+  ["counter-11", "counter", "counter", "counter-adopted", "{theme}전은 카드 한 장보다 견제 순서가 더 중요한 매치업 같음"],
+  ["counter-12", "counter", "counter", "counter-found", "후공에서 {theme} 잡으려면 한 번에 밀지 말고 자원부터 말려야 함"],
+  ["counter-13", "counter", "counter", "counter-tax", "{theme} 하나 때문에 사이드 세 칸 고정되는 게 진짜 세금이지"],
+  ["counter-14", "counter", "counter", "counter-rumor", "{other}로 {theme} 상대할 때 선후공 사이드 플랜 공유해 줄 사람"],
+  ["counter-15", "counter", "counter", "counter-found", "{part}에 견제 던지는 척하고 후속에 박으니 바로 멈추네"],
+  ["counter-16", "counter", "counter", "counter-adopted", "매장 고수한테 {theme}전 배웠더니 못 이길 덱은 아니었음"],
+  ["counter-17", "counter", "counter", "counter-found", "묘지 건드리는 것보다 손패 보충 타이밍을 막는 게 더 잘 먹힌다"],
+  ["counter-18", "counter", "counter", "counter-rumor", "{theme} 카운터라고 올라온 리스트 정작 다른 덱을 하나도 못 잡네"],
+  ["counter-19", "counter", "counter", "counter-adopted", "{part} 보이면 바로 누르던 습관 고치니까 매치 승률 좀 올랐음"],
+  ["counter-20", "counter", "counter", "counter-tax", "사이드 두 장으로 충분하다더니 세 장 넣어도 안 잡히잖아 ㅋㅋ"],
+  ["counter-21", "counter", "counter", "counter-found", "{theme}는 첫 판보다 두 번째 판부터 대응이 훨씬 쉬운 타입인 듯"],
+  ["counter-22", "counter", "counter", "counter-rumor", "{other} 엔진이 {theme} 후속 끊는 데 좋다는데 실제로 써 본 사람?"],
+  ["counter-23", "counter", "counter", "counter-adopted", "결과물 치우는 데 집중하지 말고 {part} 회수부터 막아 봐라"],
+  ["counter-24", "counter", "counter", "counter-found", "오늘 열 판 실험 결과 {theme}전은 욕심 안 내는 쪽이 이김"],
+
+  // Restriction debate -----------------------------------------------------
+  ["ban-09", "restriction", "restriction", "restriction-demand", "{theme} 전부 건드리지 말고 반복 루트 만드는 {part}만 보면 될 듯"],
+  ["ban-10", "restriction", "restriction", "restriction-demand", "점유율만 높다고 자르면 다음 유행 덱도 같은 기준으로 자를 거임?"],
+  ["ban-11", "restriction", "restriction", "cosmetic-restriction", "{part} 3→2는 표에 뭔가 했다고 쓰기 위한 조정처럼 보임"],
+  ["ban-12", "restriction", "restriction", "restriction-demand", "{theme}보다 범용 파츠 쪽을 손보는 게 피해가 더 큰가 더 작은가"],
+  ["ban-13", "restriction", "restriction", "restriction-demand", "승률이 아니라 게임 양상이 문제면 금제 근거도 따로 설명해야지"],
+  ["ban-14", "restriction", "restriction", "restriction-demand", "{part} 제한 전에 대체 루트가 몇 개인지부터 확인했으면"],
+  ["ban-15", "restriction", "restriction", "restriction-demand", "지금 {theme} 자르면 빈자리에서 {other}가 더 세지는 것까지 봐야 함"],
+  ["ban-16", "restriction", "restriction", "restriction-demand", "금지 한 장보다 준제 여러 장이 덱은 살리고 체급은 낮추기 좋지 않나"],
+  ["ban-17", "restriction", "restriction", "restriction-demand", "금제 주기 길면 보수적으로 볼 게 아니라 더 정확하게 볼 필요가 있음"],
+  ["ban-18", "restriction", "restriction", "cosmetic-restriction", "{theme} 피로도 달래려고 의미 없는 한 장만 건드리는 건 싫다"],
+  ["ban-19", "restriction", "restriction", "restriction-demand", "대회 한 번 휩쓸었다고 바로 자르는 것도, 몇 달 방치하는 것도 둘 다 별로임"],
+  ["ban-20", "restriction", "restriction", "restriction-demand", "{part} 해제 후보 얘기는 아무도 안 하네. 오래된 금제도 같이 보자"],
+  ["ban-21", "restriction", "restriction", "restriction-demand", "순수 {theme}보다 출장축이 문제면 제한 방식도 그쪽을 겨냥해야 함"],
+  ["ban-22", "restriction", "restriction", "restriction-demand", "금제 후에도 같은 패턴 남으면 숫자만 바꾼 의미가 없지"],
+  ["ban-23", "restriction", "restriction", "restriction-demand", "{theme} 유저도 납득할 수 있게 실제 채용률이랑 승률 같이 공개해 줬으면"],
+  ["ban-24", "restriction", "restriction", "restriction-demand", "환경 다양해지는 금제면 환영인데 단순히 1등만 바꾸는 건 싫음"],
+
+  // Fandom, art, and collecting -------------------------------------------
+  ["fan-09", "fandom", "release", "theme-popularity", "{theme} 설정 정리글 읽고 카드 텍스트가 다르게 보이기 시작함"],
+  ["fan-10", "fandom", "release", "release-reaction", "{part} 고레어 실물 사진 봤냐. 화면보다 훨씬 예쁘네"],
+  ["fan-11", "fandom", "release", "theme-popularity", "성능은 모르겠고 {theme} 슬리브 나오면 덱부터 맞춘다"],
+  ["fan-12", "fandom", "release", "theme-popularity", "{theme} 카드 순서대로 놓으니까 일러가 한 장면처럼 이어짐"],
+  ["fan-13", "fandom", "release", "release-reaction", "{part} 배경에 {other} 상징 숨어 있다는 해석 진짜임?"],
+  ["fan-14", "fandom", "release", "theme-popularity", "공식보다 팬들이 만든 {theme} 토큰 디자인이 더 취향이다"],
+  ["fan-15", "fandom", "release", "theme-popularity", "최애 테마 입상보다 신규 일러 한 장 뜬 게 더 기쁜 사람 여기 있음"],
+  ["fan-16", "fandom", "release", "release-reaction", "{part} 카드명 소리 내서 읽으면 어감까지 잘 맞는다"],
+  ["fan-17", "fandom", "release", "theme-popularity", "{theme} 덱 박스 직접 꾸몄는데 카드보다 손이 더 많이 갔음"],
+  ["fan-18", "fandom", "release", "release-reaction", "이번 {theme} 일러레 인터뷰 있으면 꼭 보고 싶다"],
+  ["fan-19", "fandom", "release", "theme-popularity", "{theme} 팬덤은 성능 떨어져도 창작 글이 계속 올라와서 좋음"],
+  ["fan-20", "fandom", "release", "release-reaction", "{part} 플레이매트 나오면 가격 상관없이 예약할 듯"],
+  ["fan-21", "fandom", "release", "theme-popularity", "카드 뒷이야기 알고 나니 {theme} 에이스 빼기가 더 어려워짐"],
+  ["fan-22", "fandom", "release", "release-reaction", "{theme} 색 조합으로 맞춘 슬리브 사진 올림. 생각보다 잘 어울린다"],
+  ["fan-23", "fandom", "release", "theme-popularity", "{other} 좋아하던 친구가 {theme} 일러 보고 바로 넘어옴 ㅋㅋ"],
+  ["fan-24", "fandom", "release", "release-reaction", "대회 성적 글보다 {part} 팬아트에 댓글이 더 많이 달렸네"],
+
+  // New-player questions ---------------------------------------------------
+  ["newbie-09", "new-player", "meta", "theme-popularity", "완전 처음인데 {theme} 덱 사면 기본 카드부터 다 들어 있나요?"],
+  ["newbie-10", "new-player", "meta", "optimization-rumor", "{part} 효과 한 턴에 한 번인지 카드마다 한 번인지 헷갈려요"],
+  ["newbie-11", "new-player", "finance", "theme-popularity", "예산 적으면 {theme} 핵심부터 사고 범용은 나중에 맞춰도 됨?"],
+  ["newbie-12", "new-player", "meta", "optimization-rumor", "연습할 때 {theme} 기본 루트 하나만 외워도 매장 가도 될까요"],
+  ["newbie-13", "new-player", "meta", "meta-analysis", "티어표에서 {theme} 높은데 조작 난도까지 고려한 순위인가요?"],
+  ["newbie-14", "new-player", "finance", "theme-popularity", "{part} 비싸서 한 장만 샀는데 대체 카드 추천 부탁드립니다"],
+  ["newbie-15", "new-player", "meta", "theme-popularity", "첫 매장 대회 나가려는데 {theme}로 시간 안 넘기는 팁 있나요"],
+  ["newbie-16", "new-player", "meta", "optimization-rumor", "상대 {part} 나왔을 때 어느 효과부터 확인해야 하는지 알려 주세요"],
+  ["newbie-17", "new-player", "meta", "theme-popularity", "{theme}랑 {other} 둘 다 재밌어 보여서 일주일째 첫 덱 못 고르는 중"],
+  ["newbie-18", "new-player", "finance", "theme-popularity", "중고 덱 코어 살 때 {theme} 파츠 누락 뭐부터 체크함?"],
+  ["newbie-19", "new-player", "meta", "optimization-rumor", "덱리에는 {part} {copies}장인데 시작 패에 꼭 필요한 카드는 아닌 거죠?"],
+  ["newbie-20", "new-player", "meta", "meta-analysis", "매치 두 번째 판부터 뭘 빼야 할지 모르겠는데 기준이 있나요"],
+  ["newbie-21", "new-player", "meta", "theme-popularity", "친구가 {theme} 빌려줘서 해 봤는데 생각보다 룰 설명이 잘 되더라"],
+  ["newbie-22", "new-player", "finance", "theme-popularity", "고레어 말고 최저가로 {theme} 맞추면 대략 얼마쯤 들어요?"],
+  ["newbie-23", "new-player", "meta", "optimization-rumor", "{part} 처리 순서 실수했을 때 상대에게 바로 물어봐도 괜찮나요"],
+  ["newbie-24", "new-player", "meta", "theme-popularity", "첫 승을 {theme}로 해서 그런지 다른 덱으로 못 갈아타겠음 ㅋㅋ"],
+
+  // Tournament reports -----------------------------------------------------
+  ["tourney-09", "tournament", "meta", "meta-analysis", "스위스에서는 {theme} 많았는데 탑컷에는 {other}가 더 남았네"],
+  ["tourney-10", "tournament", "meta", "top-theme-changed", "지역 예선 1위 {theme} 덱리, 정석이랑 열 장이나 다름"],
+  ["tourney-11", "tournament", "meta", "meta-analysis", "피처 매치에서 {part} 끝까지 아낀 판단이 진짜 좋았다"],
+  ["tourney-12", "tournament", "meta", "meta-analysis", "{theme} 사용자는 많았는데 미러 준비한 쪽만 상위에 남은 듯"],
+  ["tourney-13", "tournament", "meta", "top-theme-changed", "이번 매장 메타콜은 {other}였네. {theme} 예상한 사람들 다 잡음"],
+  ["tourney-14", "tournament", "meta", "meta-analysis", "결승 세 판 전부 장기전 간 거 보면 환경이 생각보다 느려졌음"],
+  ["tourney-15", "tournament", "meta", "meta-analysis", "{part} 사이드 투입률 높더니 실제 탑컷에서도 계속 활약하네"],
+  ["tourney-16", "tournament", "meta", "top-theme-changed", "지난 대회 0명이던 {theme}가 이번엔 최다 사용이라니 변화 빠르다"],
+  ["tourney-17", "tournament", "meta", "meta-analysis", "{theme} 전승 리스트는 고점보다 매치업 분배가 진짜 영리함"],
+  ["tourney-18", "tournament", "meta", "meta-analysis", "타이브레이커 때문에 떨어졌지만 오늘 제일 인상적인 덱은 {other}였음"],
+  ["tourney-19", "tournament", "meta", "top-theme-changed", "상위 테이블 갈수록 {theme} 비율 올라가는 게 눈에 보이더라"],
+  ["tourney-20", "tournament", "meta", "meta-analysis", "결승 다시 보는데 첫 판 사이드 정보 숨긴 운영이 승부 갈랐네"],
+  ["tourney-21", "tournament", "meta", "meta-analysis", "{part} 1장 채용 리스트가 두 개나 입상했으면 우연은 아닌 듯"],
+  ["tourney-22", "tournament", "meta", "top-theme-changed", "다음 주에는 {theme} 잡으려는 {other}가 더 늘어날 것 같다"],
+  ["tourney-23", "tournament", "meta", "meta-analysis", "매장 대회랑 대형 대회에서 {theme} 성적 차이 나는 이유가 뭘까"],
+  ["tourney-24", "tournament", "meta", "meta-analysis", "오늘 우승 인터뷰 요약: 덱보다 실수 안 하는 게 제일 중요하대"],
+
+  // Prices, stock, and trades ---------------------------------------------
+  ["price-09", "finance", "finance", "theme-popularity", "{theme} 덱 코어 매물은 많은데 {part}만 따로 구하기 어렵네"],
+  ["price-10", "finance", "finance", "release-reaction", "발매 첫날 가격 보고 참았더니 {part}가 더 올랐음. 타이밍 망했다"],
+  ["price-11", "finance", "finance", "theme-popularity", "{other} 재록 발표 뒤에 {theme} 쪽으로 거래 수요가 옮겨간 느낌"],
+  ["price-12", "finance", "finance", "theme-popularity", "고레어 포기하고 최저 레어로 맞추니 {theme} 덱값 절반 됨"],
+  ["price-13", "finance", "finance", "release-reaction", "예약가보다 발매일 매장가가 싼 건 오랜만에 보네"],
+  ["price-14", "finance", "finance", "theme-popularity", "{part} 재록 가능성 있으면 지금 사는 게 맞나 한 달 기다리는 게 맞나"],
+  ["price-15", "finance", "finance", "meta-analysis", "입상 한 번에 {theme} 매물 가격이 바로 반응하는 거 무섭다"],
+  ["price-16", "finance", "finance", "theme-popularity", "덱 처분 글은 늘었는데 완성 덱 가격은 왜 그대로임?"],
+  ["price-17", "finance", "finance", "release-reaction", "{part} 초판이랑 재판 색감 차이 때문에 또 둘 다 사고 싶어짐"],
+  ["price-18", "finance", "finance", "theme-popularity", "{theme} 입문 비용 계산해 보니 범용 카드가 덱 코어보다 더 비싸네"],
+  ["price-19", "finance", "finance", "theme-popularity", "매장 세 곳 돌아도 {part} 품절이라 결국 교환으로 구했다"],
+  ["price-20", "finance", "finance", "release-reaction", "성능 평가는 내려갔는데 {theme} 일러 수요 때문에 가격은 버티는 중"],
+  ["price-21", "finance", "finance", "theme-popularity", "{other} 갈아타려다 매입가 보고 그냥 {theme} 계속 하기로 함"],
+  ["price-22", "finance", "finance", "theme-popularity", "지금 {part} 사는 사람은 실사용인지 수집인지 비율 궁금하다"],
+  ["price-23", "finance", "finance", "release-reaction", "지원 공개 전부터 {theme} 옛 파츠 사재기하는 건 너무 빠른 거 아님?"],
+  ["price-24", "finance", "finance", "theme-popularity", "덱값은 올랐는데 매장에 실제 {theme} 유저는 생각보다 안 늘었네"],
+] as const satisfies readonly DailyTemplateTuple[];
+
+const DAILY_TEMPLATE_CATALOG: readonly DailyTemplate[] = [
+  ...BASE_DAILY_TEMPLATES,
+  ...DAILY_TEMPLATE_EXPANSIONS.map(
+    ([key, group, category, type, text]) => ({
+      key,
+      group,
+      category,
+      type,
+      text,
+    }),
+  ),
+];
+
+const DAILY_TEMPLATE_GROUP_ORDER: readonly CopyGroup[] = [
+  "meta",
+  "deckbuilding",
+  "counter",
+  "restriction",
+  "fandom",
+  "new-player",
+  "tournament",
+  "finance",
+];
+
+function dailyTemplateOrdinal(template: DailyTemplate): number {
+  return Number(template.key.slice(template.key.lastIndexOf("-") + 1));
+}
+
+/** Round-robin subjects so every ordinary board mixes all eight conversations. */
+const DAILY_TEMPLATES: readonly DailyTemplate[] = [
+  ...DAILY_TEMPLATE_CATALOG,
+].sort((left, right) => {
+  const ordinal = dailyTemplateOrdinal(left) - dailyTemplateOrdinal(right);
+  if (ordinal !== 0) return ordinal;
+  return (
+    DAILY_TEMPLATE_GROUP_ORDER.indexOf(left.group) -
+    DAILY_TEMPLATE_GROUP_ORDER.indexOf(right.group)
+  );
+});
+
 const STRONG_RELEASE_COPY = [
   "{theme} 이걸 3장씩 쓰라고 냈다고? 돈에 미쳤네 ㅋㅋㅋ",
   "발매 직후인데 {theme} 아닌 덱은 시작부터 한 단계 아래네",
@@ -523,6 +768,14 @@ const STRONG_RELEASE_COPY = [
   "센 건 맞는데 손맛 미쳤다. 오늘 매칭 전부 {theme}임",
   "매출 그래프는 웃고 유저들은 우는 발매",
   "이번 달 매출 필요하다고 밸런스를 상품에 붙이면 어떡함",
+  "{theme} 첫날부터 사이드 열 칸을 혼자 먹는데 이게 정상 발매냐",
+  "{part} 막느냐 못 막느냐로 승패 갈리는 건 카드 한 장 책임이 너무 크다",
+  "신상품 체험이 아니라 신상품한테 두들겨 맞는 기간이 시작됐네",
+  "출시 방송에서 보던 고점이 실전에서도 매 판 나오면 수치 잘못 잡은 거지",
+  "{theme} 미러가 제일 공정한 매치업이라는 말부터 벌써 무섭다",
+  "연구할 틈도 없이 완성형으로 나온 덱은 결국 환경이 대신 실험해 줌",
+  "상위권 예상은 했는데 기존 덱 전부 한 칸씩 밀어낼 정도일 줄은 몰랐다",
+  "팩 뜯는 사람은 신났고 대회 준비하는 사람은 사이드부터 갈아엎는 중",
 ] as const;
 
 const WEAK_RELEASE_COPY = [
@@ -536,6 +789,14 @@ const WEAK_RELEASE_COPY = [
   "연구 덜 된 거 아님? 벌써 약하다고 단정하긴 이르다",
   "다음 지원으로 완성시키려는 반쪽 설계 같음",
   "약하게 내면 안 팔리고 세게 내면 욕먹고, 그래도 이건 너무 약함",
+  "{theme} 테스트 핸드 열 번 돌렸는데 하고 싶은 게 뭔지 아직도 모르겠다",
+  "초동은 잡히는데 도착점이 약하면 안정적인 게 무슨 소용임",
+  "{part} 효과 읽을 때가 제일 강하고 실제로 내면 바로 애매해짐",
+  "발매 방송에서조차 콤보보다 일러 얘기가 더 길었던 이유가 있었네",
+  "가격만 신테마고 성능은 몇 년 전 카드군 수준이다",
+  "비주류 장인들이 연구해도 답 없다고 하면 진짜 심각한 거 아님?",
+  "첫 주 입상 하나 나오면 기적 취급받을 분위기네",
+  "신테마인데 상대가 효과를 안 읽고도 이기는 건 너무 슬프다",
 ] as const;
 
 const BALANCED_RELEASE_COPY = [
@@ -547,6 +808,14 @@ const BALANCED_RELEASE_COPY = [
   "이번 발매 셋 중 뭐 맞출지 진짜 고민된다",
   "평가가 극과 극이라 주말 대회가 기대됨",
   "{theme} 첫 판부터 체급이 바로 느껴지는데?",
+  "강점은 분명하고 약점도 보여서 덱 짜는 사람 실력 따라 갈릴 듯",
+  "{theme} 숙련도 쌓이면 한 단계 오르겠지만 지금도 충분히 할 만하다",
+  "{part}를 몇 장 쓰느냐에 따라 안정성과 고점이 제대로 갈리네",
+  "사이드로 막을 수는 있는데 그만큼 주류 덱 자리는 받을 것 같음",
+  "가격만 너무 안 오르면 입문용으로 추천하기 괜찮아 보인다",
+  "미러전도 운영 싸움이라 발매 초반치고 보는 맛 있네",
+  "강하다는 쪽도 약하다는 쪽도 근거가 있어서 결과 나오기 전엔 모르겠다",
+  "기존 환경을 밀어내진 않고 새 선택지 하나 들어온 느낌이라 좋음",
 ] as const;
 
 const STRONG_THEME_STRONG_SUPPORT_COPY = [
@@ -566,6 +835,10 @@ const STRONG_THEME_STRONG_SUPPORT_COPY = [
   "판매량 필요하다고 1티어에 전용 파워카드 꽂는 건 너무 노골적이다",
   "다른 덱은 카운터 연구 중인데 {theme}는 공식 패치로 해결받네",
   "이 정도면 지원이 아니라 현 메타 1위 연임 공고다",
+  "상위권 덱에 부족하던 마지막 한 조각까지 채우면 대체 어디서 약점을 찾으라는 거냐",
+  "{newCard} 공개 뒤로 {theme} 카운터 연구글이 전부 폐기되는 중",
+  "점유율 {share}인 덱이 지원까지 제일 잘 받으면 메타 순환은 누가 시켜 줌?",
+  "{part}도 제한 후보라던 덱에 더 강한 전개축을 얹은 판단은 진짜 이해 못 하겠다",
 ] as const;
 
 const STRONG_THEME_WEAK_SUPPORT_COPY = [
@@ -583,6 +856,12 @@ const STRONG_THEME_WEAK_SUPPORT_COPY = [
   "{supportNo}차 지원이 덱리 한 줄도 못 바꾸면 팬들도 허탈하겠다",
   "상위권 견제도 구제도 아닌 가장 애매한 발매가 됐네",
   "{theme} 유저조차 굳이 살 필요 없다고 말하는 지원이면 실패 아닌가",
+  "강덱이라 조심한 건 알겠는데 그러면 지원 슬롯을 왜 여기다 썼냐",
+  "{newCard} 넣은 리스트보다 안 넣은 기존 리스트가 더 안정적이네",
+  "환경은 안 망가졌지만 신상품도 같이 안 팔리게 생겼다",
+  "{theme} 팬들은 지원 발표 때만 설레고 카드 공개 뒤 바로 원래 덱리로 복귀함",
+  "{part}와 경쟁조차 못 하는 신카드면 선택지가 아니라 장식품이지",
+  "{supportNo}차 지원을 밸런스 눈치만 보다 끝내니 받은 쪽도 안 받은 쪽도 찝찝하다",
 ] as const;
 
 const WEAK_THEME_STRONG_SUPPORT_COPY = [
@@ -602,6 +881,10 @@ const WEAK_THEME_STRONG_SUPPORT_COPY = [
   "구제 지원의 모범답안에 가깝다. 세지만 목적이 분명함",
   "처음으로 {theme}를 맞춰 보고 싶다는 생각이 들 정도로 변화가 크네",
   "약한 덱을 강하게 만드는 것과 강한 덱을 더 강하게 만드는 건 얘기가 다르지",
+  "{theme} 매치업을 처음으로 따로 연습해야 할 이유가 생겼네",
+  "{newCard} 덕분에 예전엔 포기하던 패도 전개가 이어지는 게 제일 크다",
+  "입상권 밖에 있던 덱이 지원 한 번으로 선택지에 들어오는 게 진짜 메타 순환이지",
+  "{part}를 살리면서 새 루트도 만든 지원이라 기존 유저 만족도 높을 만함",
 ] as const;
 
 const WEAK_THEME_WEAK_SUPPORT_COPY = [
@@ -621,6 +904,10 @@ const WEAK_THEME_WEAK_SUPPORT_COPY = [
   "지원 횟수 제한까지 있는데 한 회분을 아무 의미 없이 썼네",
   "이 정도 변화면 신규 세 장이 아니라 카드명 세 줄 추가한 수준",
   "구제 지원이 아니라 약한 이유를 다시 설명해 주는 체험판이네",
+  "{newCard} 세 장 다 넣고도 기존 약점이 그대로면 설계 목표가 뭐였던 거냐",
+  "{theme} 팬들이 원하는 건 우승 확정 카드가 아니라 평범하게 게임할 카드라고",
+  "지원 전후 매치업표가 한 칸도 안 바뀌는 게 제일 처참하다",
+  "{part} 하나에 모든 부담이 남아 있는데 새 카드들은 옆에서 구경만 하네",
 ] as const;
 
 const MIDDLE_THEME_STRONG_SUPPORT_COPY = [
@@ -634,6 +921,12 @@ const MIDDLE_THEME_STRONG_SUPPORT_COPY = [
   "상위권 고착을 깨는 카드라면 환영인데 수치가 조금 과감하긴 하다",
   "{supportNo}차에 제대로 승부수 던졌네. 주말 대회가 재밌어지겠다",
   "지원 대상 선정은 납득하는데 강도는 생각보다 한 단계 높음",
+  "{theme}가 원래도 기본기는 있었는데 {newCard}로 폭발력까지 챙겼네",
+  "중위권 구제라고 보기엔 첫날 결과가 너무 빠르게 나오고 있다",
+  "{part}를 그대로 쓰면서 약점만 지운 구조라 상승폭이 꽤 클 듯",
+  "이 정도면 다음 대회 다크호스가 아니라 우승 후보로 봐야 하지 않나",
+  "지원 취지는 좋은데 {share}에서 어디까지 뛰는지는 꼭 지켜봐야겠다",
+  "{supportNo}차 지원이 정확히 먹히면서 덱 완성도가 갑자기 두 세대 앞서감",
 ] as const;
 
 const MIDDLE_THEME_WEAK_SUPPORT_COPY = [
@@ -647,6 +940,12 @@ const MIDDLE_THEME_WEAK_SUPPORT_COPY = [
   "약하지는 않은데 지원 발표 때 기대한 변화도 없다",
   "{supportNo}차 지원을 사이드 선택지 세 장으로 끝내는 건 아깝다",
   "덱리는 달라져도 승률은 거의 안 달라질 것 같은 지원",
+  "{newCard}가 나쁜 카드는 아닌데 {theme}가 필요했던 답도 아니다",
+  "중간은 가던 덱이라 더 세게 줄 이유가 없었다는 판단인가 본데 너무 안전하다",
+  "{part} 옆에 한 장 정도 넣고 끝이면 세 장 지원이라고 부르기 민망함",
+  "새 루트는 예쁜데 기존 루트보다 나을 상황이 거의 안 보인다",
+  "환경 적응용 선택지는 늘었지만 주력으로 밀 만한 카드는 없네",
+  "{supportNo}차까지 왔는데 아직도 다음 지원을 기다리게 만드는 강도다",
 ] as const;
 
 const MIDDLE_SUPPORT_COPY = [
@@ -660,6 +959,12 @@ const MIDDLE_SUPPORT_COPY = [
   "첫 평가는 무난. 실제 채용률이 자리 잡고 나서 봐야겠다",
   "기존 덱을 완전히 갈아엎지 않고 선택지만 늘린 건 괜찮다",
   "지원 카드 셋 중 두 장은 확실하고 한 장은 아직 연구가 필요해 보임",
+  "{newCard} 덕분에 후공 플랜이 생긴 것만으로도 구축 폭은 꽤 넓어졌다",
+  "{theme} 기존 장점은 살리고 불편한 부분만 다듬은 무난한 지원 같음",
+  "{part}를 빼는 리스트와 같이 쓰는 리스트 둘 다 말이 돼서 정답 찾는 맛 있네",
+  "당장 티어가 오르진 않아도 장인들이 오래 연구할 재료는 충분하다",
+  "세 장 전부 필수는 아니라 지갑 부담까지 적당한 편",
+  "{supportNo}차 지원 중에서는 가장 패치 노트 같은 구성이다",
 ] as const;
 
 const THESEUS_SUPPORT_COPY = [
@@ -679,6 +984,10 @@ const THESEUS_SUPPORT_COPY = [
   "강지원의 대가가 옛 카드 전원 해고라면 팬들 반응도 갈릴 수밖에 없다",
   "덱 파워는 만족하는데 {oldCard}를 빼는 순간 묘하게 서운하네",
   "세 장 지원으로 구축 절반이 바뀌는 걸 보니 진짜 카드판 테세우스의 배다",
+  "{newCard}가 강한 건 좋은데 {oldCard}를 추억 카드로 만들어야만 했나",
+  "예전 {theme} 플레이 감각은 사라지고 카드명만 이어받은 후속작 같음",
+  "지원받을수록 원년 멤버가 빠지는 덱이면 몇 차부터 다른 테마로 쳐야 하냐",
+  "{part}까지 새 카드라 덱 소개 영상에서 기존 카드 찾기가 더 어렵네",
 ] as const;
 
 const CASUAL_RELEASE_COPY = [
@@ -688,6 +997,14 @@ const CASUAL_RELEASE_COPY = [
   "{theme} 세긴 한데 전개 길어서 직접 맞추고 싶진 않음",
   "일러는 취향인데 입문자가 굴리기엔 너무 어려워 보인다",
   "대회 말고 매장 프리에서도 {theme}만 보이는 건 좀 그렇다",
+  "룰 잘 모르는 친구한테 {theme} 전개 설명하다가 한 판 시간 다 갔다",
+  "{part} 연출은 멋있는데 매번 보면 스킵 버튼 생각남",
+  "승률보다 서로 할 거 하면서 노는 덱인지가 더 궁금하다",
+  "주말에 한두 판 하는 사람도 신카드 전개는 따로 공부해야겠네",
+  "{theme} 맞출까 했는데 카드 수가 너무 많아서 일단 구경만 할래",
+  "친구가 새 덱 자랑하길래 붙어 줬다가 내 카드 한 장도 못 냈다",
+  "캐릭터는 취향인데 매장 분위기까지 빡세지는 건 원하지 않음",
+  "{part} 한 장만 사서 기존 덱에 섞을 방법은 없나",
 ] as const;
 
 const SPECTATOR_RELEASE_COPY = [
@@ -697,6 +1014,14 @@ const SPECTATOR_RELEASE_COPY = [
   "{theme} 잘 모르지만 다들 화났으니 일단 운영 잘못인 듯",
   "대회 결과 나오기 전인데 벌써 게임 망했다는 글 백 개 봄",
   "신카드 영상 제목들 전부 ‘환경 파괴’인 거 웃기네",
+  "효과는 세 줄까지만 읽었는데 {theme}가 센 건 알겠음",
+  "입상표 한 장 떴으니 이제 {theme} 0티어 확정 맞지?",
+  "실전은 안 해 봤지만 댓글 반응 보니까 {part} 금지 가야겠네",
+  "어제는 망했다더니 오늘은 사기라네. 일단 둘 다 추천 누름",
+  "콤보 영상 배속인 줄 모르고 전개 엄청 빠른 덱인 줄 알았다",
+  "{theme} 카드 이름은 모르는데 썸네일에서 자주 봐서 익숙함",
+  "첫날 매물 가격만 보고 성능 평가 끝냈다는 사람 왜 이렇게 많냐",
+  "대회 한 번 안 열렸는데 다음 금제 예상표부터 만든 정성은 인정한다",
 ] as const;
 
 const BACKLASH_RELEASE_COPY = [
@@ -709,6 +1034,13 @@ const BACKLASH_RELEASE_COPY = [
   "금제는 환경 조정이 아니라 상품 일정 맞추기였나",
   "이 지원 약하면 두 번 죽이는 거고 세면 금제가 무의미함",
   "제한 먹은 파츠 빈자리 정확히 신카드가 채우네 ㅋㅋ",
+  "금제 맞고 덱 고친 사람만 바보 되고 바로 새 상품 사라는 흐름이네",
+  "{days}일 전에 문제라던 플레이를 {newCard}로 다시 하게 해 주는 건 무슨 기준임",
+  "{part} 매수 줄인 의미가 신카드 세 장 넣을 자리 확보였냐",
+  "환경을 식히자마자 같은 {theme}로 다시 불붙이는 일정 진짜 대단하다",
+  "금제 발표 때 했던 설명이 이번 지원 한 장으로 전부 모순이 됐네",
+  "유저 신뢰보다 발매 캘린더가 우선이라는 걸 이렇게 확인시켜 준다",
+  "보상은 필요해도 최소 한 환경은 지나고 줬어야 납득하지",
 ] as const;
 
 const RELEASE_LIFECYCLE_COPY = [
@@ -716,23 +1048,49 @@ const RELEASE_LIFECYCLE_COPY = [
     "출시 하루 만에 {part} 정답 매수 벌써 나온 것처럼 말하네",
     "이건 연구 전에도 센 게 보인다 ㅋㅋ",
     "약하다는 평 많던데 직접 굴리니 더 애매함",
+    "첫날 덱리라 그런지 {theme}마다 채용 카드가 전부 다르네",
+    "{part} 3장부터 넣고 시작하는 분위기인데 진짜 맞나",
+    "공개 때 저평가받던 카드가 실전에서 제일 많이 보인다",
+    "발매 첫날은 다들 고점 영상만 올려서 안정성을 모르겠음",
+    "{theme} 상대법 글보다 콤보 질문 글이 더 빨리 쌓이는 중",
+    "첫 매칭은 무서웠는데 효과 알고 나니 막을 자리가 보이긴 한다",
+    "아직 정답 없을 때 온갖 구축 튀어나오는 이 시기가 제일 재밌다",
   ],
   [
     "하루 굴려 보니까 첫인상보다 {theme} 고점이 높다",
     "어제 사기라던 {theme}, 패 말림도 꽤 있네",
     "밤새 새 전개 올라와서 첫날 덱리 벌써 구형 됨",
     "발매 하루 만에 {part} 매물 씨가 말랐음",
+    "이틀째 되니까 {theme} 사이드전 약점 얘기도 나오기 시작하네",
+    "첫날 버려졌던 {part}가 새 루트 핵심으로 다시 올라왔다",
+    "밤새 돌린 사람들 덱리는 초동보다 후속을 더 챙기는 분위기임",
+    "어제 본 고점 콤보보다 짧은 실전 루트가 훨씬 강해 보인다",
+    "{theme} 미러전 데이터 쌓이니까 선공만의 덱은 아닌 듯",
+    "발매빨인지 진짜 체급인지 오늘 대회부터 감 잡히겠다",
   ],
   [
     "이틀차 {theme} 리스트는 안정성 쪽으로 굳는 듯",
     "초견살 빠지니까 대응할 구간이 보이네",
     "약한 줄 알았는데 숙련자 잡으니 완전 다른 덱임",
     "첫 소규모 대회 결과에 {theme} 바로 올라왔네",
+    "사흘차 덱리는 이제 취향 카드보다 필수 파츠가 더 잘 보인다",
+    "{part} 매수 논쟁도 결과표 나오니까 한쪽으로 기우는 중",
+    "처음엔 못 막는다더니 지금은 다들 정확한 견제 지점 공유하네",
+    "{theme}가 강한 건 맞는데 숙련도 차이도 꽤 크게 나는 덱이다",
+    "초반 거품 빠지고도 매칭에 남는 사람들은 진짜 유저층일 듯",
+    "카운터 맞고 복구하는 리스트까지 나오니 연구 속도 무섭다",
   ],
   [
     "{theme} 초기 평가는 이제 대충 굳은 것 같다",
     "발매 열기 빠지니 실제 체급이 보이네",
     "이번 주말 대회가 진짜 판정대일 듯",
+    "나흘 굴린 리스트들은 {theme} 욕심 카드가 확실히 줄었네",
+    "{part} 채용률도 대충 굳어서 이제 가격만 진정하면 되겠다",
+    "첫날 사기론과 망테마론 둘 다 과장이었던 걸로 정리되는 분위기",
+    "대응법 퍼진 뒤에도 성적 내면 그때부터 진짜 티어 덱이지",
+    "{theme} 전용 사이드까지 자리 잡는 걸 보니 환경에 안착하긴 했다",
+    "주말 결과 전 마지막 평가는 강점 확실하고 약점도 확실하다는 쪽",
+    "신선함은 빠졌는데 계속 손이 가면 덱 설계는 성공한 거다",
   ],
 ] as const;
 
@@ -744,21 +1102,46 @@ const RELEASE_ART_COPY = [
     "카드명·일러 연결되는 맛은 진짜 잘 살렸네",
     "{theme} 풀아트 실물 뜨자마자 지갑 열림",
     "성능 논쟁 중인데 일러만큼은 반박이 없네",
+    "{part} 일러 구도 때문에 효과도 읽기 전에 덱부터 찾아봤다",
+    "이번 {theme} 색감은 카드 세 장 나란히 놓을 때 완성되네",
+    "비주얼 공개만으로 팬아트가 쏟아지는 테마는 오랜만이다",
+    "카드명 번역까지 일러 분위기랑 잘 맞아서 수집 욕구 생김",
   ],
   [
     "실물 {part} 색감 때문에 성능 상관없이 갖고 싶다",
     "{theme} 첫날 팬아트 속도 무슨 일이냐",
     "카드 모아 놓으니까 {theme} 한 페이지가 진짜 예쁨",
     "어제 성능 보고 고민했는데 일러 보고 결국 샀다",
+    "{part} 실물은 스캔 이미지보다 색감이 훨씬 깊다",
+    "{theme} 팬아트 태그가 하루 만에 새 그림으로 꽉 찼네",
+    "같은 카드도 레어도별 일러 느낌 달라서 전부 모으고 싶음",
+    "비주얼 테마 맞춰서 슬리브 고르는 시간이 덱 짜는 시간보다 길다",
+    "카드명 순서대로 놓으니 일러가 한 장면처럼 이어지는 거 이제 알았음",
+    "성능용 세 장 말고 보관용 풀아트까지 따로 사고 싶다",
   ],
   [
     "성능 논쟁 끝나도 {theme} 캐릭터 얘기는 계속 나오네",
     "설정 파는 사람들 때문에 {theme} 팬덤 더 커질 듯",
     "{part} 일러 디테일 이제 발견했는데 미쳤다",
+    "사흘째인데 {theme} 팬아트는 줄기는커녕 설정 해석까지 붙네",
+    "{part} 배경 일러에 다른 카드 떡밥 있는 거 발견한 사람 대단하다",
+    "비주얼만 보고 입문한 사람들이 카드명 외우는 속도 진짜 빠름",
+    "풀아트 한 장 때문에 쓰지도 않을 {theme} 덱까지 맞추는 중",
+    "색감 통일된 바인더 페이지 사진 보니까 수집가 마음 이해된다",
+    "일러 스토리 순서 정리글이 대회 결과 글보다 조회수 높네",
+    "{theme} 팬아트에서 시작해서 실제 덱까지 산 사람 꽤 많을 듯",
   ],
   [
     "메타 평가는 갈려도 {theme} 일러 평가는 만장일치네",
     "{theme} 굿즈부터 찾는 사람들 벌써 생겼네",
+    "나흘 지나도 {part} 일러 확대 글이 계속 올라오는 거 보면 디자인은 성공했다",
+    "{theme} 색감으로 플레이매트 만들면 바로 살 사람 많겠는데",
+    "성능 평가는 정리됐는데 팬아트 쪽은 이제부터 시작인 분위기",
+    "카드명 하나하나가 설정 떡밥이라 비주얼 좋아하는 층 제대로 잡았네",
+    "풀아트 가격이 덱 파츠보다 먼저 오르는 테마는 역시 다르다",
+    "일러 취향 하나로 장기 팬 생기는 게 카드게임의 묘미지",
+    "{part} 비주얼은 유행 지나도 바인더 첫 장에 둘 만하다",
+    "색감 때문에 같은 레어도로 통일한 덱 사진이 진짜 예쁘네",
   ],
 ] as const;
 
@@ -769,6 +1152,14 @@ const LOYALTY_COPY = [
   "{part} 볼 때마다 이 테마 고른 건 후회 안 함",
   "지원 없어도 연구글 꾸준히 올리는 {theme} 팬들 대단하다",
   "입상은 줄었어도 매장에 {theme} 고정 유저 꼭 한 명씩 있음",
+  "{theme} 덱리 저장 폴더만 몇 년째 업데이트하는 중",
+  "{part} 처음 뽑았던 날 때문에 이 덱은 못 놓겠다",
+  "티어표 맨 아래여도 한 판 제대로 풀리는 맛에 계속 굴린다",
+  "새 지원 없어도 매번 환경 맞춰 한두 장 바꾸는 맛으로 굴린다",
+  "다른 덱으로 대회 나가도 프리 매치용 가방에는 늘 {theme} 넣어 감",
+  "성적보다 이 테마로 이겼을 때 기억이 오래 남아서 계속 하는 거지",
+  "{theme} 유저끼리는 덱리 한 줄 달라도 바로 알아보고 이야기 시작함",
+  "언젠가 다시 올라올 때까지 {part} 세 장은 절대 안 판다",
 ] as const;
 
 const FATIGUE_COPY = [
@@ -778,6 +1169,13 @@ const FATIGUE_COPY = [
     "이번 주도 1위 {theme}? 슬슬 새 얼굴 보고 싶음",
     "{theme} 상대법 외우는 게 게임 입문 과정이 돼 버렸네",
     "테마 자체는 좋은데 너무 자주 봐서 좀 질린다",
+    "이번 매장도 절반이 {theme}라 매치업 연습은 확실히 되겠네",
+    "덱 등록 화면에서 {theme} 이름만 연속으로 뜨는 거 웃기면서도 불안하다",
+    "상위 테이블 사진마다 같은 카드가 보여서 새 대회 느낌이 안 남",
+    "{theme}가 싫은 건 아닌데 다른 테마 경기 찾기가 너무 어렵다",
+    "사이드 세 장이 자연스럽게 전부 {theme} 전용 카드가 됐네",
+    "오늘도 첫 판 {theme}. 이제 주사위 굴리기 전에 전개부터 떠오름",
+    "다양한 덱 준비해 왔는데 결국 {theme} 상대 플랜만 쓰다 끝났다",
   ],
   [
     "게임 켜기 전부터 {theme} 만날 생각에 피곤함",
@@ -785,6 +1183,13 @@ const FATIGUE_COPY = [
     "친선에서도 {theme}, 대회에서도 {theme}; 다른 덱은 언제 보냐",
     "환경 다양성 얘기할 때 이제 {theme}부터 정리해야 함",
     "{theme} 유저들도 미러전만 잡혀서 지겹다던데",
+    "요즘 덱 평가 기준이 강하냐가 아니라 {theme}를 이기냐로 바뀌었음",
+    "메인 기믹보다 {theme} 대응 카드가 더 중요한 환경은 오래 못 간다",
+    "대진표 절반이 미러면 실력 검증 이전에 집중력부터 갈리겠네",
+    "새 덱이 나와도 첫 질문이 {theme}전 되냐인 게 제일 답답하다",
+    "카운터를 넣으면 다른 매치업이 무너지고 빼면 {theme}한테 지는 구조",
+    "방송 켤 때마다 같은 전개라 해설도 할 말이 없어 보인다",
+    "이 정도 점유면 강함보다 반복해서 보는 피로가 더 큰 문제다",
   ],
   [
     "또 {theme}? 오늘은 그냥 게임 끈다",
@@ -792,6 +1197,13 @@ const FATIGUE_COPY = [
     "카드명만 보여도 피곤한 단계까지 왔다",
     "이건 1등 테마가 아니라 환경 전체를 잡아먹은 테마다",
     "카운터도 연구도 충분히 했는데 계속 1위면 이제 금제할 때임",
+    "{theme} 전개 시작하면 결과보다 또 봐야 한다는 생각이 먼저 든다",
+    "환경 적응이라는 말로 몇 주째 같은 덱만 상대하게 두는 건 방치지",
+    "사이드도 연구도 한계까지 왔는데 점유율이 안 내려가면 답은 금제뿐임",
+    "대회 우승보다 비-{theme} 덱 입상 소식이 더 화제가 되는 지경이다",
+    "미러전 잘하는 사람이 아니라 {theme}를 계속 견딘 사람이 우승하는 환경",
+    "신제품 나와도 전부 {theme} 아래에서 평가받으면 상품 다양성도 끝난 거지",
+    "다음 공지에서도 관찰 중이라고 하면 커뮤니티 진짜 폭발하겠다",
   ],
 ] as const;
 
@@ -804,6 +1216,27 @@ const APPROPRIATE_RESTRICTION_COPY = [
   "드디어 {part} 카드를 건드렸네. 문제 지점은 제대로 본 듯",
   "덱 삭제가 아니라 고점 조정이라 첫인상은 좋다",
   "다른 테마까지 올라올 자리 생기면 환경 좀 돌겠네",
+  "{oldLimit}장에서 {newLimit}장으로 줄인 건 세기는 낮추되 덱의 뼈대는 남긴 선택 같음",
+  "{theme} 상대할 때 숨 막히던 빈도만 줄어도 이번 금제는 역할 다한 거지",
+  "문제였던 {part}만 정확히 건드리고 나머지 구축은 살려 둔 게 마음에 든다",
+  "이 정도 조정이면 금제 뒤에도 연구할 여지가 충분해서 적당해 보임",
+  "상위권은 견제하면서 팬덱까지 같이 치우지 않은 선이라 납득함",
+  "첫인상은 꽤 정교한 금제네. 체급은 내리고 플레이 감각은 남겼다",
+  "{theme} 점유율이 내려가도 완전히 사라질 정도는 아니라 환경 순환에 딱일 듯",
+  "한 번에 박살 내기보다 {part} 매수부터 조절해 보는 게 순서상 맞지",
+] as const;
+
+const LIGHT_RESTRICTION_COPY = [
+  "{part} 실사용 매수는 줄지만 체급 전체를 흔들 정도의 변화는 아닐 듯",
+  "완전한 보여 주기 금제는 아니고 작은 일관성 조정에 가까워 보임",
+  "{oldLimit}→{newLimit}로 실제 손실은 생기지만 우선 체감부터 볼 만한 강도네",
+  "{theme} 구축을 갈아엎기보다 한두 자리 비율만 다시 맞추면 될 것 같다",
+  "효과가 아예 없는 제한은 아니지만 환경이 바로 뒤집힐 수준도 아님",
+  "{part}를 필요한 만큼 못 넣게 된 건 맞아도 대체재 찾을 여지는 충분하다",
+  "작은 조정이라도 누적되면 체감은 생기니 솜방망이라고 단정하긴 이르지",
+  "덱의 역할 하나를 살짝 낮춘 정도라 다음 대회 수치가 중요하겠다",
+  "숫자만 바꾼 건 아니지만 타격 범위는 좁고 강도도 낮은 편임",
+  "{part} 매수 감소가 특정 손패에서만 드러날지 전체 승률까지 갈지 지켜보자",
 ] as const;
 
 const OVERKILL_RESTRICTION_COPY = [
@@ -815,6 +1248,14 @@ const OVERKILL_RESTRICTION_COPY = [
   "상위권 몇 주 있었다고 테마 존재 자체를 지워 버리네",
   "카운터 연구 막 시작됐는데 기다리지도 않고 과잉 대응함",
   "{part}만 줄여도 됐는데 왜 다른 축까지 못 쓰게 만듦?",
+  "{oldLimit}장에서 {newLimit}장까지 바로 내리는 건 단계 조절이라는 걸 모르는 수준임",
+  "{theme} 승률만 낮추려다 덱의 기본 동작까지 없애 버렸네",
+  "이 정도면 환경 조정이 아니라 해당 테마 사용 금지 공지 아닌가",
+  "사이드 카드로 충분히 잡히던 덱을 왜 본체째 밀어 버리는지 모르겠다",
+  "{part} 의존도 뻔히 알면서 여기까지 자른 건 유저 자산을 너무 가볍게 본 거지",
+  "한 시즌 강했다고 핵심축을 통째로 끊으면 누가 오래 덱을 잡고 있겠냐",
+  "조금씩 낮춰 볼 선택지도 있었는데 처음부터 최대 타격을 넣어 버렸네",
+  "다음 대회에서 {theme}가 한 명도 안 보여도 이건 성공한 금제가 아님",
 ] as const;
 
 const COSMETIC_RESTRICTION_COPY = [
@@ -826,6 +1267,14 @@ const COSMETIC_RESTRICTION_COPY = [
   "한 달 더 벌어 주는 회피 금제처럼 보인다",
   "이걸 금제했다고 생색낼 거면 차라리 아무것도 하지 마라",
   "우회 루트 다 알려진 뒤에 주변 파츠만 건드렸네",
+  "{part} 한 장 줄어도 서치가 넘치는데 이게 무슨 제재냐",
+  "{theme} 덱리에서 숫자 하나만 바뀌고 최종 필드는 그대로겠네",
+  "핵심 루프는 멀쩡한데 보조 카드 매수만 만지는 전형적인 보여 주기 금제",
+  "{newLimit}장이어도 필요한 순간에 다 찾아오는데 체감이 생길 리가 없음",
+  "금제표 칸은 채웠지만 실제 게임에는 아무 변화도 없을 것 같다",
+  "다들 문제라고 한 카드는 피하고 또 대체 가능한 파츠를 골랐네",
+  "{oldLimit}→{newLimit} 숫자만 보면 세 보여도 구축 손실은 거의 제로임",
+  "이 정도 솜방망이면 {theme} 유저도 덱 수정하다 말 듯 ㅋㅋ",
 ] as const;
 
 const NO_CHANGE_RESTRICTION_COPY = [
@@ -837,6 +1286,14 @@ const NO_CHANGE_RESTRICTION_COPY = [
   "변경 없음이면 최소한 왜 유지했는지 데이터라도 같이 보여 줘라",
   "다음 금제까지 또 {theme} 기준으로 덱 짜라는 뜻이네",
   "성급하게 덱 죽이는 것보단 낫다. 며칠은 실제 분포부터 보자",
+  "현행 유지가 결론이면 {theme} 환경이 건강하다는 근거라도 자세히 풀어 줬으면",
+  "{part} 건드릴지 말지 기대했는데 결국 다음 대회로 판단을 넘겼네",
+  "변경 없음 자체는 가능한 선택인데 설명이 짧으니 불만만 커지는 듯",
+  "지금 밸런스가 괜찮다면 굳이 금제표를 채우지 않은 건 오히려 맞는 판단임",
+  "한 사이클 더 관찰한다는 거면 점유율과 승률 기준은 미리 밝혀 줘라",
+  "{theme} 카운터가 자리 잡는 중이라 기다린 거라면 다음 분포가 중요하겠네",
+  "아무 카드도 안 잘랐으니 이제 운영 판단이 맞았는지는 결과로 증명해야지",
+  "괜히 희생양 하나 고르는 것보다는 유지가 낫지만 커뮤니티가 조용할 리는 없겠다",
 ] as const;
 
 const NO_CHANGE_FOLLOWUP_COPY = [
@@ -848,6 +1305,12 @@ const NO_CHANGE_FOLLOWUP_COPY = [
   "섣불리 자르지 않은 건 좋지만 환경이 그대로면 책임도 더 커짐",
   "변경 없음 자체보다 설명 없는 현행 유지가 더 답답하다",
   "자연스럽게 점유율이 내려갈지 며칠은 지켜보자는 의견도 이해됨",
+  "현행 유지 이후 첫 대회가 사실상 금제위원회 판단 시험대가 됐네",
+  "{theme} 비율이 그대로면 이번 관찰 결정도 다시 평가해야 할 듯",
+  "변경 없음으로 번 시간을 카운터 연구가 실제로 채울 수 있을지가 핵심임",
+  "{part} 관련 데이터가 더 필요했다면 다음 발표에는 수치까지 보고 싶다",
+  "한 사이클 더 본 만큼 다음에는 같은 설명만 반복하지 않았으면",
+  "유지 결정 뒤 랭크 체감이 갈리는 걸 보니 아직 결론 내리긴 이른 듯",
 ] as const;
 
 const NO_CHANGE_MEME_COPY = [
@@ -859,6 +1322,12 @@ const NO_CHANGE_MEME_COPY = [
   "금제 발표 전후 차이 찾기 게임 난도 최상",
   "{part} 카드 이름만 또 실시간 검색어 올라가겠네",
   "이번 금제 요약: 다음 금제를 기다려 주세요",
+  "금제위원회 덱리 제출: 지난 시즌 리스트 복사 붙여넣기",
+  "변경 없음 보고 내 사이드 카드들이 단체로 재계약함",
+  "{theme} 유저 오늘 할 일: 슬리브 먼지만 털기",
+  "패치 노트 용량 0KB인데 댓글은 만 개 달림 ㅋㅋ",
+  "금제 발표 방송 세 줄 요약: 그대로, 그대로, 그대로",
+  "{part} 제한 예상표 만들던 사람들 파일명만 다음 시즌으로 바꾸는 중",
 ] as const;
 
 const NO_CHANGE_HEALTHY_COPY = [
@@ -874,6 +1343,12 @@ const NO_CHANGE_HEALTHY_COPY = [
   "분포가 고른 편이면 다음 대회까지 관찰해도 늦지 않다",
   "카운터 선택지가 남아 있는 동안은 금제보다 연구가 먼저일 듯",
   "이번 변경 없음은 방치라기보다 과잉 대응을 피한 결정에 가깝다",
+  "상위권 비율이 계속 바뀌는 중이면 지금은 현행 유지가 가장 안전함",
+  "{theme}만 보고 자르기엔 입상 분포가 넓어서 한 사이클 더 지켜보자",
+  "답이 있는 환경이라면 금제보다 연구가 먼저라는 판단도 충분히 가능하지",
+  "{part}를 건드리지 않은 이유가 현재 데이터로는 꽤 납득된다",
+  "변경 없음도 선택이다. 지금 균형에서 억지 개입이 더 위험할 수 있음",
+  "메타가 스스로 움직이는 동안은 관찰하고 정말 굳을 때 손대면 된다",
 ] as const;
 
 const NO_CHANGE_CRITICAL_COPY = [
@@ -893,6 +1368,12 @@ const NO_CHANGE_CRITICAL_COPY = [
   "상위권 집중이 풀릴 근거도 없는데 또 자연 순환만 기다리네",
   "유저가 대응법을 찾는 것과 운영이 균형을 잡는 건 별개 문제임",
   "이번에도 그대로면 {theme} 기준으로만 덱 짜는 환경이 굳어지겠네",
+  "상위권 집중 수치가 이렇게 뻔한데 현행 유지라니 보고 싶은 것만 본 거 아님?",
+  "다른 덱이 숨 쉴 틈도 없는데 또 카운터 카드로 알아서 버티라는 거네",
+  "{part} 검토 결과가 아무 조치 없음이면 금제 기준부터 다시 설명해야 함",
+  "쌓인 피로가 수치로 보이는데 다음 금제로 미룬 건 책임 회피에 가깝다",
+  "환경 개선보다 발표 때 욕 덜 먹는 선택을 한 것처럼 보여서 더 답답함",
+  "이 상황에서 관찰을 더 하자는 건 신중함이 아니라 방치라는 말이 맞음",
 ] as const;
 
 const UNBAN_OVERDUE_COPY = [
@@ -910,6 +1391,12 @@ const UNBAN_OVERDUE_COPY = [
   "{part}가 위험하다는 옛날 평가만 붙잡고 너무 오래 겁먹었다",
   "이제라도 푼 건 다행인데 다음부터는 저점유 테마를 이렇게 방치하지 마라",
   "금제는 빨랐고 해제는 한없이 늦었다는 말이 딱 맞네",
+  "{rank}위까지 밀린 뒤에야 정상화해 주면 경쟁 시즌은 이미 다 끝났지",
+  "왜 이제야 {part}를 돌려주는지 모르겠다. 묶인 동안 환경이 몇 번을 바뀌었는데",
+  "그동안 왜 제한을 유지했는지 기록이라도 남겨야 다음에도 같은 방치가 안 나옴",
+  "{theme} 유저가 다 떠난 다음 해제하는 건 늦어도 너무 늦었다",
+  "{restrictedDays}일이나 걸렸으면 최소한 오래 묶어 둔 판단은 복기해야지",
+  "금제는 빨랐는데 완화 검토만 계절 단위로 미루는 운영은 고쳐야 함",
 ] as const;
 
 const UNBAN_DANGEROUS_COPY = [
@@ -927,6 +1414,12 @@ const UNBAN_DANGEROUS_COPY = [
   "왜 풀었냐는 질문에 매출 말고 답할 수 있는 근거가 있긴 함?",
   "{part}가 다시 세 장이면 예전에 금제한 문제도 그대로 돌아오는 거잖아",
   "운영이 환경 피로를 너무 빨리 잊은 것 같다",
+  "왜 풀었는지 진짜 모르겠네. 제한 중에도 {rank}위면 이미 충분히 강했잖아",
+  "상위권 테마에 안정성까지 복구해 주면 독주 가능성부터 보는 게 맞지",
+  "{part} 봉인 풀리면 예전 불쾌 패턴도 같이 돌아온다는 걸 잊었나",
+  "해제 전 점유율이 {decisionShare}인데 안전하다고 본 근거가 너무 위험함",
+  "다음 입상표가 {theme} 미러전으로 차면 이번 판단은 변명하기 힘들겠다",
+  "환경 피로가 아직 남았는데 강했던 축부터 되살리는 순서를 이해 못 하겠음",
 ] as const;
 
 const UNBAN_SURGE_COPY = [
@@ -944,6 +1437,12 @@ const UNBAN_SURGE_COPY = [
   "이 추세면 다음 금제에서 방금 푼 카드를 다시 묶는 촌극 나오겠음",
   "봉인 풀자마자 복귀 완료. 운영 실험 비용은 또 유저가 내네",
   "{rank}위까지 올라온 걸 보면 이번 해제는 영향 미미와 거리가 멀다",
+  "해제 뒤 {delta}p 급등이면 반등이 아니라 그냥 원래 왕좌 복구잖아",
+  "{theme} 복귀 속도 봐라. 최적화도 끝나기 전에 벌써 분포가 움직임",
+  "그래프가 수직으로 오르는 중인데 아직 표본 타령만 할 건가",
+  "상위 재진입까지 며칠도 안 걸렸네. {part} 영향력이 생각보다 훨씬 컸다",
+  "다시 안 뜬다던 예상과 달리 랭크가 벌써 {theme} 천지임",
+  "이 추세 그대로면 메타 시계만 과거로 돌린 해제로 남겠는데",
 ] as const;
 
 const UNBAN_NO_IMPACT_COPY = [
@@ -961,6 +1460,12 @@ const UNBAN_NO_IMPACT_COPY = [
   "막상 풀어 보니 아무도 안 쓰는 구축도 많다. 너무 오래 무서워했다",
   "점유율 {share} 그대로면 이 카드를 계속 제한할 이유가 대체 뭐였음",
   "해제해도 조용한 걸 보니 카드보다 시대가 이미 바뀐 거였네",
+  "랭크 분포가 거의 그대로라 해제 공지가 있었는지도 모를 정도임",
+  "{part}가 돌아왔는데 아무 변화 없으면 진작 완화했어도 됐잖아",
+  "운영이 괜히 겁먹고 묶어 둔 기간만 {restrictedDays}일 늘어난 셈이네",
+  "입상표도 매칭 체감도 조용하다. 이번 해제는 영향 없음에 가까움",
+  "점유율이 미동도 없는데 과잉 대응이 아니었다고 설명할 수 있나",
+  "{theme} 덱리에 선택지만 하나 늘었을 뿐 메타에서 달라진 게 없다",
 ] as const;
 
 const UNBAN_MEASURED_COPY = [
@@ -978,6 +1483,12 @@ const UNBAN_MEASURED_COPY = [
   "{theme}가 다시 경쟁권에 들어온 건 환영할 만한 변화다",
   "분포가 이 선에서 멈추면 성공적인 금제 해제 사례로 남을 듯",
   "죽은 카드를 돌려주면서 환경도 흔드는 정도가 딱 적당하다",
+  "{share} 선에서 자리 잡는다면 복귀 폭도 적당하고 대응 여지도 충분함",
+  "예전 유저가 돌아오고 새 구축 선택지도 생긴 건 환영할 변화지",
+  "메타 순환은 이런 식으로 오래된 덱을 경쟁권에 돌려주는 게 제일 건강함",
+  "{part} 해제로 숨통은 트였지만 압도하는 수준은 아니라 균형이 좋아 보임",
+  "과거 테마를 살리면서 다른 덱 자리도 남긴 성공적인 완화에 가까움",
+  "지금 정도 반등이면 운영이 노린 적당한 정상화라고 봐도 되겠다",
 ] as const;
 
 const UNBAN_CAUTION_COPY = [
@@ -995,6 +1506,12 @@ const UNBAN_CAUTION_COPY = [
   "과거 악명만으로 계속 묶는 것도, 첫 반등만 보고 다시 묶는 것도 성급하다",
   "현재 {rank}위라는 숫자 하나보다 매치업 분포까지 같이 봐야 함",
   "환영이든 반발이든 아직은 결론보다 관찰 기준을 세울 때다",
+  "복귀 직후 표본은 팬들이 몰린 영향도 있으니 최소 한 주는 지켜봐야지",
+  "{delta}p 변화만 보고 성급하게 재금제를 말하기엔 데이터가 아직 부족함",
+  "최적화가 진행되면 지금과 달라질 수 있으니 승률 추세까지 확인하자",
+  "{theme}가 올라와도 기존 상위권이 대응하면 결과는 달라질 가능성이 있음",
+  "첫 입상만으로 결론 내리지 말고 매치업 분포와 사이드 적응을 같이 관찰해야 함",
+  "며칠 반짝한 건지 안정적으로 자리 잡은 건지는 다음 대회까지 봐야 한다",
 ] as const;
 
 const STALE_RESTRICTION_COPY = [
@@ -1014,6 +1531,14 @@ const STALE_RESTRICTION_COPY = [
   "카드가 세서 묶은 건 알겠는데 시대가 바뀐 것도 좀 반영해라",
   "이 정도 장기 제한이면 해제하지 않을 근거를 운영이 먼저 증명해야 함",
   "금제표 볼 때마다 {part}가 아직 {limit}장인 게 제일 신기하다",
+  "{rank}위 테마 핵심이 아직 제한인 건 금제표 정리 자체를 안 한다는 뜻 아닌가",
+  "입상 기록도 끊겼는데 {part}를 왜 계속 묶어 두는지 이제는 설명이 필요함",
+  "{restrictedDays}일 장기 제한이면 자동으로라도 해제 검토 안건에 올려야지",
+  "티어표에서 사라진 {theme}만 금제표 공동묘지에 남아 있네",
+  "시대가 바뀐 뒤에도 옛날 위험도만 들고 제한 유지할 이유가 없다",
+  "{part} 아직 제한이라는 말에 다들 놀라는 것부터 이미 방치된 금제임",
+  "점유율 {share}인데 뭘 그렇게 겁내서 {limit}장으로 계속 막아 두냐",
+  "복역 기간이 {restrictedDays}일이면 이제는 카드보다 운영 판단이 더 오래된 문제임",
 ] as const;
 
 const COLLATERAL_RESTRICTION_COPY = [
@@ -1025,6 +1550,51 @@ const COLLATERAL_RESTRICTION_COPY = [
   "문제 파츠는 멀쩡하고 애꿎은 중간다리만 사라졌네",
   "대회 데이터 제대로 봤으면 이 카드를 고를 수가 없음",
   "다른 테마 유저까지 연좌 피해를 보는 금제는 아니었으면",
+  "{part}를 공유하던 하위 테마가 상위 덱 대신 더 크게 맞았네",
+  "범용 채용률만 보고 자르면 원래 주인이던 {theme} 구축은 어떡함",
+  "문제 콤보는 따로 있는데 재료 카드만 제한해서 주변 덱까지 손해 봄",
+  "출장 채용을 막겠다고 순수축의 초동까지 줄인 건 설계가 너무 거칠다",
+  "이 금제로 실제 원흉보다 애꿎은 팬덱이 먼저 사라질 것 같음",
+  "{oldLimit}→{newLimit} 타격이 테마마다 다른데 사용처 구분 없이 자른 게 아쉽다",
+] as const;
+
+const SAME_ROLE_MULTI_RESTRICTION_COPY = [
+  "한 장이 아니라 같은 역할 카드 여러 종을 같이 줄여서 해당 파츠군 전체가 얇아졌네",
+  "{theme}의 같은 기능을 겹쳐 자른 금제라 대체재를 서로 바꾸는 것도 어렵겠다",
+  "이번에는 특정 카드 하나보다 같은 역할군의 총매수가 얼마나 줄었는지가 핵심임",
+  "비슷한 기능 카드들을 동시에 제한했으니 한 장씩 볼 때보다 누적 타격이 크다",
+  "같은 축 안에서 여러 파츠가 함께 줄어 구축 비율을 통째로 다시 계산해야겠네",
+  "한 역할에 제한이 몰려서 다른 축은 살아 있어도 이 구간의 선택지가 크게 줄었다",
+  "같은 기능을 나눠 맡던 카드들이 함께 맞으면 우회 카드 한 장으로는 복구가 안 되지",
+  "{theme}의 한 역할군을 집중해서 낮춘 의도는 보이는데 강도는 합산해서 봐야 함",
+  "각 카드 제한은 중간 정도여도 같은 역할을 여러 번 치면 체감은 과잉일 수 있다",
+  "이번 발표는 단일 카드 금제가 아니라 같은 기능 파츠군을 묶어 조정한 형태임",
+] as const;
+
+const MULTI_AXIS_RESTRICTION_COPY = [
+  "{theme}에서 서로 다른 역할 카드가 함께 줄어서 한 축만 손본 금제는 아니네",
+  "초동·연결·결과물 중 여러 구간을 동시에 건드렸으면 덱 뼈대 변화까지 봐야 함",
+  "카드 수보다 서로 다른 역할을 같이 제한한 게 이번 타격을 크게 만든다",
+  "한 자리 대체로 끝날 금제가 아니라 전개 전후를 모두 다시 짜야 하는 범위임",
+  "{theme}의 여러 축을 동시에 낮췄으니 개별 카드보다 누적 체급 손실이 핵심이다",
+  "각 제한을 따로 보면 버틸 만해도 역할이 겹치지 않아 복구 비용이 커졌네",
+  "시작과 마무리처럼 다른 구간을 같이 자르면 덱 정체성까지 바뀔 수 있음",
+  "이번에는 특정 문제 카드만 찍은 게 아니라 복수 역할을 한 번에 조정했구나",
+  "여러 축 동시 제한이면 과잉 여부도 카드별 점수가 아니라 합산 타격으로 봐야지",
+  "{theme} 유저가 한 루트만 고치는 게 아니라 구축 방향 자체를 다시 골라야겠다",
+] as const;
+
+const MULTI_THEME_RESTRICTION_COPY = [
+  "한 테마만이 아니라 여러 테마 카드가 동시에 바뀐 대규모 금제네",
+  "이번 발표는 개별 덱 조정보다 환경 전체 재배치에 가까워 보인다",
+  "여러 테마를 한 번에 건드렸으니 빈자리를 누가 먹는지도 단순하지 않겠네",
+  "각 테마 타격은 달라도 동시 제한이라 매치업 표 전체가 흔들릴 듯",
+  "복수 테마 금제에서는 한 카드 평가보다 환경 합산 효과를 먼저 봐야 함",
+  "상위권 여러 덱을 함께 낮춘 거라 다음 순위가 그대로 올라올지는 모르겠다",
+  "이번처럼 대상 테마가 많으면 대체 덱 수요와 카드 시장도 넓게 움직이겠네",
+  "한쪽만 겨냥한 공지가 아니라 여러 덱의 역할과 점유율을 동시에 조정한 결정임",
+  "테마별로 적정한 강도가 달라서 같은 매수 제한도 체감은 제각각일 듯",
+  "환경 전체를 크게 움직인 금제라 사흘 데이터로도 안정된 순위를 읽기 어렵겠다",
 ] as const;
 
 const ALTERNATE_BUILD_RESTRICTION_COPY = [
@@ -1036,6 +1606,12 @@ const ALTERNATE_BUILD_RESTRICTION_COPY = [
   "{part} 없이도 가는 1장 초동 루트 정리해 봄",
   "죽은 줄 알았는데 자원 회수축으로 바꾸니 장기전은 더 세네",
   "이 루트 퍼지면 솜방망이 금제였다는 말 다시 나올 듯",
+  "{newLimit}장에 맞춰 드로 소스 늘리니까 패 말림은 생각보다 버틸 만함",
+  "기존 정답 구축 버리고 비주류 파츠 넣으니 의외로 빈자리가 채워진다",
+  "결과물 하나 낮추고 안정성 챙기는 쪽으로 가면 {theme} 아직 할 만해 보임",
+  "{part} 의존 루트 대신 두 장 조합으로 돌리는 리스트가 벌써 올라왔네",
+  "후공 카드 비중 올린 금제 대응 덱리 써 봤는데 매치업은 오히려 편해짐",
+  "이번 제한 덕분에 묻혀 있던 서브 엔진 연구가 갑자기 활발해졌다 ㅋㅋ",
 ] as const;
 
 const RESTRICTION_MARKET_COPY = [
@@ -1047,6 +1623,12 @@ const RESTRICTION_MARKET_COPY = [
   "덱 처분하려는 사람은 많은데 사려는 사람이 없다",
   "다음 지원 예정이면 지금 싸게 맞추는 게 나을지도 모르겠네",
   "성능보다 구매 신뢰가 먼저 무너지는 패턴이 제일 위험함",
+  "{part} 고레어 매물만 한 페이지를 채웠네. 다들 판단 진짜 빠르다",
+  "{theme} 풀세트 가격이 하루 만에 내려가니 신규 유저는 더 못 들어오지",
+  "발매 {days}일 만의 제한이면 예약 구매한 사람들 기분은 누가 책임짐",
+  "저점 매수 타이밍 같다가도 다음 금제 생각하면 손이 안 간다",
+  "일반판은 쏟아지고 컬렉터 레어만 버티는 시장이 제일 현실적이네",
+  "카드값보다 운영 신뢰가 먼저 반토막 난 게 이번 금제의 진짜 비용임",
 ] as const;
 
 const RESTRICTION_META_COPY = [
@@ -1058,17 +1640,37 @@ const RESTRICTION_META_COPY = [
   "초기 표본 분포 보니까 금제 효과는 확실히 나온 것 같네",
   "점유율만 빠지고 불쾌한 패턴은 그대로라 체감은 애매함",
   "사흘 해 보니 예상과 반대네. {theme}보다 주변 덱이 더 손해 봄",
+  "{theme}가 내려간 자리로 상성 좋던 테마 둘이 동시에 올라오는 중",
+  "금제 뒤에는 1강이 사라진 게 아니라 선두 이름만 바뀐 느낌인데",
+  "{part} 제한 이후 평균 턴 수가 늘어난 걸 보면 고점 억제는 된 듯",
+  "초반에는 다들 실험 덱이라 분포가 요동치니 일주일 뒤가 진짜겠지",
+  "예상보다 {theme} 잔존율이 높다. 숙련자들은 바로 대체 루트 찾았네",
+  "상위권 빈자리를 카운터 덱이 아니라 원래 2위가 그대로 먹는 분위기임",
 ] as const;
 
-const RESTRICTION_CONSISTENCY_COPY = [
+const RECENT_SUPPORT_RESTRICTION_COPY = [
   "{theme} 발매 {days}일 만에 핵심을 자르면 누가 다음 팩을 예약함?",
   "신카드 팔 때는 문제없다더니 판매 끝나자마자 금제네",
-  "곧 지원 나온다면서 지금 핵심 파츠 자르는 순서가 맞나",
-  "금제로 비워 놓고 다음 지원으로 다시 채우면 이럴 거면 왜 자름?",
-  "{theme} 지원 일정 알고도 이 금제를 냈다면 기준이 더 궁금해짐",
+  "최근 지원이 나온 뒤 지금 핵심 파츠를 자르는 순서가 맞나",
+  "최근 지원으로 채운 자리를 금제로 다시 비우면 상품 설계부터 돌아봐야지",
+  "{theme} 최근 지원 성능을 확인하고도 이 금제를 냈다면 기준이 더 궁금해짐",
   "최근 제품만 보호하고 오래된 파츠에 책임 돌리는 느낌",
   "한쪽에서는 파워 인플레, 다른 쪽에서는 구매 신뢰 관리라니 말이 안 맞음",
   "금제와 발매가 따로 움직이는 게 아니라는 의심만 커진다",
+  "발매 {days}일 된 상품의 핵심을 바로 자르면 테스트는 누가 한 거냐는 말 나오지",
+  "{theme} 지원 판매 끝나자마자 {part} 제한이면 일정이 너무 노골적임",
+  "신제품으로 올린 체급을 금제로 다시 내리는 운영을 언제까지 반복할 건가",
+  "최근 지원 카드로 생긴 체급을 다시 자르면 금제와 판매가 한 세트라는 소리 듣기 딱 좋음",
+  "유저는 발매표와 금제표를 같이 보고 구매해야 하는 게임이 돼 버렸네",
+  "최근 카드 대신 오래된 핵심만 자르는 패턴이 계속되면 상품 설명을 믿기 어렵다",
+] as const;
+
+const RECENT_DEBUT_RESTRICTION_COPY = [
+  "{theme} 첫 상품 발매 {days}일 만에 핵심을 자르면 출시 전 검수가 충분했는지 궁금함",
+  "신규 테마를 낸 지 {days}일 만에 핵심 파츠를 줄이면 구매자는 당황하지",
+  "{theme}가 막 데뷔했는데 벌써 금제할 정도였다면 출시 수치부터 돌아봐야 함",
+  "첫 상품에서 밀어 준 {part}를 {days}일 뒤 줄이는 일정은 너무 빠르다",
+  "신규 테마 출시와 첫 금제 사이가 {days}일뿐이면 구매 신뢰 얘기가 나올 수밖에 없음",
 ] as const;
 
 const RESTRICTION_CAUTION_COPY = [
@@ -1080,6 +1682,12 @@ const RESTRICTION_CAUTION_COPY = [
   "{theme} 유저 손해는 이해하지만 환경 전체 비용도 있었음",
   "강하게 보이는 금제도 우회 구축 나오면 평가 달라질 수 있음",
   "운영 욕하기 전에 승률과 점유율이 실제로 얼마나 꺾이는지 보자",
+  "{oldLimit}→{newLimit}만 보고 덱 삭제라고 하기엔 아직 대체 리스트가 안 나왔음",
+  "금제 직후 복귀 유저와 실험 덱이 섞인 표본으로 결론 내리면 안 됨",
+  "{part} 감소가 체감되려면 대회 여러 라운드 데이터까지 쌓여야 한다",
+  "첫날 승률 하락은 구축 미정립 영향도 있으니 며칠 더 보는 게 맞지",
+  "적정 금제인지 과잉인지 판단하려면 {theme}뿐 아니라 주변 분포도 같이 봐야 함",
+  "지금 감정은 이해하지만 다음 주 입상표 전까지는 평가를 열어 두자",
 ] as const;
 
 const RESTRICTION_MEME_COPY = [
@@ -1091,6 +1699,548 @@ const RESTRICTION_MEME_COPY = [
   "제한 카드 늘어날수록 덱 공간 넓어지는 기적 ㅋㅋ",
   "다음 팩 지원: 방금 자른 파츠와 같은 효과일 확률 99%",
   "다른 상위권 테마 유저들 갑자기 축제 준비하는 소리 들림",
+  "{part} 장례식 브금 틀었는데 옆 테마는 벌써 우승 세리머니 중",
+  "금제표 뜨자마자 덱 이름을 추억 테마로 변경 완료",
+  "{theme} 유저 단체 채팅방 공지: 오늘부터 구축 상담이 아니라 심리 상담입니다",
+  "운영진이 줄인 건 {part} 매수고 내가 잃은 건 주말 계획임",
+  "새 금제 최적화 1단계: 카드 빼기 / 2단계: 덱도 빼기",
+  "다음 대회 준비물 목록에서 덱만 사라지고 관전표가 추가됨 ㅋㅋ",
+] as const;
+
+const SINGLE_APPROPRIATE_RESTRICTION_COPY = [
+  "{part} 한 종만 {limitLabel}? 1티어 다른 핵심과 바로 아래 2티어는 왜 전부 그대로임?",
+  "{part} {changeLabel} 자체는 이해해도 금제표가 여기서 끝나는 건 너무 적다",
+  "문제 카드 하나를 정확히 짚은 것과 환경 전체를 제대로 손본 건 별개지",
+  "{theme}에서 {part} 하나만 자르고 끝내면 상위권 전체의 자리 경쟁은 그대로잖아",
+  "카드 한 장 찍고 끝낼 게 아니라 1·2티어 핵심을 몇 장씩 같이 봐야 하는 거 아님?",
+  "이번 변경점이 {part} 하나뿐이면 오래 묶인 카드 해제 검토는 또 어디 갔냐",
+  "{part} 역할은 문제였는데 다른 상위권 축을 하나도 안 건드린 건 납득이 안 감",
+  "{changeLabel} 한 줄로 환경 조정 끝냈다고 하기엔 지금 상위권 고착이 너무 심하다",
+  "한 장만 자르면 다음 덱이 올라오는 순서만 바뀌지 티어권 전체가 건강해지진 않음",
+  "{part}를 자른 판단보다 왜 이것밖에 안 했는지부터 설명해야 할 금제표다",
+] as const;
+
+const SINGLE_LIGHT_RESTRICTION_COPY = [
+  "{part} {changeLabel}로 매수 한 칸 줄인 게 전부면 이 환경을 바꿀 생각은 있었나",
+  "실제 변화는 생겨도 {theme} 한 자리만 살짝 비운 수준이라 금제 폭이 너무 좁다",
+  "{part}를 약하게 한 번 건드리고 1·2티어 나머지를 둔 건 사실상 다음 표로 미룬 셈",
+  "대체 카드 한 장 넣으면 끝나는 조정 하나로 상위권 고착을 풀 수 있겠냐",
+  "{limitLabel} 자체보다 이것 한 장만 올린 금제표라는 게 더 문제임",
+  "{part} 빈도는 조금 줄겠지만 다른 상위 덱 핵심도 같이 봤어야지",
+  "효과가 작을 걸 알면서 단일 제한으로 끝냈으면 보여 주기와 뭐가 다른가",
+  "한 종만 약하게 줄일 거면 오래된 제한 하나라도 같이 풀어 줬어야 함",
+  "{part} 매수 감소는 있겠지만 1티어와 2티어를 함께 누르는 조정은 아니잖아",
+  "대체재 유무를 보기 전에 왜 다른 상위권 카드는 검토 대상조차 아닌지 궁금함",
+] as const;
+
+const SINGLE_OVERKILL_RESTRICTION_COPY = [
+  "바뀐 카드는 {part} 하나뿐이지만 {changeLabel} 조정은 그 한 종에 주는 타격이 너무 크다",
+  "금제 범위는 한 종인데 {limitLabel}까지 간 강도는 별개로 따져 봐야 함",
+  "{part} 하나만 손댄 건 맞아도 의존도가 높은 카드라 체감은 작지 않겠다",
+  "여러 카드를 자른 것도 아닌데 핵심 한 종에만 최대 강도를 몰아 줄 필요가 있었나",
+  "이번 발표는 {part} 단일 변경이다. 한 장을 세게 치고 다른 상위권은 둔 기준부터 이상함",
+  "다른 파츠는 살아 있어도 {part} 역할을 대체 못 하면 {changeLabel} 조정은 과할 수 있음",
+  "한 종만 바뀌었다고 약한 금제는 아니지. {part}가 맡던 비중이 너무 컸음",
+  "{part}를 겨냥한 이유는 알겠는데 {limitLabel} 말고 한 단계 낮은 조정은 안 됐나",
+  "범위를 넓히지 않고 한 카드에 최대 강도를 몰아 줬다. 1·2티어 전체를 본 금제는 아님",
+  "{theme}의 다른 카드와 다음 상위 덱은 그대로다. 결국 한 장 희생양 세운 것처럼 보임",
+] as const;
+
+const SINGLE_COSMETIC_RESTRICTION_COPY = [
+  "{part} 한 종만 바뀌었는데 원래 쓰던 매수 안쪽이라 덱리는 거의 그대로겠네",
+  "{changeLabel} 숫자는 바뀌었어도 {part} 실사용 매수에는 영향이 없어 보임",
+  "다른 카드도 아니고 원래 적게 쓰던 {part} 하나라 체감상 영향이 없어 보인다",
+  "이번 발표에서 바뀐 건 {part}뿐이라 실제 구축은 그대로일 가능성이 큼",
+  "{limitLabel} 숫자라고 적혔지만 원래 그보다 많이 넣지 않던 카드잖아",
+  "한 종만 고른 것도 모자라 실사용 매수 밖을 건드려서 보여 주기 조정처럼 보임",
+  "{part} 숫자 한 칸 바뀐 것과 {theme} 체급이 내려가는 건 전혀 다른 얘기임",
+  "다른 파츠와 구축은 그대로고 {part}도 평소 매수 그대로면 금제 효과가 어디서 나옴?",
+  "이번 단일 변경은 카드명만 금제표에 올리고 구축도 그대로 유지시킨 수준 같다",
+  "{changeLabel} 뒤에도 같은 리스트를 제출할 수 있으면 숫자만 바뀐 조정에 가깝지",
+] as const;
+
+const SINGLE_RESTRICTION_SCOPE_COPY = [
+  "실제로 바뀐 카드는 {part} 한 종뿐이다. 그래서 더더욱 왜 이것밖에 안 했는지 모르겠음",
+  "{part} 외의 {theme} 파츠도, 다른 상위권 카드도 그대로면 금제 범위가 모자란 거지",
+  "여러 축 동시 조정이 아니라 {part} 하나만 찍었다. 이걸로 환경 전체를 잡겠다는 건가",
+  "이번 발표의 변경점은 {part} {changeLabel} 한 줄뿐이다. 1·2티어 동시 조정은 없었다",
+  "다른 파츠까지 잘린 건 아니다. 그렇다고 한 장짜리 금제표가 충분해지는 건 아님",
+  "{part} 역할이 큰 것과 이 카드 하나로 상위권 전체를 조정하는 건 다른 문제다",
+  "{theme} 카드 여러 장을 자른 게 아니다. 실제 제한은 {part} 하나라 범위가 너무 좁다",
+  "금제표 범위가 {part} 한 종에서 끝났다. 1·2티어를 함께 누르는 조정은 어디 감?",
+  "다른 카드 매수는 그대로고 {part}만 {limitLabel}이다. 오래된 금제 해제도 없네",
+  "특정 카드 하나는 정확히 겨냥했지만 환경의 여러 강덱을 함께 본 결정은 아니다",
+  "{part} 단일 변경이면 카드 역할 평가는 가능해도 금제표 전체 평가는 부족 쪽이지",
+  "한 번에 여러 곳을 친 금제가 아니다. 바로 그 점 때문에 불만이 나오는 거임",
+] as const;
+
+const SINGLE_SHARED_RESTRICTION_COPY = [
+  "변경 카드는 {part} 하나뿐이지만 외부 채용하던 덱까지 영향은 확인해야 함",
+  "{part} 단일 금제라도 여러 테마가 공유하던 카드면 파장은 한 테마로 끝나지 않지",
+  "{theme}만 보고 정한 제한인지 {part} 출장 채용률까지 본 건지 궁금하다",
+  "한 종만 바뀌었어도 공용 파츠라 순수축과 출장축의 타격이 다를 수 있음",
+  "{part}를 빌려 쓰던 다른 구축은 {changeLabel}을 어떻게 받아들일지 봐야겠네",
+  "단일 카드 조정과 단일 테마 조정은 다르다. {part} 사용처가 넓었잖아",
+  "{part} 외 카드는 그대로지만 이 한 종을 공유하던 덱 목록은 꽤 길다",
+  "출장 억제가 목적이면 {theme} 순수 구축의 손실도 따로 계산했어야 함",
+  "한 카드만 제한했어도 공용 카드라면 연쇄 영향은 실제 입상표로 확인해야지",
+  "{part} 단일 변경이 다른 테마에는 어떤 의미인지 사용처별 데이터가 필요함",
+] as const;
+
+const SINGLE_RESTRICTION_MARKET_COPY = [
+  "우선 움직이는 건 덱 전체 가격보다 {part} 단품 시세겠네",
+  "{part} {changeLabel} 뜨자마자 이 카드 매물부터 늘어난 건 예상한 흐름임",
+  "다른 파츠는 그대로라 {theme} 풀세트보다 대체 결과물 가격이 먼저 움직일 듯",
+  "{part} 고레어 산 사람은 아프겠지만 나머지 카드까지 급히 던질 단계인지는 모르겠다",
+  "한 종만 바뀐 금제라 시장도 {part}와 대체 카드 쪽으로 좁게 반응하는 중",
+  "{part} 가격은 내려가고 대신 빈자리에 들어갈 카드가 오르는 그림 나오겠네",
+  "덱을 통째로 처분하기 전에 {part} 대체 비용부터 계산하는 게 맞을 듯",
+  "이번 발표의 직접 가격 변수는 {part} 한 장과 후보 카드들 정도로 보인다",
+  "{theme} 나머지 파츠 시세는 유지되고 {part}만 급하게 재평가받는 분위기네",
+  "한 카드 제한인데 덱 전체 가치가 얼마나 움직일지는 대체 카드가 자리 잡은 뒤에 봐야 함",
+] as const;
+
+const SINGLE_RECENT_PRODUCT_RESTRICTION_COPY = [
+  "{theme} 관련 제품 발매 {days}일 만에 {part}를 조정한 이유는 설명이 필요함",
+  "최근 {theme} 상품과 {part} {limitLabel} 사이가 {days}일뿐이면 구매자는 당황하지",
+  "발매 {days}일 만의 단일 카드 제한이라 테스트 기간이 충분했는지 궁금하다",
+  "최근 제품에서 {part} 역할을 밀어 놓고 {days}일 뒤 줄인 거면 일정 검토가 필요함",
+  "{theme} 상품 구매 뒤 {days}일 만에 핵심 한 종이 바뀌면 신뢰 문제는 생길 수밖에 없음",
+  "{part} 하나만 조정했어도 최근 발매와 {days}일 간격이면 공지 근거를 자세히 내야 함",
+  "발매 후 {days}일 데이터로 {changeLabel}을 결정했다면 표본도 같이 공개해 줬으면",
+  "최근 지원을 산 유저에게는 {part} 단일 제한도 체감 비용이 작지 않다",
+  "{days}일 전 제품과 이번 제한이 무관하다면 운영이 먼저 그 근거를 보여 줘야지",
+  "최근 발매 직후라 {part} 한 종만 바뀌어도 판매 일정과 연결해 보는 사람이 많겠네",
+] as const;
+
+const SINGLE_RESTRICTION_CAUTION_COPY = [
+  "변경점이 {part} 하나뿐이니 실제 영향도 이 카드 전후 데이터를 나눠 봐야 함",
+  "{part} {changeLabel}만 보고 {theme}가 끝났다고 단정하기엔 아직 첫날임",
+  "다른 파츠는 그대로라 대체 카드가 자리 잡는지 며칠은 확인해야 한다",
+  "한 종 조정의 효과는 새 구축이 정리된 뒤 승률로 보는 게 맞지",
+  "{part}가 빠진 표본과 기존 리스트가 섞인 첫날 데이터는 조심해서 봐야 함",
+  "범위가 좁은 금제일수록 목표한 역할만 줄었는지 확인하기는 오히려 쉽겠다",
+  "{theme} 전체 평가보다 {part} 채용 불가·감소가 각 매치업에 준 영향부터 보자",
+  "단일 카드 제한은 대체재 발견 하나로 첫인상이 크게 바뀔 수 있음",
+  "과잉인지 적정인지도 {part} 공백을 실제 구축이 메우는지 본 뒤 판단해야지",
+  "발표 하루 만에 덱 전체 결론을 내리기보다 바뀐 한 자리부터 테스트하자",
+  "{part} 역할이 독점적이었는지 대체 가능했는지가 이번 금제 평가의 핵심임",
+  "다른 카드까지 상상으로 묶지 말고 이번에 바뀐 {part} 데이터만 먼저 보자",
+] as const;
+
+const SINGLE_COSMETIC_CAUTION_COPY = [
+  "{part} 평균 채용 매수가 원래 제한선 안쪽이었는지부터 확인하면 답이 나옴",
+  "실제 덱리에서 {part}가 몇 장 빠지는지 0장이라면 승률 변화도 기대하기 어렵지",
+  "금제표 숫자와 실사용 매수는 다르니 {changeLabel}만 보고 강한 조정이라 하면 안 됨",
+  "같은 리스트를 그대로 제출할 수 있는 제한인지 확인하는 게 가장 빠르겠다",
+  "{part} 채용 수가 변하지 않으면 첫날과 다음 주를 비교해도 금제 효과를 분리하기 어려움",
+  "원래 한도보다 적게 쓰던 카드라면 대체재 연구 자체가 필요하지 않다",
+  "이번 단일 변경은 빈자리가 생기는지부터 확인해야지, 없으면 구축 변화도 없음",
+  "{theme} 유저가 실제로 카드 한 장이라도 빼는지부터 보고 체감을 말하자",
+  "실사용 범위 밖 숫자를 낮춘 거라면 환경 변화보다 공지 의도가 더 궁금해진다",
+  "{part} 제한선이 기존 평균 매수와 같으면 데이터상 변화 없음에 가까울 가능성이 큼",
+] as const;
+
+const SINGLE_RESTRICTION_MEME_COPY = [
+  "금제표 변경점 찾기: {part} 한 종에 빨간 줄 긋고 업무 종료 ㅋㅋ",
+  "{theme} 덱 수정 회의보다 운영진 금제 회의가 더 빨리 끝났을 듯",
+  "오늘의 환경 조정: {part} 자리 하나 비우고 나머지 1·2티어 귀가",
+  "금제표 한 줄 실화냐, 스크롤 내리면 더 있는 줄 알았네",
+  "{part} {changeLabel} 보고 다음 페이지 버튼부터 찾은 사람 손",
+  "이번 금제 요약: 다른 카드는 앉아 있고 {part}만 교무실 감",
+  "오래된 제한 해제 칸은 또 프린터에서 잘렸나 봄",
+  "한 카드 바뀌었는데 운영은 대규모 환경 개편 표정인 게 제일 웃김",
+  "제한은 한 장, 나머지 상위권은 그대로. 다음 금제 예고편 잘 봤습니다",
+  "운영진은 카드 한 종 줄였고 유저들은 왜 한 종뿐인지 댓글 백 개를 달았다",
+] as const;
+
+const BALANCED_RESTRICTION_REVIEW_COPY = [
+  "오래 묶인 카드 {oldUnbanCount}종은 풀고 1티어·2티어를 각각 {tierOneCutCount}종·{tierTwoCutCount}종 손봤네. 이 정도는 해야 정기 금제지",
+  "상위권 두 구간을 복수 카드로 같이 누르면서 장기 제한도 해제한 건 방향이 좋다",
+  "1티어만 밀어내고 끝낸 게 아니라 2티어까지 조정해서 빈자리 독주를 막은 점은 납득됨",
+  "오래된 제한 해제와 상위권 {cutCount}종 조정을 한 표에 묶으니 환경 순환 의도가 보이네",
+  "풀어 줄 카드는 풀고 강한 덱 여러 곳은 같이 잘랐다. 이번엔 금제표 범위가 제대로 잡혔음",
+  "1티어 {tierOneCutCount}종, 2티어 {tierTwoCutCount}종이면 한 덱만 희생양 삼은 발표는 아니네",
+  "장기 제한을 정리하면서 현재 상위권도 복수 조정한 건 보수적이어도 균형은 맞다",
+  "다음 강덱이 빈자리를 통째로 먹지 않게 2티어까지 함께 본 판단은 좋았음",
+  "금제는 이래야지. 과거에 묶인 카드는 돌려주고 지금 센 카드들은 여러 축에서 낮추고",
+  "이번 표는 해제 {oldUnbanCount}종과 제한 {cutCount}종이 같이 있어서 메타를 앞뒤로 움직이네",
+] as const;
+
+const BALANCED_RESTRICTION_REVIEW_CAUTION_COPY = [
+  "금제표 범위는 잘 잡았는데 각 카드 제한 강도까지 적정했는지는 실전 데이터를 봐야 함",
+  "1·2티어를 같이 손본 방향은 맞아도 같은 역할을 과하게 겹쳐 자른 건 없는지 확인은 필요하다",
+  "오래된 카드를 풀어 준 건 반갑지만 해제된 테마가 바로 상위권으로 튀는지는 계속 봐야지",
+  "복수 조정이라고 무조건 정답은 아니다. 그래도 한 장 찍고 끝낸 표보다는 훨씬 설득력 있음",
+  "전체 범위는 납득되는데 {part} {changeLabel} 개별 판단에는 이견이 있을 수 있겠다",
+] as const;
+
+const UPPER_ONLY_RESTRICTION_REVIEW_COPY = [
+  "상위 1티어에서 {cutCount}종을 자른 건 알겠는데 바로 아래 2티어를 전부 둔 건 위험하다",
+  "1티어만 비우면 다음 줄이 그대로 올라온다. 2티어 핵심도 함께 봤어야지",
+  "강한 덱을 여러 장 손봐도 한 구간에만 몰렸으면 환경 전체 금제라고 하긴 어렵다",
+  "이번 표는 최상위권 조정은 됐는데 승계할 2티어 대비가 빠져 있음",
+  "{cutCount}종이나 바꿨는데 대상이 1티어 쪽에만 몰린 건 범위 배분 실패 같음",
+  "1등을 끌어내리는 것과 새 1등의 독주를 막는 건 별개다. 2티어도 같이 봐야 함",
+  "최상위권 {tierOneCutCount}종만 조정했네. 다음 후보군을 통째로 둔 금제는 오래 못 간다",
+  "1티어 내부 균형은 바뀌겠지만 2티어 승계까지 막는 표는 아니라는 게 문제임",
+  "위쪽만 여러 장 잘라도 바로 아래 구간이 무풍이면 새 독주를 예약한 셈이지",
+  "이번 대상 수는 적지 않은데 티어 분포가 한쪽으로 쏠렸다. 범위보다 배치가 아쉬움",
+] as const;
+
+const TWO_CARD_INCOMPLETE_RESTRICTION_COPY = [
+  "실효 제한 강화가 {cutCount}종뿐이면 1티어와 2티어를 몇 장씩 본 금제는 아니잖아",
+  "실제로 상위권을 낮춘 카드가 {cutCount}종이면 환경 전체를 조정하기엔 여전히 부족함",
+  "실효 컷 {cutCount}종으로 끝이면 다음 강덱이 올라오는 순서만 바뀔 가능성이 큼",
+  "고른 카드 역할은 정확할 수 있어도 다른 1·2티어 핵심을 전부 둔 건 설명이 안 된다",
+  "실효 제한 한두 장보다 상위 두 구간을 복수 카드로 함께 조정해야지",
+  "환경을 실제로 낮추는 변경점 {cutCount}줄 확인. 금제표가 여기서 끝난 게 문제임",
+  "실효 컷 {cutCount}종으로는 1티어와 2티어를 각각 복수 조정할 수가 없잖아",
+  "그 제한들이 필요했다는 것과 필요한 제한이 그것뿐이었다는 건 다른 얘기다",
+  "금제 카드 선정은 맞을 수 있다. 다만 실효 컷 수부터 상위권 전체를 다룬 규모가 아님",
+  "선택한 카드가 병목이어도 다른 강덱의 병목까지 비워 둔 건 이해하기 어렵다",
+  "실효 제한 {cutCount}종 발표 직후 바로 다음 금제 얘기가 나오는 이유가 있음",
+  "한두 장 정밀 타격은 보조 조정이지, 고착된 환경의 정기 금제 전체가 되면 부족함",
+] as const;
+
+const LOWER_ONLY_RESTRICTION_REVIEW_COPY = [
+  "지금 문제는 1티어 고착인데 아래 구간만 {cutCount}종 자른 기준이 뭐임?",
+  "상위 1티어는 그대로 두고 2티어 이하를 먼저 누르면 격차만 더 벌어지잖아",
+  "금제 대상이 강한 순서가 아니라 잡기 쉬운 순서로 정해진 것처럼 보인다",
+  "하위권 파츠는 잘라 놓고 정작 최고 점유율 덱 핵심은 전부 통과했네",
+  "2티어 견제만 줄이면 1티어 독주를 누가 막음? 대상 선정이 거꾸로다",
+  "{part} 조정 이유와 별개로 이번 표는 최상위권을 비껴간 게 가장 큰 문제임",
+  "상위 구간 제한 0종인데 아래쪽만 손봤다. 이건 티어 판독부터 잘못한 것 같은데",
+  "지금 1등 덱이 아니라 그 아래 경쟁자부터 약하게 만든 셈이라 결과가 뻔함",
+  "2티어 이하 {cutCount}종을 건드릴 동안 1티어 핵심이 하나도 안 보인 게 이상하다",
+  "하위 구간만 바뀐 금제표면 메타 다양화보다 최고 덱 보호에 가까워 보임",
+] as const;
+
+const MISSING_TIER2_GAP_RESTRICTION_COPY = [
+  "최상위와 하위권은 손봤는데 정작 승계 후보인 2티어가 통째로 비었네",
+  "1티어를 내린 뒤 올라올 중간 구간을 안 건드리면 하위 조정 수가 많아도 풍선효과는 남는다",
+  "위와 아래에 제한을 나눴지만 2티어 실효 컷 0종이면 티어 사다리 중간이 비어 있음",
+  "대상이 1티어에만 몰린 건 아니지만 다음 강덱 후보군을 건너뛴 배치는 이상하다",
+  "하위권까지 볼 여유가 있었는데 2티어 핵심을 하나도 안 본 우선순위가 이해 안 됨",
+  "최상위 견제 다음 순서는 2티어여야지. 중간을 건너뛴 복수 조정은 승계 대비가 안 된다",
+] as const;
+
+const BOTH_TIERS_CUTS_ONLY_REVIEW_COPY = [
+  "1티어·2티어에서 각각 복수 조정한 범위는 좋다. 다만 오래 묶인 카드도 같이 풀었으면 더 완성도 있었을 듯",
+  "상위권 두 구간을 같이 누른 건 납득되는데 이번에도 해제 목록이 빈 건 아쉽네",
+  "빈자리 승계를 막도록 1·2티어를 함께 본 건 맞다. 이제 장기 제한 정리도 정기적으로 해 줘야지",
+  "제한 {cutCount}종이면 현재 메타 대응은 충분히 넓다. 과거 금제까지 검토했으면 더 좋았겠음",
+  "한 덱만 희생양 삼지 않은 점은 좋다. 다만 풀어 줄 카드 없이 계속 잠그기만 하는 운영은 별개 문제",
+  "이번 금제는 현재 상위권 조정은 제대로 했다. 장기 제한 해제가 빠진 반쪽짜리 순환인 건 남고",
+] as const;
+
+const MISSING_STALE_RELIEF_RESTRICTION_COPY = [
+  "1티어·2티어 복수 조정 범위는 충분한데 오래 묶인 해제 후보를 그대로 둔 건 아쉽다",
+  "현재 상위권 커버는 잘했다. 그래도 장기 제한 정리까지 끝낸 완성형 표는 아님",
+  "현역 두 구간은 각각 제대로 눌렀는데 묵은 카드를 돌려주는 순환 축이 빠졌네",
+  "제한 {cutCount}종의 티어 배분은 납득된다. 장기 제한 방치는 별도 감점 요소임",
+  "빈자리 승계 대비는 됐지만 오래된 제한을 풀지 않으면 카드 풀 순환은 반쪽짜리지",
+  "상위권 조정이 부족한 표는 아니다. 이번에도 해제 못 받은 장기 제한 카드가 문제임",
+] as const;
+
+const BOTH_TIERS_NO_STALE_REVIEW_COPY = [
+  "1티어·2티어를 각각 복수 조정했고 오래 묶인 해제 후보도 없었다면 이번 범위는 납득됨",
+  "상위 두 구간을 함께 눌렀고 정리할 장기 제한이 없다면 억지 해제 없이 끝낸 게 맞지",
+  "제한 {cutCount}종이 1·2티어에 나뉘었네. 현재 환경 대응으로는 균형이 잘 잡혔다",
+  "한 덱만 찍지 않고 다음 상위권까지 같이 본 데다 묵은 제한도 없다면 깔끔한 표임",
+  "해제할 카드를 억지로 만들진 않고 현역 강덱 여러 축만 조정한 건 합리적이다",
+  "이번엔 1티어 {tierOneCutCount}종, 2티어 {tierTwoCutCount}종이라 빈자리 승계까지 고려했네",
+  "상위권 두 층을 각각 몇 장씩 건드렸고 장기 제한 후보도 없다면 필요한 일은 다 한 셈",
+  "해제 목록이 빈 이유가 방치가 아니라 대상 없음이면, 이번 {cutCount}종 조정은 깔끔하다",
+  "1티어만 바꾸는 표가 아니라 2티어까지 같이 낮춘 점에서 다음 환경도 생각했네",
+  "장기 제한 정리할 카드가 없는 시점에 현역 두 구간을 복수 조정했으면 구성은 적정함",
+] as const;
+
+const UNBAN_ONLY_RESTRICTION_REVIEW_COPY = [
+  "오래된 제한 {oldUnbanCount}종을 푼 건 반갑지만 현재 1·2티어를 한 장도 안 자른 건 다른 문제임",
+  "해제만으로 순환을 만들 수는 있어도 지금 상위권 고착까지 해결되진 않지",
+  "묵은 금제 정리는 잘했다. 그런데 현역 강덱 제한 목록이 비어 있는 이유는 설명해야 함",
+  "풀어 주는 표와 환경을 누르는 표를 따로 생각했나? 정기 금제면 둘을 같이 봐야지",
+  "장기 제한 해제는 플러스인데 cuts 0종이면 이번 환경 대응은 사실상 없는 셈",
+  "과거 카드 복권만 하고 현재 1티어·2티어를 그대로 둔 건 금제 절반만 한 느낌임",
+] as const;
+
+const FRESH_UNBAN_ONLY_RESTRICTION_REVIEW_COPY = [
+  "제한한 지 오래되지 않은 카드를 바로 푼 이유부터 설명해야 할 것 같은데",
+  "이번 표는 해제만 있고 현역 상위권 제한은 없다. 빠른 번복과 환경 대응은 따로 봐야 함",
+  "최근 제한을 되돌린 거라면 당시 판단이 틀렸는지 환경이 바뀌었는지 기준을 공개해 줘야지",
+  "카드를 돌려준 건 반갑지만 장기 제한 정리가 아니라 빠른 재검토에 가깝다",
+  "해제 자체보다 제한 후 얼마 안 돼 다시 푼 의사결정 과정이 궁금함",
+  "현역 1·2티어를 그대로 두고 최근 제한만 해제한 표라 환경 대응은 비어 있다",
+] as const;
+
+const MULTI_COSMETIC_RESTRICTION_REVIEW_COPY = [
+  "금제표에는 {changeCount}종이 바뀌었는데 실사용 매수가 줄어드는 카드는 0종이네",
+  "여러 줄을 고쳤어도 실제 구축이 전부 그대로면 환경 조정은 한 게 없음",
+  "cosmetic 변경 {cosmeticCount}종으로 표만 길어졌지 1·2티어 체급은 그대로잖아",
+  "원래 한 장 쓰던 카드들 제한선만 낮춘 거면 복수 조정처럼 포장하면 안 되지",
+  "변경 수는 많아 보여도 덱에서 빠지는 카드가 0장이면 보여 주기 금제임",
+  "실효 컷 없이 숫자만 여러 개 바꿨네. 왜 상위권 핵심은 그대로 둔 거임?",
+  "구축 변화 0장짜리 금제표를 복수 제한이라고 부르긴 어렵다",
+  "실사용 범위 바깥만 {cosmeticCount}종 건드렸으면 환경은 발표 전과 똑같음",
+] as const;
+
+const COSMETIC_PLUS_RELIEF_RESTRICTION_REVIEW_COPY = [
+  "제한 강화 쪽 실효 컷은 0종이고 해제 효과만 실제 환경 변수로 남은 표네",
+  "숫자만 바뀐 제한과 실제 완화·해제가 섞였다. 상위권을 낮춘 카드는 없다는 건 분명함",
+  "cosmetic 제한은 구축을 못 바꾸지만 풀린 카드 쪽 복귀는 따로 관찰해야 한다",
+  "환경이 발표 전과 같진 않겠다. 다만 변화가 제한 강화가 아니라 해제 방향에서만 생김",
+  "상위권 실효 컷 0종이라 현재 강덱 대응은 비었고, 이번 표의 실전 효과는 풀린 카드가 결정하겠네",
+  "보여 주기 제한과 실제 해제를 한 묶음으로 세면 안 된다. 두 방향의 효과가 완전히 다름",
+] as const;
+
+const MIXED_FRESH_UNBAN_RESTRICTION_COPY = [
+  "제한과 해제를 같이 넣은 방향은 좋은데, 해제 대상이 오래 묶인 카드였는지는 따로 봐야 함",
+  "상위권을 자르면서 카드도 풀었네. 다만 최근 제한을 바로 번복한 거라면 기준 일관성이 궁금함",
+  "mixed 표 자체는 순환 의도가 보이지만 {oldUnbanCount}종만 장기 제한 해제라는 건 아쉽다",
+  "현재 메타 조정과 해제를 함께 본 건 납득된다. 풀어 준 카드의 복역 기간은 공개해 줬으면",
+  "잠그기만 한 표는 아니어서 좋다. 그래도 오래된 제한부터 풀었다고 보긴 어렵네",
+  "제한 {cutCount}종과 해제를 같이 처리한 건 맞지만 해제 우선순위가 적절했는지는 논쟁 남겠다",
+] as const;
+
+const PARTIAL_STALE_RELIEF_RESTRICTION_COPY = [
+  "오래 묶인 카드를 완화한 건 맞지만 완전 해제라고 부를 단계는 아니다",
+  "장기 제한을 한 칸 풀어 준 것과 완전 해제는 구분해야지. 아직 복귀 폭은 제한적임",
+  "1·2티어 복수 조정은 좋지만 묵은 카드가 전부 자유가 된 것처럼 말하긴 이르다",
+  "오래된 제한을 검토한 흔적은 보인다. 그래도 부분 완화와 해제는 효과가 다름",
+  "현재 상위권 범위는 납득되는데 장기 제한 정리는 완화에서 멈췄다는 아쉬움이 남네",
+  "묵은 카드 매수를 늘려 준 건 플러스다. 완전 해제까지 못 간 근거도 듣고 싶음",
+] as const;
+
+const THREE_FOUR_CARD_RESTRICTION_COPY = [
+  "변경 {cutCount}종이면 최소한 한 장 찍고 끝낸 표는 아니다. 이제 어느 티어를 덮었는지가 핵심임",
+  "서너 장 조정은 체감 가능한 범위지만 같은 덱에 몰렸다면 숫자만 많아진 거지",
+  "{cutCount}종을 손봤으니 카드 수는 중간 규모다. 역할과 대상 티어 분산을 같이 봐야 함",
+  "이번 금제는 변경 수만 보면 최소 조정 이상이다. 빈자리 승계까지 막았는지는 별도 문제",
+  "서너 장이면 덱 하나를 넘어서 볼 수도, 한 축을 과하게 칠 수도 있는 애매한 구간이네",
+] as const;
+
+const INCOMPLETE_TIER_COVERAGE_RESTRICTION_COPY = [
+  "1티어와 2티어를 모두 보긴 했지만 한쪽은 복수 조정 기준을 못 채웠네",
+  "대상 티어는 넓어도 각 구간 핵심을 몇 장씩 누른 표는 아니다. 커버가 한쪽에서 비어 있음",
+  "상위 두 구간에 이름은 올라갔는데 한 축은 한 장짜리라 빈자리 승계를 막기 부족함",
+  "변경 수와 별개로 1티어·2티어 양쪽에 실효 제한을 분산했는지가 중요하지",
+  "여러 카드를 바꿔도 한 티어의 실효 컷이 한 장뿐이면 균형 잡힌 범위는 아님",
+  "두 티어를 건드린 흔적은 있지만 양쪽을 복수로 조정한 완성형 표까지는 못 갔다",
+] as const;
+
+const FIVE_PLUS_CARD_RESTRICTION_COPY = [
+  "{cutCount}종을 한꺼번에 자른 대형 금제네. 범위는 넓지만 역할 중복 타격은 꼭 확인해야 함",
+  "다섯 장 이상이면 환경을 크게 흔들겠다는 뜻은 분명하다. 과잉과 정리 사이를 실전이 가르겠네",
+  "변경 수는 충분하다 못해 많다. 공용 파츠 연좌와 같은 역할 중복 제한이 걱정됨",
+  "{cutCount}종 조정이면 한두 장 부족 논란은 없겠다. 대신 덱 여러 개를 통째로 지운 건 아닌지 봐야지",
+  "대형 금제는 새 환경을 열 수 있지만 제한 강도까지 전부 최대치면 비용이 너무 커질 수 있음",
+] as const;
+
+const SINGLE_RESTRICTION_STABILIZED_COPY = [
+  "한 장만 잘라서 부족하다 했는데 D+{followupAge}에 점유율 곡선이 이렇게 눕는 건 예상 못했다",
+  "이걸 노렸다고? {part} 하나로 상위권 집중도까지 내릴 계산이었나",
+  "금제표 한 줄 보고 욕했는데 {part} 조정 뒤 환경이 실제로 퍼졌네",
+  "한 장으로 여기까지 계산한 거면 이번 운영 판단은 다시 봐야겠다",
+  "실효 제한이 {cutCount}종뿐이라 무책임해 보였는데 결과적으로 과잉 없이 상위권을 낮췄네",
+  "D+{followupAge} 기준 1·2위 합계가 {topTwoShare}. 적게 자른 게 정교한 조정이었을 줄은 몰랐다",
+  "다음 덱이 빈자리 독식할 줄 알았는데 최고 점유율 {topShare}면 일단 계산은 맞은 듯",
+  "{part} 하나가 진짜 병목이었나 보네. 여러 장 안 잘라도 환경이 여기까지 움직이는구나",
+] as const;
+
+const TWO_CARD_RESTRICTION_STABILIZED_COPY = [
+  "두 장뿐이라 부족하다 했는데 D+{followupAge} 환경이 실제로 고르게 퍼진 건 의외네",
+  "{cutCount}종으로 여기까지 계산했다고? 넓게 자르는 것보다 병목을 제대로 고른 셈인가",
+  "금제표가 짧아서 불안했는데 1·2위 합계 {topTwoShare}면 결과는 인정해야겠다",
+  "환경을 실제로 낮춘 두 카드로 최고 점유율을 {topShare}까지 내렸으면 표적 선정은 정확했던 듯",
+  "다음 덱 독주 없이 상위권이 같이 내려갔네. 적은 변경으로 이 결과는 예상 못 함",
+  "D+{followupAge}까지 보니 {cutCount}종 조정이 최소 변경으로 작동한 사례가 되겠는데",
+] as const;
+
+const NARROW_RESTRICTION_STILL_INSUFFICIENT_COPY = [
+  "D+{followupAge}인데도 상위권 집중이 그대로네. 역시 실효 제한 {cutCount}종만으로는 부족했음",
+  "최고 점유율이 아직 {topShare}면 왜 1·2티어를 몇 장씩 같이 안 봤냐는 말이 맞았지",
+  "{part} 조정만으로 안 된다는 게 벌써 보인다. 다음 금제까지 또 기다려야 함?",
+  "한두 장만 자르고 환경이 알아서 정리되길 바랐나. 1·2위 합계가 아직 {topTwoShare}임",
+  "결국 빈자리를 다른 상위 덱이 먹었다. 여러 티어를 같이 조정했어야지",
+  "D+{followupAge} 결과까지 나왔는데도 고착이면 이번 금제 범위가 좁았던 게 맞다",
+  "실효 제한 {cutCount}종 뒤 상위권 순서만 바뀌었네. 환경 개선과 1등 교체는 다름",
+  "처음부터 말했잖아. 한 장 정확히 찍는 것과 금제표 전체가 충분한 건 별개라고",
+] as const;
+
+const NARROW_RESTRICTION_OVERKILL_FOLLOWUP_COPY = [
+  "D+{followupAge}에 {part} 쪽 점유율이 붕괴했네. 한두 장만 골라서 너무 세게 친 결과 아닌가",
+  "환경을 고르게 만든 게 아니라 대상 덱만 지웠다. {cutCount}종 소수 표적에 강도를 몰아 준 부작용임",
+  "{part} 조정 뒤 해당 축이 사실상 사라졌으면 정교한 금제가 아니라 단일 표적 과잉이지",
+  "최고 점유율 숫자만 낮아졌다고 성공은 아님. 한 덱을 퇴출시킨 비용이 너무 크다",
+  "D+{followupAge} 결과는 안정이 아니라 붕괴에 가깝다. 단계 낮은 제한은 정말 안 됐나",
+  "한두 카드에 최대 타격을 몰아 주면 이렇게 된다. 여러 축을 약하게 나눠 치는 편이 나았음",
+] as const;
+
+const NARROW_RESTRICTION_BALLOON_FOLLOWUP_COPY = [
+  "{part} 쪽은 내려갔는데 다른 덱이 바로 최고 점유율 {topShare}까지 먹었네. 풍선효과 그대로임",
+  "D+{followupAge} 결과가 1등 교체뿐이면 금제가 환경을 고친 건 아니지",
+  "한두 장만 자르니 빈자리를 다음 2티어가 통째로 먹었다. 같이 조정했어야 한다는 얘기임",
+  "대상 덱 점유율만 눌리고 1·2위 합계는 {topTwoShare}. 상위권 집중은 그대로잖아",
+  "실효 제한 {cutCount}종의 예상된 결말: 다음 줄이 올라와 새 독주 시작",
+  "이래서 1티어와 2티어를 함께 봐야 한다고 한 거다. 순위표 이름만 바뀌었네",
+] as const;
+
+const NARROW_RESTRICTION_MIXED_FOLLOWUP_COPY = [
+  "D+{followupAge} 수치는 조금 움직였는데 실효 제한 {cutCount}종이 충분했다고 결론 내리긴 애매하다",
+  "{part} 조정 뒤 수치가 엇갈려서 상위권 전체가 안정됐는지는 아직 반반이네",
+  "한두 장 금제 효과가 아예 없진 않은데 1·2위 합계 {topTwoShare}면 더 지켜봐야 함",
+  "최고 점유율 {topShare}까지는 내려왔지만 새 분포가 굳기 전엔 성공 선언하기 이르다",
+  "부족하다는 첫인상보단 나아졌지만 여러 티어를 같이 본 금제만큼 확실한 결과는 아직 없음",
+] as const;
+
+type RestrictionRoleGroup = "starter" | "bridge" | "finisher" | "recursion";
+type RestrictionReactionPhase = "immediate" | "rebuild" | "results";
+
+const SINGLE_ROLE_RESTRICTION_COPY = {
+  starter: {
+    immediate: [
+      "{part}는 초동이라 다른 파츠가 살아 있어도 첫 패에서 시작할 확률부터 내려간다",
+      "결과물을 자른 게 아니라 시작 카드인 {part} 매수를 건드린 초동 금제네",
+      "{part} {limitLabel}이면 고점보다 초동 진입 성공률이 먼저 달라질 듯",
+      "나머지 전개축은 그대로지만 {part}로 시작하던 손패 비율은 확실히 줄겠다",
+      "초동 한 종 조정이라 패 말림과 대체 초동 수가 이번 평가 기준임",
+      "{part} 초동을 못 잡는 판이 늘어나는 게 핵심이지 다른 결과물이 사라진 건 아님",
+      "이번에는 보스가 아니라 입구를 좁혔다. {theme} 초동 수부터 다시 세야겠네",
+      "{part} 의존 손패가 얼마나 많았는지가 {changeLabel} 뒤 일관성 체감을 결정하겠다",
+    ],
+    rebuild: [
+      "{part} 자리에 두 번째 초동을 늘린 리스트가 먼저 올라오네",
+      "초동 총매수 맞추려고 서치 카드와 드로 소스 비율을 다시 짜는 중",
+      "{part} 감소분을 다른 1장 초동으로 채울 수 있으면 안정성 손실은 줄어든다",
+      "첫 패 확률 계산해 보니 대체 초동을 몇 장 넣느냐에 따라 차이가 크네",
+      "{theme} 유저들이 결과물보다 초동 9장·10장 기준부터 다시 맞추고 있음",
+      "{part} 대신 들어간 초동이 패 코스트를 더 먹어서 구축 선택이 갈리겠다",
+      "두 장 조합까지 허용하면 시작 수는 복구되는데 후공 공간이 줄어드네",
+      "초동 대체재는 있어도 {part}만큼 단독으로 깔끔한지는 별개 문제임",
+    ],
+    results: [
+      "며칠 돌려 보니 {part} 감소 뒤 선공 고점보다 전개 실패율이 먼저 올랐네",
+      "{theme} 입상 수보다 첫 패 통과율이 얼마나 떨어졌는지 보고 싶다",
+      "대체 초동 구축은 굴러가지만 패 코스트 때문에 장기전 승률이 갈리는 듯",
+      "{part} 없는 손패를 살리는 리스트와 못 살리는 리스트 차이가 커졌다",
+      "초동 수를 복구한 덱은 남고 후공 카드를 유지한 덱은 말림을 감수하는 분위기",
+      "이번 조정 효과는 최종 필드보다 게임을 시작한 판의 비율에서 더 잘 보이네",
+      "초동 확률이 내려간 만큼 매치 수가 쌓이면 {theme} 점유율에도 반영되겠다",
+      "{part} 대체재가 정리되면서 첫날보다는 안정됐지만 예전 일관성은 아니네",
+    ],
+  },
+  bridge: {
+    immediate: [
+      "{part}는 초동과 결과물을 잇는 연결축이라 시작 카드는 잡혀도 경로가 달라진다",
+      "입구나 보스를 자른 게 아니라 전개 중간 병목인 {part}를 건드렸네",
+      "{part} {limitLabel}이면 기존 전개 경로와 연속 루트부터 다시 그려야 함",
+      "다른 파츠 매수는 같아도 {part}가 연결하던 조합 수가 줄어드는 금제다",
+      "중간다리 한 종 조정이라 손패보다 전개 경로 수가 먼저 줄겠네",
+      "{part}가 맡던 연결을 다른 카드가 이어 줄 수 있는지가 핵심임",
+      "시작은 되는데 기존 결과물까지 완주하는 길이 끊기는 유형의 제한 같다",
+      "{changeLabel}의 중간 병목 체감은 {part}를 한 턴에 몇 번 거쳤는지에 따라 갈리겠네",
+    ],
+    rebuild: [
+      "{part}를 덜 거치는 짧은 전개 루트 정리글이 벌써 올라왔네",
+      "연결축 대체 카드 넣으니 고점은 낮아져도 완주율은 생각보다 괜찮다",
+      "두 장 조합으로 {part} 구간을 건너뛰는 구축이 연구되는 중",
+      "기존 긴 루트 대신 중간 결과물에서 멈추는 플랜도 현실적인 선택 같음",
+      "{part} 대체재는 효과가 비슷해도 서치 범위가 달라서 덱리가 크게 갈리네",
+      "전개 순서를 바꾸면 병목은 넘기는데 패 소모가 한 장 더 드는구나",
+      "짧은 루트와 복구 루트 중 어느 쪽이 {theme} 새 정석이 될지 모르겠다",
+      "연결 파츠를 여러 종으로 분산하니 한 장 의존도는 줄지만 덱 공간이 빡빡함",
+    ],
+    results: [
+      "{part} 조정 뒤 전개 시간은 줄었는데 완성 필드 편차는 더 커진 듯",
+      "짧은 루트가 자리 잡으면서 예전 최고점보다 안정적인 중간값을 택하네",
+      "연결축 대체가 안 잡힌 판은 멈추는 지점이 확실히 빨라졌다",
+      "며칠 지나니 {part} 없이 완주하는 비율이 이번 금제 강도를 보여 주는 듯",
+      "{theme} 숙련자는 우회하지만 입문자는 기존 루트가 끊겨 체감이 더 크겠다",
+      "중간 병목이 줄어든 게 아니라 선택지가 줄어서 상대가 읽기는 쉬워졌네",
+      "대체 연결축이 정착한 리스트와 예전 루트를 고집한 리스트 성적이 갈린다",
+      "이번 제한은 시작 패보다 한 전개 안에서 갈 수 있는 경로 수를 줄인 효과가 크네",
+    ],
+  },
+  finisher: {
+    immediate: [
+      "{part}는 결과물이라 초동과 전개 파츠는 그대로고 최종 필드만 다시 짜야 한다",
+      "시작축을 자른 게 아니라 전개 끝의 마무리 결과물 {part}를 {limitLabel}으로 바꾼 금제네",
+      "{part} 공백은 패 말림보다 선공 고점과 마무리 수단에서 먼저 드러날 듯",
+      "다른 {theme} 파츠는 그대로라 전개는 되지만 도착점이 달라진다",
+      "결과물 한 종 조정이라 기존 루트가 아예 멈추는지, 다른 보스로 끝나는지가 핵심임",
+      "{part} 결과물이 맡던 견제 수를 무엇으로 나눠 채울지가 새 구축의 첫 문제겠네",
+      "초동률은 그대로인데 최종 필드 마지막 한 칸의 압박이 줄어드는 형태로 보인다",
+      "이번 {changeLabel} 조정은 전개 엔진보다 최종 필드의 상한을 겨냥한 선택임",
+    ],
+    rebuild: [
+      "{part} 대신 세울 대체 결과물 둘을 나눠 쓰는 리스트가 올라왔네",
+      "기존 전개는 유지하고 마무리 소환만 바꾸는 쪽이 가장 먼저 연구되는 중",
+      "결과물 하나를 낮추고 남는 자원으로 후속을 챙기는 구축도 괜찮아 보임",
+      "{part} 자리에는 같은 압박의 대체 결과물보다 역할이 다른 보스를 넣는 게 현실적일 듯",
+      "최종 필드를 한 장으로 압축 못 하니 견제를 여러 카드에 분산해야겠네",
+      "대체 결과물은 세기는 낮아도 후공에서 덜 막히는 장점이 있구나",
+      "{part} 없이도 전개는 완주되는데 마무리 선택지가 훨씬 정직해졌다",
+      "예전 도착점을 복제하려는 구축과 아예 장기전으로 트는 구축이 갈리네",
+    ],
+    results: [
+      "며칠 지나니 {part} 없는 {theme}는 초동률보다 선공 고점의 승률이 먼저 내려갔다",
+      "전개 성공 횟수는 비슷한데 최종 필드 돌파 난도가 확실히 낮아졌네",
+      "대체 결과물 구축이 남아 있어서 덱이 사라진 건 아니지만 고점 차이는 보인다",
+      "결과물인 {part} 공백 뒤 한 번 막힌 전개를 후속으로 이기는 판이 늘어난 느낌",
+      "결과물 선택지가 분산되니 상대도 한 장으로 모든 판을 대비하긴 어려워졌네",
+      "최고점은 낮아졌지만 장기전형 리스트가 자리 잡으면서 잔존율은 남아 있다",
+      "이번 금제 효과는 매칭 빈도보다 최종 필드의 평균 견제 수에서 더 잘 보임",
+      "{part} 대체안이 정리돼도 예전 한 장짜리 도착점만큼 압축되지는 않네",
+    ],
+  },
+  recursion: {
+    immediate: [
+      "{part}는 회수축이라 첫 전개보다 두 번째 턴 이후 자원전이 먼저 약해진다",
+      "초동이나 결과물이 아니라 후속을 책임지던 {part}를 조정한 금제네",
+      "{part} {limitLabel}이면 첫 필드는 같아도 후속 복구 횟수가 달라질 듯",
+      "다른 파츠는 그대로라 첫 턴보다 장기전에서 빈자리가 크게 느껴지겠다",
+      "회수 카드 한 종 감소라 자원을 다시 돌리는 루프부터 확인해야 함",
+      "{part}가 맡던 재전개를 대체 못 하면 한 번 필드가 깨진 뒤가 문제겠네",
+      "이번 조정은 고점보다 장기전 자원을 반복해서 쓰는 힘을 겨냥한 것 같다",
+      "{changeLabel}의 후속 체감은 첫 패가 아니라 세 번째 턴 손패에서 나오겠지",
+    ],
+    rebuild: [
+      "{part} 대신 일회성 회수 카드를 늘린 구축은 복구력보다 속도를 택했네",
+      "장기전 자리를 드로 소스로 바꾸니 첫 전개는 좋아져도 후속이 얇다",
+      "재전개 루프를 포기하고 두 번째 공격에 자원을 몰아주는 리스트가 보임",
+      "{part} 공백을 다른 회수 카드 둘로 나누니 덱 공간 부담이 커졌다",
+      "묘지 회수 대신 덱 순환을 쓰는 구축이 새 대안으로 올라오는 중",
+      "한 번 막힌 뒤 다시 세우는 루트가 줄어서 첫 필드를 더 보수적으로 짜게 되네",
+      "회수축 대체재는 느리지만 후공 카드와 같이 잡히면 의외로 버틸 만함",
+      "{part} 없이 장기전을 포기할지, 약한 후속을 더 넣을지 선택이 갈린다",
+    ],
+    results: [
+      "{part} 조정 뒤 첫 턴 승률보다 긴 매치의 역전율이 먼저 내려간 듯",
+      "필드 한 번 치우고 나면 {theme}가 다시 자원을 모으는 속도가 확실히 느려졌다",
+      "짧은 게임에서는 차이가 적고 세 번째 턴부터 손패 격차가 벌어지네",
+      "회수축 대체 카드를 넣은 리스트는 남았지만 덱 공간 손해가 성적에 보인다",
+      "후속이 얇아진 대신 첫 필드에 자원을 몰아주는 구축이 더 많아졌음",
+      "{part} 없는 장기전 플랜이 정리되면서 상대도 소모전을 선택하기 쉬워졌다",
+      "이번 제한은 점유율보다 평균 게임 길이별 승률을 봐야 정확하겠네",
+      "재전개 횟수가 줄어드니 예전처럼 같은 필드를 반복하는 판은 확실히 적다",
+    ],
+  },
+} as const;
+
+const SINGLE_ONE_COPY_NEGATION_FINISHER_BAN_COPY = [
+  "{part}는 원래 한 장 쓰던 결과물이라 3→0 표기만큼 세 장이 빠지는 금제는 아님",
+  "한 장 채용하던 결과물 {part}는 1장 제한이 의미 없어서 유지와 금지 사이의 선택이었겠네",
+  "다중 무효를 맡던 {part} 결과물만 금지됐고 초동과 연결 파츠 매수는 그대로다",
+  "이번 변경은 전개 횟수를 줄인 게 아니라 전개 끝의 {part} 도착점을 없앤 금제임",
+  "{part} 하나를 정확히 겨냥한 건 분명하지만 유일한 최종 결과물 공백은 크게 느껴지겠다",
+  "초동률은 그대로고 다중 무효 고점만 내려간다는 점을 구분해서 봐야 함",
+  "{part} 금지 뒤에도 전개 엔진은 남으니 새 최종 필드가 어느 정도인지가 핵심이다",
+  "한 종만 금지됐어도 결과물 역할을 독점했다면 체감 타격은 클 수밖에 없음",
+  "상대는 {part} 다중 무효를 안 봐도 되고 {theme} 유저는 마무리를 새로 짜야 하네",
+  "{part} 없는 최종 필드를 보기 전에는 단일 금지가 과잉인지 적정인지 단정하기 이르다",
+  "다른 축까지 제한된 건 아니고 {part}가 맡던 선공 고점 하나가 사라진 형태임",
+  "원래 한 장짜리 결과물은 매수 제한으로 약화하기 어려워 금지 판단 자체가 더 극단적으로 보인다",
 ] as const;
 
 type WeightedTheme = {
@@ -1147,8 +2297,9 @@ function assertCommunityDay(state: GameState, day: number): void {
 
 function isRestrictionDecisionEvent(event: CommunityEvent): boolean {
   return (
-    event.day >= 45 &&
-    (event.day - 45) % 90 === 0 &&
+    event.day >= FIRST_BAN_DAY &&
+    event.day <= LAST_DECISION_DAY &&
+    (event.day - FIRST_BAN_DAY) % BAN_INTERVAL === 0 &&
     (event.type === "restriction-applied" ||
       event.type === "cosmetic-restriction" ||
       event.type === "restriction-no-change")
@@ -1300,15 +2451,19 @@ function makeStaleRestrictionPosts(
         candidate.content.id,
         candidate.part.id,
       );
-      const body = STALE_RESTRICTION_COPY[
-        (start + index) % STALE_RESTRICTION_COPY.length
-      ]
-        .replaceAll("{theme}", candidate.content.shortName)
-        .replaceAll("{part}", candidate.part.name)
-        .replaceAll("{limit}", String(candidate.limit))
-        .replaceAll("{restrictedDays}", String(candidate.restrictedDays))
-        .replaceAll("{share}", `${(candidate.share * 100).toFixed(1)}%`)
-        .replaceAll("{rank}", String(candidate.rank));
+      const body = fillCommunityCopy(
+        STALE_RESTRICTION_COPY[
+          (start + index) % STALE_RESTRICTION_COPY.length
+        ],
+        {
+          theme: candidate.content.shortName,
+          part: candidate.part.name,
+          limit: String(candidate.limit),
+          restrictedDays: String(candidate.restrictedDays),
+          share: `${(candidate.share * 100).toFixed(1)}%`,
+          rank: String(candidate.rank),
+        },
+      );
       return {
         id: `daily-stale-restriction-${day}-${candidate.content.id}-${candidate.part.id}`,
         day,
@@ -1360,6 +2515,7 @@ type RestrictionAssessment =
   | "appropriate"
   | "overkill"
   | "cosmetic"
+  | "light"
   | "no-change"
   | "unban";
 
@@ -1520,28 +2676,43 @@ function recentRestrictionDecision(
     const anchors: RestrictionAnchor[] = provisional.map((anchor) => {
       const totalImpact = totalImpactByTheme.get(anchor.content.id) ?? 0;
       const cutCount = cutsByTheme.get(anchor.content.id) ?? 0;
-      const runtime = state.themes[anchor.content.id];
       const snapshot = historyAtOrBefore(state, decisionDay);
       const decisionShare =
-        snapshot?.shares[anchor.content.id] ?? runtime?.share ?? 0;
+        snapshot?.shares[anchor.content.id] ?? anchor.content.startingShare;
+      const decisionShares = snapshot
+        ? Object.values(snapshot.shares).filter(
+          (share) => Number.isFinite(share) && share >= 0,
+        )
+        : THEMES.map((theme) => theme.startingShare).filter((share) => share > 0);
+      const rankedDecisionShares = [...decisionShares].sort(
+        (left, right) => right - left,
+      );
+      const decisionTopShare = rankedDecisionShares[0] ?? decisionShare;
+      const decisionTopThreeShare = rankedDecisionShares
+        .slice(0, 3)
+        .reduce((sum, share) => sum + share, 0);
+      const decisionHhi = decisionShares.reduce(
+        (sum, share) => sum + share ** 2,
+        0,
+      );
       const noChangeConcern =
         anchor.event.type === "restriction-no-change" &&
         (decisionShare >= 0.24 ||
-          (runtime?.unpleasantness ?? 0) >= 68 ||
-          (runtime?.fatigue ?? 0) >= 65 ||
-          (runtime?.topStreakDays ?? 0) >= 45);
+          decisionTopShare >= 0.3 ||
+          decisionTopThreeShare >= 0.7 ||
+          decisionHhi >= 0.24);
       const assessment: RestrictionAssessment =
         anchor.direction === "loosen"
           ? "unban"
           : anchor.event.type === "restriction-no-change"
           ? "no-change"
-          : anchor.availabilityDelta <= 1e-6 || anchor.impact < 3.5
+          : anchor.availabilityDelta <= 1e-6
           ? "cosmetic"
-          : anchor.newLimit === 0 ||
-              anchor.impact >= 11 ||
-              (cutCount >= 2 && totalImpact >= 15)
+          : (cutCount >= 2 && totalImpact >= 15) || anchor.impact >= 11
             ? "overkill"
-            : "appropriate";
+            : anchor.impact < 3.5
+              ? "light"
+              : "appropriate";
       return { ...anchor, assessment, noChangeConcern };
     });
     return { decisionDay, age, anchors };
@@ -1556,7 +2727,382 @@ function primaryRestrictionPool(
   if (anchor.assessment === "no-change") return NO_CHANGE_RESTRICTION_COPY;
   if (anchor.assessment === "overkill") return OVERKILL_RESTRICTION_COPY;
   if (anchor.assessment === "cosmetic") return COSMETIC_RESTRICTION_COPY;
+  if (anchor.assessment === "light") return LIGHT_RESTRICTION_COPY;
   return APPROPRIATE_RESTRICTION_COPY;
+}
+
+function singlePrimaryRestrictionPool(
+  anchor: RestrictionAnchor,
+): readonly string[] {
+  if (anchor.assessment === "overkill") {
+    return SINGLE_OVERKILL_RESTRICTION_COPY;
+  }
+  if (anchor.assessment === "cosmetic") {
+    return SINGLE_COSMETIC_RESTRICTION_COPY;
+  }
+  if (anchor.assessment === "light") {
+    return SINGLE_LIGHT_RESTRICTION_COPY;
+  }
+  return SINGLE_APPROPRIATE_RESTRICTION_COPY;
+}
+
+function restrictionRoleGroup(part: PartContent): RestrictionRoleGroup {
+  if (part.role === "starter1" || part.role === "starter2") return "starter";
+  return part.role;
+}
+
+function restrictionReactionPhase(
+  age: RecentRestrictionDecision["age"],
+): RestrictionReactionPhase {
+  return age === 1 ? "immediate" : age === 2 ? "rebuild" : "results";
+}
+
+function isSingleCardTightening(
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+): boolean {
+  if (anchor.direction !== "tighten") return false;
+  return context.anchors.filter((candidate) =>
+    candidate.direction !== "unchanged"
+  ).length === 1;
+}
+
+type TighteningScope =
+  | "single"
+  | "same-role-multi"
+  | "multi-axis"
+  | "multi-theme";
+
+function tighteningScope(
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+): TighteningScope {
+  const tightened = context.anchors.filter((candidate) =>
+    candidate.direction === "tighten"
+  );
+  if (tightened.length <= 1) return "single";
+  if (new Set(tightened.map((candidate) => candidate.content.id)).size >= 2) {
+    return "multi-theme";
+  }
+  const sameThemeRoles = new Set(
+    tightened
+      .filter((candidate) => candidate.content.id === anchor.content.id)
+      .map((candidate) => restrictionRoleGroup(candidate.part)),
+  );
+  return sameThemeRoles.size >= 2 ? "multi-axis" : "same-role-multi";
+}
+
+function restrictionBreadthPool(
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+): readonly string[] {
+  switch (tighteningScope(context, anchor)) {
+    case "single":
+      return anchor.part.tags.includes("외부 사용")
+        ? COLLATERAL_RESTRICTION_COPY
+        : primaryRestrictionPool(anchor);
+    case "same-role-multi":
+      return SAME_ROLE_MULTI_RESTRICTION_COPY;
+    case "multi-axis":
+      return MULTI_AXIS_RESTRICTION_COPY;
+    case "multi-theme":
+      return MULTI_THEME_RESTRICTION_COPY;
+  }
+}
+
+function restrictionCountPool(
+  profile: RestrictionPolicyProfile,
+): readonly string[] {
+  if (profile.meaningfulCutCount === 0) {
+    if (profile.directionMix.tighten > 0 && profile.directionMix.loosen > 0) {
+      return COSMETIC_PLUS_RELIEF_RESTRICTION_REVIEW_COPY;
+    }
+    return profile.directionMix.tighten > 0
+      ? MULTI_COSMETIC_RESTRICTION_REVIEW_COPY
+      : UNBAN_ONLY_RESTRICTION_REVIEW_COPY;
+  }
+  if (profile.meaningfulCutCount <= 2) {
+    return TWO_CARD_INCOMPLETE_RESTRICTION_COPY;
+  }
+  if (profile.meaningfulCutCount <= 4) {
+    return THREE_FOUR_CARD_RESTRICTION_COPY;
+  }
+  return FIVE_PLUS_CARD_RESTRICTION_COPY;
+}
+
+function restrictionCoveragePool(
+  profile: RestrictionPolicyProfile,
+): readonly string[] {
+  if (profile.meaningfulCutCount === 0) {
+    if (profile.directionMix.tighten > 0 && profile.directionMix.loosen > 0) {
+      return COSMETIC_PLUS_RELIEF_RESTRICTION_REVIEW_COPY;
+    }
+    return profile.directionMix.tighten > 0
+      ? MULTI_COSMETIC_RESTRICTION_REVIEW_COPY
+      : UNBAN_ONLY_RESTRICTION_REVIEW_COPY;
+  }
+  if (profile.upperMeaningfulCuts === 0) {
+    return LOWER_ONLY_RESTRICTION_REVIEW_COPY;
+  }
+  if (profile.tier2MeaningfulCuts === 0) {
+    return profile.lowerMeaningfulCuts > 0
+      ? MISSING_TIER2_GAP_RESTRICTION_COPY
+      : UPPER_ONLY_RESTRICTION_REVIEW_COPY;
+  }
+  if (
+    profile.coverageComplete &&
+    profile.staleEligible > 0 &&
+    profile.staleFullyReleased > 0
+  ) {
+    return BALANCED_RESTRICTION_REVIEW_COPY;
+  }
+  if (
+    profile.coverageComplete &&
+    profile.staleEligible > 0 &&
+    profile.staleLoosened > 0
+  ) {
+    return PARTIAL_STALE_RELIEF_RESTRICTION_COPY;
+  }
+  if (profile.coverageComplete && profile.staleEligible > 0) {
+    return MISSING_STALE_RELIEF_RESTRICTION_COPY;
+  }
+  if (profile.coverageComplete && profile.staleEligible === 0) {
+    return BOTH_TIERS_NO_STALE_REVIEW_COPY;
+  }
+  return INCOMPLETE_TIER_COVERAGE_RESTRICTION_COPY;
+}
+
+function restrictionCompositionPool(
+  profile: RestrictionPolicyProfile,
+): readonly string[] {
+  const { tighten, loosen } = profile.directionMix;
+  if (
+    profile.meaningfulCutCount === 0 &&
+    tighten > 0 &&
+    loosen > 0
+  ) {
+    return COSMETIC_PLUS_RELIEF_RESTRICTION_REVIEW_COPY;
+  }
+  if (tighten === 0 && loosen > 0) return UNBAN_ONLY_RESTRICTION_REVIEW_COPY;
+  if (tighten > 0 && loosen === 0) {
+    return profile.coverageComplete && profile.staleEligible > 0
+      ? BOTH_TIERS_CUTS_ONLY_REVIEW_COPY
+      : restrictionCoveragePool(profile);
+  }
+  if (tighten > 0 && loosen > 0) {
+    return profile.staleFullyReleased > 0
+      ? restrictionCoveragePool(profile)
+      : profile.staleLoosened > 0
+        ? PARTIAL_STALE_RELIEF_RESTRICTION_COPY
+        : MIXED_FRESH_UNBAN_RESTRICTION_COPY;
+  }
+  return NO_CHANGE_RESTRICTION_COPY;
+}
+
+function restrictionPolicyDetailPool(
+  state: GameState,
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+): readonly string[] {
+  if (anchor.direction === "loosen") {
+    return unbanPrimaryPool(unbanReactionAssessment(state, context, anchor).tone);
+  }
+  if (anchor.part.tags.includes("외부 사용")) {
+    return COLLATERAL_RESTRICTION_COPY;
+  }
+  const recentProduct = restrictionRecentProduct(
+    state,
+    context.decisionDay,
+    anchor.content.id,
+  );
+  if (recentProduct && recentProduct.age <= 30) {
+    return recentProduct.kind === "support"
+      ? RECENT_SUPPORT_RESTRICTION_COPY
+      : RECENT_DEBUT_RESTRICTION_COPY;
+  }
+  return restrictionBreadthPool(context, anchor);
+}
+
+function isBalancedFourCutReview(
+  context: RecentRestrictionDecision,
+  profile: RestrictionPolicyProfile,
+): boolean {
+  return (
+    context.anchors.length === 4 &&
+    context.anchors.every((anchor) => anchor.direction === "tighten") &&
+    profile.quality === "balanced" &&
+    profile.changeCount === 4 &&
+    profile.meaningfulCutCount === 4 &&
+    profile.directionMix.tighten === 4 &&
+    profile.directionMix.loosen === 0
+  );
+}
+
+/**
+ * A broad four-card review still needs card-level reactions. Only use the
+ * role-specific copy when this review changed one card in the anchor's theme;
+ * several changes inside one theme need the aggregate scope copy instead.
+ */
+function balancedFourCutRolePool(
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+): readonly string[] {
+  const sameThemeCuts = context.anchors.filter(
+    (candidate) =>
+      candidate.direction === "tighten" &&
+      candidate.content.id === anchor.content.id,
+  ).length;
+  if (sameThemeCuts !== 1) return restrictionBreadthPool(context, anchor);
+  return SINGLE_ROLE_RESTRICTION_COPY[restrictionRoleGroup(anchor.part)][
+    restrictionReactionPhase(context.age)
+  ];
+}
+
+/**
+ * The guided four-cut list is deliberately broad and shallow. Route one full
+ * pass through coverage, scope, the actual target role, and factual detail so
+ * every changed card is discussed without falling into single-card memes or a
+ * generic starter/finisher claim that may not match that card.
+ */
+function balancedFourCutCopyPool(
+  state: GameState,
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+  profile: RestrictionPolicyProfile,
+  index: number,
+): readonly string[] {
+  const coverage = restrictionCoveragePool(profile);
+  const scope = restrictionBreadthPool(context, anchor);
+  const role = balancedFourCutRolePool(context, anchor);
+  const detail = restrictionPolicyDetailPool(state, context, anchor);
+  const pass = Math.floor(index / context.anchors.length);
+  const routing: readonly (readonly string[])[] = context.age === 1
+    ? [coverage, scope, role, detail]
+    : context.age === 2
+      ? [coverage, detail, role, scope]
+      : [role, scope, coverage];
+  return routing[pass % routing.length];
+}
+
+function singleRestrictionCopyPool(
+  state: GameState,
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+  index: number,
+): readonly string[] {
+  const tone = singlePrimaryRestrictionPool(anchor);
+  const shortage = SINGLE_RESTRICTION_SCOPE_COPY;
+  const role =
+    context.age === 1 &&
+      anchor.part.role === "finisher" &&
+      anchor.part.preferredCopies <= 1 &&
+      anchor.newLimit === 0 &&
+      anchor.part.tags.includes("다중 무효")
+      ? SINGLE_ONE_COPY_NEGATION_FINISHER_BAN_COPY
+      : SINGLE_ROLE_RESTRICTION_COPY[
+          restrictionRoleGroup(anchor.part)
+        ][restrictionReactionPhase(context.age)];
+  const recentProductAge = restrictionRecentProductAge(
+    state,
+    context.decisionDay,
+    anchor.content.id,
+  );
+  const product = recentProductAge <= 30
+    ? SINGLE_RECENT_PRODUCT_RESTRICTION_COPY
+    : SINGLE_RESTRICTION_CAUTION_COPY;
+  const market = anchor.newLimit === 0 || anchor.impact >= 6
+    ? SINGLE_RESTRICTION_MARKET_COPY
+    : shortage;
+  const detail = anchor.part.tags.includes("외부 사용")
+    ? SINGLE_SHARED_RESTRICTION_COPY
+    : market;
+
+  if (anchor.assessment === "cosmetic") {
+    const cosmeticDayOne: readonly (readonly string[])[] = [
+      tone,
+      tone,
+      shortage,
+      tone,
+      shortage,
+      SINGLE_COSMETIC_CAUTION_COPY,
+      tone,
+      tone,
+    ];
+    const cosmeticDayTwo: readonly (readonly string[])[] = [
+      tone,
+      shortage,
+      tone,
+      SINGLE_COSMETIC_CAUTION_COPY,
+      tone,
+      shortage,
+      tone,
+    ];
+    const cosmeticDayThree: readonly (readonly string[])[] = [
+      tone,
+      tone,
+      shortage,
+      SINGLE_COSMETIC_CAUTION_COPY,
+      tone,
+      shortage,
+    ];
+    const cosmeticRouting = context.age === 1
+      ? cosmeticDayOne
+      : context.age === 2
+        ? cosmeticDayTwo
+        : cosmeticDayThree;
+    return cosmeticRouting[index % cosmeticRouting.length];
+  }
+
+  const dayOne: readonly (readonly string[])[] = [
+    shortage,
+    shortage,
+    role,
+    shortage,
+    role,
+    detail,
+    shortage,
+  ];
+  const dayTwo: readonly (readonly string[])[] = [
+    shortage,
+    shortage,
+    role,
+    tone,
+    product,
+    shortage,
+    role,
+  ];
+  const dayThree: readonly (readonly string[])[] = [
+    shortage,
+    role,
+    shortage,
+    shortage,
+    SINGLE_RESTRICTION_MEME_COPY,
+    role,
+  ];
+  const routing = context.age === 1 ? dayOne : context.age === 2 ? dayTwo : dayThree;
+  return routing[index % routing.length];
+}
+
+function narrowRestrictionCopyPool(
+  state: GameState,
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+  index: number,
+): readonly string[] {
+  const shortage = TWO_CARD_INCOMPLETE_RESTRICTION_COPY;
+  const primary = anchor.assessment === "unban"
+    ? unbanPrimaryPool(unbanReactionAssessment(state, context, anchor).tone)
+    : primaryRestrictionPool(anchor);
+  const breadth = anchor.direction === "loosen"
+    ? primary
+    : restrictionBreadthPool(context, anchor);
+  const detail = restrictionPolicyDetailPool(state, context, anchor);
+  const routing = context.age === 1
+    ? [shortage, shortage, primary, shortage, breadth, shortage, detail, shortage]
+    : context.age === 2
+      ? [shortage, primary, shortage, detail, shortage, breadth, shortage]
+      : [shortage, breadth, shortage, primary, shortage, detail];
+  return routing[index % routing.length];
 }
 
 type UnbanTone =
@@ -1673,8 +3219,23 @@ function restrictionCopyPool(
   index: number,
 ): readonly string[] {
   const age = context.age;
-  if (anchor.assessment === "unban") {
+  const profile = getPublishedRestrictionPolicyProfile(
+    state,
+    context.decisionDay,
+  );
+  if (
+    profile.directionMix.tighten === 0 &&
+    profile.directionMix.loosen > 0 &&
+    anchor.assessment === "unban"
+  ) {
     if (isUnbanCautionSlot(age, index)) return UNBAN_CAUTION_COPY;
+    if (index % 4 === 1) {
+      return profile.staleFullyReleased > 0
+        ? UNBAN_ONLY_RESTRICTION_REVIEW_COPY
+        : profile.staleLoosened > 0
+          ? PARTIAL_STALE_RELIEF_RESTRICTION_COPY
+        : FRESH_UNBAN_ONLY_RESTRICTION_REVIEW_COPY;
+    }
     return unbanPrimaryPool(unbanReactionAssessment(state, context, anchor).tone);
   }
   if (anchor.assessment === "no-change") {
@@ -1713,36 +3274,87 @@ function restrictionCopyPool(
     const routing = age === 1 ? dayOne : age === 2 ? dayTwo : dayThree;
     return routing[index % routing.length];
   }
-  const primary = primaryRestrictionPool(anchor);
+  if (isSingleCardTightening(context, anchor)) {
+    return singleRestrictionCopyPool(state, context, anchor, index);
+  }
+  if (
+    profile.meaningfulCutCount > 0 &&
+    profile.meaningfulCutCount <= 2
+  ) {
+    return narrowRestrictionCopyPool(state, context, anchor, index);
+  }
+  if (isBalancedFourCutReview(context, profile)) {
+    return balancedFourCutCopyPool(state, context, anchor, profile, index);
+  }
+  const primary = anchor.assessment === "unban"
+    ? isUnbanCautionSlot(age, index)
+      ? UNBAN_CAUTION_COPY
+      : unbanPrimaryPool(unbanReactionAssessment(state, context, anchor).tone)
+    : primaryRestrictionPool(anchor);
+  const coverage = restrictionCoveragePool(profile);
+  const composition = restrictionCompositionPool(profile);
+  const count = restrictionCountPool(profile);
+  const detail = restrictionPolicyDetailPool(state, context, anchor);
+  const alternate = anchor.direction === "loosen"
+    ? primary
+    : ALTERNATE_BUILD_RESTRICTION_COPY;
+  const market = anchor.direction === "loosen"
+    ? primary
+    : RESTRICTION_MARKET_COPY;
+  const meta = anchor.direction === "loosen" ? primary : RESTRICTION_META_COPY;
+  const meme = anchor.direction === "loosen" ? primary : RESTRICTION_MEME_COPY;
+  const caution = anchor.direction === "loosen"
+    ? UNBAN_CAUTION_COPY
+    : profile.quality === "balanced"
+      ? BALANCED_RESTRICTION_REVIEW_CAUTION_COPY
+      : RESTRICTION_CAUTION_COPY;
   const dayOne: readonly (readonly string[])[] = [
+    coverage,
+    composition,
+    coverage,
     primary,
-    primary,
-    RESTRICTION_CONSISTENCY_COPY,
-    primary,
-    COLLATERAL_RESTRICTION_COPY,
-    RESTRICTION_CAUTION_COPY,
-    RESTRICTION_MEME_COPY,
-    RESTRICTION_MARKET_COPY,
+    meme,
+    coverage,
+    detail,
+    caution,
   ];
   const dayTwo: readonly (readonly string[])[] = [
-    ALTERNATE_BUILD_RESTRICTION_COPY,
-    RESTRICTION_MARKET_COPY,
-    ALTERNATE_BUILD_RESTRICTION_COPY,
-    RESTRICTION_CAUTION_COPY,
-    RESTRICTION_MARKET_COPY,
-    RESTRICTION_CONSISTENCY_COPY,
+    coverage,
+    composition,
+    alternate,
     primary,
+    count,
+    detail,
+    market,
   ];
   const dayThree: readonly (readonly string[])[] = [
-    RESTRICTION_META_COPY,
-    ALTERNATE_BUILD_RESTRICTION_COPY,
-    RESTRICTION_META_COPY,
-    RESTRICTION_CAUTION_COPY,
-    ALTERNATE_BUILD_RESTRICTION_COPY,
-    RESTRICTION_MARKET_COPY,
+    coverage,
+    composition,
+    meta,
+    alternate,
+    caution,
+    detail,
   ];
   const routing = age === 1 ? dayOne : age === 2 ? dayTwo : dayThree;
   return routing[index % routing.length];
+}
+
+function restrictionRecentProduct(
+  state: GameState,
+  decisionDay: number,
+  themeId: ThemeId,
+): { age: number; kind: ReleasedProduct["kind"] } | null {
+  let latest: { day: number; kind: ReleasedProduct["kind"] } | null = null;
+  for (const batch of state.releaseHistory) {
+    if (batch.day > decisionDay) continue;
+    const product = batch.products.find((candidate) => candidate.themeId === themeId);
+    if (product && (!latest || batch.day >= latest.day)) {
+      latest = { day: batch.day, kind: product.kind };
+    }
+  }
+  return latest
+    ? { age: Math.max(0, decisionDay - latest.day), kind: latest.kind }
+    : null;
 }
 
 function restrictionRecentProductAge(
@@ -1750,16 +3362,10 @@ function restrictionRecentProductAge(
   decisionDay: number,
   themeId: ThemeId,
 ): number {
-  let latestProductDay = 1;
-  for (const batch of state.releaseHistory) {
-    if (
-      batch.day <= decisionDay &&
-      batch.products.some((product) => product.themeId === themeId)
-    ) {
-      latestProductDay = Math.max(latestProductDay, batch.day);
-    }
-  }
-  return Math.max(0, decisionDay - latestProductDay);
+  return (
+    restrictionRecentProduct(state, decisionDay, themeId)?.age ??
+    Math.max(0, decisionDay - 1)
+  );
 }
 
 function makeRestrictionContextPost(
@@ -1789,6 +3395,10 @@ function makeRestrictionContextPost(
     anchor.assessment === "unban"
       ? unbanReactionAssessment(state, context, anchor)
       : null;
+  const policy = getPublishedRestrictionPolicyProfile(
+    state,
+    context.decisionDay,
+  );
   const values = {
     theme: anchor.content.shortName,
     part: anchor.part.name,
@@ -1806,13 +3416,19 @@ function makeRestrictionContextPost(
     share: `${((unban?.currentShare ?? 0) * 100).toFixed(1)}%`,
     delta: `${(Math.abs(unban?.delta ?? 0) * 100).toFixed(1)}`,
     rank: String(unban?.rank ?? 0),
+    cutCount: String(policy.meaningfulCutCount),
+    changeCount: String(policy.changeCount),
+    cosmeticCount: String(policy.cosmeticChanges),
+    oldUnbanCount: String(policy.staleFullyReleased),
+    tierOneCutCount: String(policy.upperMeaningfulCuts),
+    tierTwoCutCount: String(policy.tier2MeaningfulCuts),
+    changeLabel: `${anchor.oldLimit}→${anchor.newLimit}장`,
+    limitLabel: anchor.newLimit === 0
+      ? "금지"
+      : `${anchor.newLimit}장 제한`,
   };
   const fill = (copy: string) => {
-    let body = copy;
-    for (const [key, value] of Object.entries(values)) {
-      body = body.replaceAll(`{${key}}`, value);
-    }
-    return body;
+    return fillCommunityCopy(copy, values);
   };
   const start = keyedIndex(
     pool.length,
@@ -1837,6 +3453,135 @@ function makeRestrictionContextPost(
       outputIndex + 1,
     ).padStart(2, "0")}`,
     day: context.decisionDay + context.age,
+    category: "restriction",
+    type: "restriction-demand",
+    themeId: anchor.content.id,
+    partId: anchor.part.id,
+    value: anchor.newLimit,
+    previousValue: anchor.oldLimit,
+    body,
+  };
+}
+
+type NarrowRestrictionFollowup = {
+  context: RecentRestrictionDecision;
+  age: 4 | 5 | 6 | 7;
+  profile: RestrictionPolicyProfile;
+  outcome: RestrictionHistoricalOutcome;
+  tightenedAnchors: RestrictionAnchor[];
+};
+
+function narrowRestrictionFollowup(
+  state: GameState,
+  day: number,
+): NarrowRestrictionFollowup | undefined {
+  for (const age of [4, 5, 6, 7] as const) {
+    const decisionDay = day - age;
+    const context = recentRestrictionDecision(state, decisionDay + 3);
+    if (!context || context.decisionDay !== decisionDay) continue;
+    const profile = getPublishedRestrictionPolicyProfile(state, decisionDay);
+    if (
+      profile.meaningfulCutCount < 1 ||
+      profile.meaningfulCutCount > 2 ||
+      profile.directionMix.tighten < 1
+    ) {
+      continue;
+    }
+    const decisionSnapshot = state.history.find(
+      (entry) => entry.day === decisionDay,
+    );
+    const followupSnapshot = state.history.find((entry) => entry.day === day);
+    const tightenedAnchors = context.anchors.filter(
+      (anchor) =>
+        anchor.direction === "tighten" && anchor.availabilityDelta > 1e-6,
+    ).sort((left, right) => {
+      const delta = (anchor: RestrictionAnchor) =>
+        (followupSnapshot?.shares[anchor.content.id] ?? 0) -
+        (decisionSnapshot?.shares[anchor.content.id] ?? 0);
+      return delta(left) - delta(right);
+    });
+    if (tightenedAnchors.length === 0) continue;
+    if (!state.history.some((entry) => entry.day === decisionDay)) continue;
+    const outcome = getRestrictionHistoricalOutcome(state, decisionDay, day);
+    if (outcome.classification === "pending" || !outcome.followupMetrics) {
+      continue;
+    }
+    return { context, age, profile, outcome, tightenedAnchors };
+  }
+  return undefined;
+}
+
+function narrowRestrictionFollowupPool(
+  followup: NarrowRestrictionFollowup,
+): readonly string[] {
+  switch (followup.outcome.classification) {
+    case "stabilized":
+      return followup.profile.meaningfulCutCount === 1
+        ? SINGLE_RESTRICTION_STABILIZED_COPY
+        : TWO_CARD_RESTRICTION_STABILIZED_COPY;
+    case "ineffective":
+      return NARROW_RESTRICTION_STILL_INSUFFICIENT_COPY;
+    case "overcorrected":
+      return NARROW_RESTRICTION_OVERKILL_FOLLOWUP_COPY;
+    case "replacement":
+      return NARROW_RESTRICTION_BALLOON_FOLLOWUP_COPY;
+    case "mixed":
+      return NARROW_RESTRICTION_MIXED_FOLLOWUP_COPY;
+    case "pending":
+      return NARROW_RESTRICTION_MIXED_FOLLOWUP_COPY;
+  }
+}
+
+function makeNarrowRestrictionFollowupPost(
+  state: GameState,
+  day: number,
+  followup: NarrowRestrictionFollowup,
+  outputIndex: number,
+  usedBodies: ReadonlySet<string>,
+): CommunityEvent {
+  const anchorSpecificOutcome =
+    followup.outcome.classification === "overcorrected" ||
+    followup.outcome.classification === "replacement";
+  const anchor = anchorSpecificOutcome
+    ? followup.tightenedAnchors[0]
+    : followup.tightenedAnchors[outputIndex % followup.tightenedAnchors.length];
+  const pool = narrowRestrictionFollowupPool(followup);
+  const snapshot = state.history.find((entry) => entry.day === day);
+  const rankedShares = snapshot
+    ? Object.values(snapshot.shares)
+      .filter((share) => Number.isFinite(share) && share >= 0)
+      .sort((left, right) => right - left)
+    : [];
+  const topTwoShare = rankedShares
+    .slice(0, 2)
+    .reduce((sum, share) => sum + share, 0);
+  const values = {
+    theme: anchor.content.shortName,
+    part: anchor.part.name,
+    cutCount: String(followup.profile.meaningfulCutCount),
+    followupAge: String(followup.age),
+    topShare: `${((followup.outcome.followupMetrics?.topShare ?? 0) * 100).toFixed(1)}%`,
+    topTwoShare: `${(topTwoShare * 100).toFixed(1)}%`,
+  };
+  const fill = (copy: string) => fillCommunityCopy(copy, values);
+  const start = keyedIndex(
+    pool.length,
+    state.seed,
+    "restriction-followup-copy",
+    followup.context.decisionDay,
+    day,
+    outputIndex,
+    followup.outcome.classification,
+  );
+  let body = fill(pool[start]);
+  for (let offset = 1; offset < pool.length && usedBodies.has(body); offset += 1) {
+    body = fill(pool[(start + offset) % pool.length]);
+  }
+  return {
+    id: `daily-restriction-followup-${followup.context.decisionDay}-${day}-${String(
+      outputIndex + 1,
+    ).padStart(2, "0")}`,
+    day,
     category: "restriction",
     type: "restriction-demand",
     themeId: anchor.content.id,
@@ -2109,12 +3854,40 @@ export function getCommunityHeat(state: GameState, day: number): number {
     turnoverHeat = Math.min(40, turnover * 90);
   }
   const fatigueHeat = [0, 18, 34, 52][fatigueStage(state, day)];
+  const businessHeat = Math.max(
+    0,
+    ...businessCommunityContexts(state, day).map((context) => {
+      switch (context.kind) {
+        case "venture-backlash":
+          return 100;
+        case "pack-detected":
+          return 100;
+        case "tournament-backlash":
+          return 94;
+        case "venture-success":
+          return 92;
+        case "pack-rumor":
+          return 88;
+        case "tournament-success":
+          return 82;
+        case "venture-waiting":
+          return 76;
+        case "animation":
+          return 72;
+        case "tv-cm":
+          return 64;
+        case "store-tour":
+          return 58;
+      }
+    }),
+  );
   return Math.round(
     Math.min(
       100,
       Math.max(
         profile.heat,
         restrictionHeat,
+        businessHeat,
         eventHeat + turnoverHeat,
         fatigueHeat,
       ),
@@ -2156,6 +3929,256 @@ function historicalThemePool(state: GameState, day: number): WeightedTheme[] {
   return [{ id: THEMES[0].id, weight: 1 }];
 }
 
+type BusinessCommunityKind = keyof typeof BUSINESS_CONTEXT_QUOTA;
+
+type BusinessCommunityContext = {
+  kind: BusinessCommunityKind;
+  age: number;
+  record: GameState["operations"]["records"][number];
+  ventureAction?: VentureActionType;
+  ventureFactor?: VentureRiskFactor;
+};
+
+function isVentureActionType(type: string): type is VentureActionType {
+  return Object.prototype.hasOwnProperty.call(VENTURE_BUSINESS_COPY, type);
+}
+
+function businessCommunityContexts(
+  state: GameState,
+  day: number,
+): BusinessCommunityContext[] {
+  const contexts: BusinessCommunityContext[] = [];
+  for (const record of state.operations.records) {
+    if (isVentureActionType(record.type)) {
+      const resolvedOutcome =
+        record.outcome === "success" || record.outcome === "backlash";
+      if (
+        resolvedOutcome &&
+        record.resolvedDay !== undefined &&
+        day >= record.resolvedDay
+      ) {
+        const kind = record.outcome === "success"
+          ? "venture-success"
+          : "venture-backlash";
+        const age = day - record.resolvedDay;
+        if (age >= 0 && age < BUSINESS_CONTEXT_QUOTA[kind].length) {
+          contexts.push({
+            kind,
+            age,
+            record,
+            ventureAction: record.type,
+            ventureFactor: record.riskContext?.[
+              record.outcome === "success" ? "primaryStrength" : "primaryRisk"
+            ] ?? "execution",
+          });
+        }
+        continue;
+      }
+
+      if (record.resolvedDay === undefined || day < record.resolvedDay) {
+        const age = day - record.startedDay - 1;
+        if (
+          age >= 0 &&
+          age < BUSINESS_CONTEXT_QUOTA["venture-waiting"].length
+        ) {
+          contexts.push({
+            kind: "venture-waiting",
+            age,
+            record,
+            ventureAction: record.type,
+            ventureFactor: record.riskContext?.primaryRisk ?? "execution",
+          });
+        }
+      }
+      continue;
+    }
+
+    if (
+      record.type === "pack-odds" &&
+      record.outcome === "detected" &&
+      record.resolvedDay !== undefined
+    ) {
+      const age = day - record.resolvedDay;
+      if (age >= 0 && age < BUSINESS_CONTEXT_QUOTA["pack-detected"].length) {
+        contexts.push({ kind: "pack-detected", age, record });
+        continue;
+      }
+      if (day >= record.resolvedDay) continue;
+    }
+    if (
+      record.type === "championship" &&
+      (record.outcome === "success" || record.outcome === "backlash")
+    ) {
+      const age = day - (record.resolvedDay ?? record.startedDay);
+      const kind = record.outcome === "success"
+        ? "tournament-success"
+        : "tournament-backlash";
+      if (age >= 0 && age < BUSINESS_CONTEXT_QUOTA[kind].length) {
+        contexts.push({ kind, age, record });
+      }
+      continue;
+    }
+    if (
+      record.type === "pack-odds" &&
+      record.appliedDay === day &&
+      (record.resolvedDay === undefined || day < record.resolvedDay)
+    ) {
+      contexts.push({ kind: "pack-rumor", age: 0, record });
+      continue;
+    }
+    if (
+      record.type === "animation-promotion" ||
+      record.type === "tv-cm" ||
+      record.type === "store-tour"
+    ) {
+      const age = day - record.startedDay - 1;
+      const kind = record.type === "animation-promotion"
+        ? "animation"
+        : record.type;
+      const withinReactionWindow = kind === "animation"
+        ? day <= record.endsDay
+        : age < BUSINESS_CONTEXT_QUOTA[kind].length;
+      if (age >= 0 && withinReactionWindow) {
+        contexts.push({ kind, age, record });
+      }
+    }
+  }
+
+  const priority: Record<BusinessCommunityKind, number> = {
+    "venture-backlash": 0,
+    "pack-detected": 1,
+    "tournament-backlash": 2,
+    "venture-success": 3,
+    "tournament-success": 4,
+    "venture-waiting": 5,
+    "pack-rumor": 6,
+    animation: 7,
+    "tv-cm": 8,
+    "store-tour": 9,
+  };
+  return contexts.sort(
+    (left, right) =>
+      priority[left.kind] - priority[right.kind] ||
+      right.record.startedDay - left.record.startedDay,
+  );
+}
+
+function businessCommunityQuota(context: BusinessCommunityContext): number {
+  if (context.kind === "animation") {
+    return BUSINESS_CONTEXT_QUOTA.animation[context.age] ?? 2;
+  }
+  return BUSINESS_CONTEXT_QUOTA[context.kind][context.age] ?? 0;
+}
+
+function businessCommunityPool(
+  context: BusinessCommunityContext,
+): readonly string[] {
+  switch (context.kind) {
+    case "venture-waiting":
+    case "venture-success":
+    case "venture-backlash": {
+      if (!context.ventureAction || !context.ventureFactor) return [];
+      const stage = context.kind === "venture-waiting"
+        ? VENTURE_BUSINESS_COPY[context.ventureAction].waiting
+        : context.kind === "venture-success"
+          ? VENTURE_BUSINESS_COPY[context.ventureAction].success
+          : VENTURE_BUSINESS_COPY[context.ventureAction].backlash;
+      return [...stage.core, ...stage.byFactor[context.ventureFactor]];
+    }
+    case "pack-detected":
+      return PACK_ODDS_DETECTED_COPY;
+    case "tournament-backlash":
+      return TOURNAMENT_BACKLASH_COPY;
+    case "tournament-success":
+      return TOURNAMENT_SUCCESS_COPY;
+    case "pack-rumor":
+      return PACK_ODDS_RUMOR_COPY;
+    case "animation":
+      return getAnimationPromotionCopy(
+        context.age + 1,
+        context.record.endsDay - context.record.startedDay,
+      );
+    case "tv-cm":
+      return TV_CM_COPY;
+    case "store-tour":
+      return STORE_TOUR_COPY;
+  }
+}
+
+function makeBusinessCommunityPosts(
+  state: GameState,
+  day: number,
+  maximum: number,
+  usedBodies: ReadonlySet<string>,
+): CommunityEvent[] {
+  const output: CommunityEvent[] = [];
+  const bodies = new Set(usedBodies);
+  const themePool = historicalThemePool(state, day);
+
+  for (const context of businessCommunityContexts(state, day)) {
+    const quota = businessCommunityQuota(context);
+    const copyPool = businessCommunityPool(context);
+    const start = keyedIndex(
+      copyPool.length,
+      state.seed,
+      "business-community-copy",
+      context.kind,
+      context.record.id,
+      day,
+    );
+    for (let index = 0; index < quota && output.length < maximum; index += 1) {
+      let body = copyPool[(start + index) % copyPool.length];
+      for (let offset = 1; bodies.has(body) && offset < copyPool.length; offset += 1) {
+        body = copyPool[(start + index + offset) % copyPool.length];
+      }
+      if (bodies.has(body)) continue;
+
+      const outputIndex = output.length;
+      const chosen = chooseTheme(
+        themePool,
+        state.seed,
+        day,
+        outputIndex,
+        `business-community-theme-${context.record.id}`,
+      );
+      const otherPool = themePool.filter((theme) => theme.id !== chosen.id);
+      const related = otherPool.length > 0
+        ? chooseTheme(
+            otherPool,
+            state.seed,
+            day,
+            outputIndex,
+            `business-community-related-${context.record.id}`,
+          )
+        : undefined;
+      const scandal =
+        context.kind === "venture-backlash" ||
+        context.kind === "pack-detected" ||
+        context.kind === "tournament-backlash";
+      const category: CommunityCategory = context.kind.startsWith("venture")
+        ? context.ventureAction === "season-overhaul" ? "meta" : "finance"
+        : context.kind.startsWith("pack")
+          ? "finance"
+          : context.kind.startsWith("tournament")
+            ? "meta"
+            : "release";
+      output.push({
+        id: `daily-business-${context.record.id}-${day}-${String(index + 1).padStart(2, "0")}`,
+        day,
+        category,
+        type: scandal ? "business-scandal" : "business-reaction",
+        themeId: chosen.id,
+        ...(related ? { relatedThemeId: related.id } : {}),
+        ...(context.record.risk === undefined ? {} : { value: context.record.risk }),
+        body,
+      });
+      bodies.add(body);
+    }
+    if (output.length >= maximum) break;
+  }
+  return output;
+}
+
 function chooseTheme(
   pool: readonly WeightedTheme[],
   seed: number,
@@ -2177,19 +4200,31 @@ function chooseTheme(
   return pool[pool.length - 1];
 }
 
+function greatestCommonDivisor(left: number, right: number): number {
+  let a = Math.abs(left);
+  let b = Math.abs(right);
+  while (b !== 0) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  return a;
+}
+
+const DAILY_TEMPLATE_STEPS = Array.from(
+  { length: DAILY_TEMPLATES.length - 1 },
+  (_, index) => index + 1,
+).filter((step) => greatestCommonDivisor(step, DAILY_TEMPLATES.length) === 1);
+
 function templateFor(seed: number, day: number, index: number): DailyTemplate {
-  const coprimeSteps = [
-    1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31,
-    33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63,
-  ];
   const offset = keyedIndex(
     DAILY_TEMPLATES.length,
     seed,
     "daily-community-template-offset",
   );
-  const step = coprimeSteps[
+  const step = DAILY_TEMPLATE_STEPS[
     keyedIndex(
-      coprimeSteps.length,
+      DAILY_TEMPLATE_STEPS.length,
       seed,
       "daily-community-template-step",
     )
@@ -2202,11 +4237,7 @@ function fillTemplate(
   template: DailyTemplate,
   values: Record<"theme" | "other" | "part" | "share" | "copies" | "day", string>,
 ) {
-  let body = template.text as string;
-  for (const [key, value] of Object.entries(values)) {
-    body = body.replaceAll(`{${key}}`, value);
-  }
-  return body;
+  return fillCommunityCopy(template.text, values);
 }
 
 function fillReactionCopy(
@@ -2261,17 +4292,15 @@ function fillReactionCopy(
   const newCard = newPart?.name ?? part.name;
   const oldCard = oldPart?.name ?? fallbackPart.name;
   return {
-    body: text
-      .replaceAll("{theme}", content.shortName)
-      .replaceAll("{part}", part.name)
-      .replaceAll("{days}", String(daysSinceRestriction ?? 0))
-      .replaceAll(
-        "{share}",
-        `${((supportContext?.share ?? 0) * 100).toFixed(1)}%`,
-      )
-      .replaceAll("{supportNo}", String(supportContext?.supportNumber ?? 1))
-      .replaceAll("{newCard}", newCard)
-      .replaceAll("{oldCard}", oldCard),
+    body: fillCommunityCopy(text, {
+      theme: content.shortName,
+      part: part.name,
+      days: String(daysSinceRestriction ?? 0),
+      share: `${((supportContext?.share ?? 0) * 100).toFixed(1)}%`,
+      supportNo: String(supportContext?.supportNumber ?? 1),
+      newCard,
+      oldCard,
+    }),
     partId: part.id,
   };
 }
@@ -2447,9 +4476,12 @@ function fatiguePost(
   if (!chosen) return null;
   const content = THEME_BY_ID[chosen.themeId];
   const pool = FATIGUE_COPY[stage - 1];
-  const body = pool[
-    keyedIndex(pool.length, state.seed, "fatigue-copy", day, chosen.themeId, stage)
-  ].replaceAll("{theme}", content.shortName);
+  const body = fillCommunityCopy(
+    pool[
+      keyedIndex(pool.length, state.seed, "fatigue-copy", day, chosen.themeId, stage)
+    ],
+    { theme: content.shortName },
+  );
   return {
     id: `daily-fatigue-${day}-${chosen.themeId}-${stage}`,
     day,
@@ -2462,7 +4494,8 @@ function fatiguePost(
 
 /**
  * Builds a read-only twenty-post board snapshot for a historical campaign day.
- * Engine-authored events are kept first; synthetic chatter is never persisted.
+ * Business crises and event reactions take priority, followed by engine-authored
+ * events. Synthetic chatter is never persisted.
  */
 export function getDailyCommunityPosts(
   state: GameState,
@@ -2477,14 +4510,29 @@ export function getDailyCommunityPosts(
     .slice(0, POSTS_PER_DAY)
     .map((event) => ({ ...event }));
   const restrictionContext = recentRestrictionDecision(state, day);
+  const restrictionFollowup = restrictionContext
+    ? undefined
+    : narrowRestrictionFollowup(state, day);
   const output: CommunityEvent[] = [];
   const usedBodies = new Set<string>();
+  for (const post of makeBusinessCommunityPosts(
+    state,
+    day,
+    POSTS_PER_DAY,
+    usedBodies,
+  )) {
+    output.push(post);
+    usedBodies.add(post.body);
+  }
+  if (output.length === POSTS_PER_DAY) return output;
+  const businessPostCount = output.length;
   if (restrictionContext) {
     const target = RESTRICTION_CONTEXT_QUOTA[restrictionContext.age - 1];
     const existingContext = allSpecialPosts
       .filter((event) => isRestrictionContextEvent(event, restrictionContext))
       .slice(0, target);
     for (let index = 0; index < existingContext.length; index += 1) {
+      if (output.length >= POSTS_PER_DAY) break;
       const event = existingContext[index];
       const anchor = restrictionContext.anchors.find(
         (candidate) =>
@@ -2507,15 +4555,20 @@ export function getDailyCommunityPosts(
       });
       usedBodies.add(contextual.body);
     }
-    while (output.length < target) {
+    let contextualRestrictionCount = output.length - businessPostCount;
+    while (
+      contextualRestrictionCount < target &&
+      output.length < POSTS_PER_DAY
+    ) {
       const contextual = makeRestrictionContextPost(
         state,
         restrictionContext,
-        output.length,
+        contextualRestrictionCount,
         usedBodies,
       );
       output.push(contextual);
       usedBodies.add(contextual.body);
+      contextualRestrictionCount += 1;
     }
     if (
       restrictionContext.anchors.some(
@@ -2524,14 +4577,16 @@ export function getDailyCommunityPosts(
     ) {
       const stale = makeStaleRestrictionPosts(state, day, false, 2);
       for (let index = 0; index < stale.length; index += 1) {
-        const replaced = output[index];
+        const replacementIndex = businessPostCount + index;
+        if (replacementIndex >= POSTS_PER_DAY) break;
+        const replaced = output[replacementIndex];
         if (replaced) usedBodies.delete(replaced.body);
         const post = stale[index];
         const prioritized = {
           ...post,
           id: `daily-restriction-${restrictionContext.decisionDay}-stale-${post.themeId}-${post.partId}-${restrictionContext.age}`,
         };
-        output[index] = prioritized;
+        output[replacementIndex] = prioritized;
         usedBodies.add(prioritized.body);
       }
     }
@@ -2544,8 +4599,25 @@ export function getDailyCommunityPosts(
       usedBodies.add(event.body);
     }
   } else {
-    output.push(...allSpecialPosts);
-    for (const event of output) usedBodies.add(event.body);
+    for (const event of allSpecialPosts) {
+      if (output.length >= POSTS_PER_DAY) break;
+      output.push(event);
+      usedBodies.add(event.body);
+    }
+  }
+  if (restrictionFollowup) {
+    const followupCount = Math.min(3, POSTS_PER_DAY - output.length);
+    for (let index = 0; index < followupCount; index += 1) {
+      const post = makeNarrowRestrictionFollowupPost(
+        state,
+        day,
+        restrictionFollowup,
+        index,
+        usedBodies,
+      );
+      output.push(post);
+      usedBodies.add(post.body);
+    }
   }
   if (output.length === POSTS_PER_DAY) return output;
 

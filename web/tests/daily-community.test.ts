@@ -8,21 +8,96 @@ import {
   THEME_BY_ID,
 } from "../app/game/content.ts";
 import {
+  ANIMATION_PROMOTION_COPY,
+  ANIMATION_PROMOTION_FINALE_COPY,
+  ANIMATION_PROMOTION_MIDDLE_COPY,
+  ANIMATION_PROMOTION_OPENING_COPY,
+  getAnimationPromotionCopy,
+  PACK_ODDS_DETECTED_COPY,
+  PACK_ODDS_RUMOR_COPY,
+  STORE_TOUR_COPY,
+  TOURNAMENT_BACKLASH_COPY,
+  TOURNAMENT_SUCCESS_COPY,
+  TV_CM_COPY,
+  VENTURE_ACTION_TYPES,
+  VENTURE_BUSINESS_COPY,
+  VENTURE_RISK_FACTORS,
+} from "../app/game/business-community-copy.ts";
+import type {
+  VentureActionType,
+  VentureRiskFactor,
+} from "../app/game/business-community-copy.ts";
+import {
   getCommunityHeat,
   getDailyCommunityPosts,
   getReleaseReactionProfile,
 } from "../app/game/daily-community.ts";
+import {
+  getPublishedRestrictionPolicyProfile,
+  getRestrictionHistoricalOutcome,
+} from "../app/game/restriction-policy.ts";
 import {
   createInitialGame,
   formatCommunityEvent,
   reduceGame,
 } from "../app/game/engine.ts";
 import type {
+  BusinessActionRecord,
   CommunityEvent,
   GameState,
   PowerAdjustment,
+  RestrictionLimit,
   ThemeContent,
+  ThemeId,
 } from "../app/game/types.ts";
+
+function addBusinessRecord(
+  state: GameState,
+  record: Omit<BusinessActionRecord, "id">,
+): void {
+  const id = `business-action-${state.operations.nextActionId}`;
+  state.operations.nextActionId += 1;
+  state.operations.records.push({ id, ...record });
+}
+
+test("business reactions provide two hundred distinct community voices", () => {
+  const pools = [
+    TV_CM_COPY,
+    ANIMATION_PROMOTION_COPY,
+    TOURNAMENT_SUCCESS_COPY,
+    TOURNAMENT_BACKLASH_COPY,
+    PACK_ODDS_RUMOR_COPY,
+    PACK_ODDS_DETECTED_COPY,
+    STORE_TOUR_COPY,
+  ];
+  const all = pools.flat();
+  assert.equal(all.length, 200);
+  assert.equal(new Set(all).size, 200);
+});
+
+test("animation copy follows the configured broadcast timeline", () => {
+  assert.equal(ANIMATION_PROMOTION_OPENING_COPY.length, 10);
+  assert.equal(ANIMATION_PROMOTION_MIDDLE_COPY.length, 10);
+  assert.equal(ANIMATION_PROMOTION_FINALE_COPY.length, 8);
+  assert.ok(ANIMATION_PROMOTION_COPY.every((body) => !body.includes("반년")));
+
+  const opening = getAnimationPromotionCopy(1, 75);
+  const middle = getAnimationPromotionCopy(31, 75);
+  const finale = getAnimationPromotionCopy(70, 75);
+
+  assert.ok(opening.some((body) => body.includes("방영 1일차")));
+  assert.ok(opening.every((body) => !/결승전|편성이 끝나도|재탕/.test(body)));
+  assert.ok(middle.some((body) => body.includes("방영 5주차")));
+  assert.ok(middle.every((body) => !/제작 발표|첫 PV|결승전|편성이 끝나도/.test(body)));
+  assert.ok(finale.some((body) => body.includes("방영 70일째")));
+  assert.ok(finale.some((body) => body.includes("총 75일 편성")));
+  assert.ok([...opening, ...middle, ...finale].every((body) => !/[{}]/.test(body)));
+
+  assert.ok(getAnimationPromotionCopy(15, 75).some((body) => body.includes("방영 15일차")));
+  assert.ok(getAnimationPromotionCopy(16, 75).some((body) => body.includes("방영 3주차")));
+  assert.ok(getAnimationPromotionCopy(60, 75).some((body) => body.includes("방영 9주차")));
+  assert.ok(getAnimationPromotionCopy(61, 75).some((body) => body.includes("방영 61일째")));
+});
 
 function makeRuntime(theme: ThemeContent, share: number): GameState["themes"][string] {
   const launchParts = theme.parts.slice(0, INITIAL_THEME_PART_COUNT);
@@ -71,14 +146,24 @@ function makeState(seed = 7301): GameState {
   );
 
   return {
-    schemaVersion: 3,
+    schemaVersion: 6,
     seed,
     day: 60,
     phase: "running",
     activeThemeIds: active.map((theme) => theme.id),
     themes,
     users: { tier: 35_000, casual: 45_000, collector: 20_000 },
-    finance: { today: 0.7, rolling30: 18, cumulative: 35 },
+    finance: {
+      today: 0.7,
+      rolling30: 18,
+      cumulative: 35,
+      cash: 13.7,
+      todayOperatingCash: 0.224,
+      todayOperatingCost: 0.03,
+      cumulativeOperatingCosts: 0.42,
+      cumulativeExpenses: 0,
+    },
+    operations: { nextActionId: 1, records: [] },
     community: [],
     supportRequests: [],
     releaseSlate: null,
@@ -104,6 +189,133 @@ function makeState(seed = 7301): GameState {
     purchaseTrust: 80,
     handoverComplete: true,
   };
+}
+
+type RestrictionFixtureChange = {
+  themeId: ThemeId;
+  partId: string;
+  oldLimit: RestrictionLimit;
+  newLimit: RestrictionLimit;
+  type?: "restriction-applied" | "cosmetic-restriction";
+};
+
+function makeRestrictionReactionState(
+  changes: readonly RestrictionFixtureChange[],
+  seed = 34_001,
+): GameState {
+  const state = makeState(seed);
+  state.day = 48;
+  state.phase = "running";
+  state.community = changes.map((change, index) => {
+    const content = THEME_BY_ID[change.themeId];
+    const part = content.parts.find((candidate) => candidate.id === change.partId);
+    assert.ok(part);
+    state.themes[change.themeId].legalLimits[change.partId] = change.newLimit;
+    return {
+      id: `fixture-restriction-${index + 1}`,
+      day: 45,
+      category: "restriction" as const,
+      type: change.type ?? "restriction-applied",
+      themeId: change.themeId,
+      partId: change.partId,
+      value: change.newLimit,
+      previousValue: change.oldLimit,
+      body: `[운영 공지] ${part.name} ${change.oldLimit}→${change.newLimit}장`,
+    };
+  });
+  const shares = Object.fromEntries(
+    state.activeThemeIds.map((themeId) => [themeId, state.themes[themeId].share]),
+  );
+  state.history = [45, 46, 47, 48].map((day) => ({
+    day,
+    totalUsers: 100_000,
+    revenue: 0.5,
+    topThemeId: state.currentTopThemeId,
+    shares: { ...shares },
+  }));
+  return state;
+}
+
+function restrictionContextPosts(
+  state: GameState,
+  day: number,
+  decisionDay = 45,
+): CommunityEvent[] {
+  const anchorKeys = new Set(
+    state.community
+      .filter((event) => event.day === decisionDay && event.partId)
+      .map((event) => `${event.themeId}:${event.partId}`),
+  );
+  const storedIds = new Set(
+    state.community
+      .filter(
+        (event) =>
+          event.day === day &&
+          event.type === "restriction-demand" &&
+          event.partId &&
+          anchorKeys.has(`${event.themeId}:${event.partId}`),
+      )
+      .map((event) => event.id),
+  );
+  return getDailyCommunityPosts(state, day).filter(
+    (post) =>
+      post.id.startsWith(`daily-restriction-${decisionDay}-`) ||
+      storedIds.has(post.id),
+  );
+}
+
+function makeScheduledRestrictionReactionState(
+  changes: readonly RestrictionFixtureChange[],
+  seed = 34_501,
+  decisionDay = 165,
+): GameState {
+  const state = makeState(seed);
+  state.day = decisionDay + 7;
+  state.phase = "running";
+  state.community = changes.map((change, index) => {
+    const content = THEME_BY_ID[change.themeId];
+    const part = content.parts.find((candidate) => candidate.id === change.partId);
+    assert.ok(part);
+    state.themes[change.themeId].legalLimits[change.partId] = change.newLimit;
+    return {
+      id: `scheduled-restriction-${index + 1}`,
+      day: decisionDay,
+      category: "restriction" as const,
+      type: change.type ?? "restriction-applied",
+      themeId: change.themeId,
+      partId: change.partId,
+      value: change.newLimit,
+      previousValue: change.oldLimit,
+      body: `[운영 공지] ${part.name} ${change.oldLimit}→${change.newLimit}장`,
+    };
+  });
+  const shares = Object.fromEntries(
+    state.activeThemeIds.map((themeId) => [themeId, state.themes[themeId].share]),
+  );
+  state.history = Array.from({ length: 8 }, (_, index) => ({
+    day: decisionDay + index,
+    totalUsers: 100_000,
+    revenue: 0.5,
+    topThemeId: state.currentTopThemeId,
+    shares: { ...shares },
+  }));
+  return state;
+}
+
+function setRestrictionFollowupSnapshot(
+  state: GameState,
+  day: number,
+  shares: Readonly<Record<ThemeId, number>>,
+  totalUsers = 100_000,
+): void {
+  const snapshot = state.history.find((entry) => entry.day === day);
+  assert.ok(snapshot);
+  snapshot.shares = { ...shares };
+  snapshot.totalUsers = totalUsers;
+  snapshot.topThemeId = Object.entries(shares).sort(
+    ([leftId, left], [rightId, right]) =>
+      right - left || leftId.localeCompare(rightId),
+  )[0][0];
 }
 
 function releaseWithMixedReactions(seed = 9191): GameState {
@@ -254,7 +466,7 @@ function unbanReactionState(
       ]),
     );
   };
-  state.day = 138;
+  state.day = 168;
   state.phase = "running";
   state.community = [
     {
@@ -270,7 +482,7 @@ function unbanReactionState(
     },
     {
       id: "long-restriction-unban",
-      day: 135,
+      day: 165,
       category: "restriction",
       type: "restriction-applied",
       themeId: targetId,
@@ -282,7 +494,7 @@ function unbanReactionState(
   ];
   const shares = pathByTone[tone];
   state.history = shares.map((targetShare, index) => {
-    const day = 135 + index;
+    const day = 165 + index;
     const dayShares = sharesFor(targetShare);
     const topThemeId = [...state.activeThemeIds].sort(
       (left, right) => dayShares[right] - dayShares[left],
@@ -340,7 +552,7 @@ function staleRestrictionState(
     const topPart = THEME_BY_ID[topId].parts[0];
     state.community.push({
       id: "stale-no-change",
-      day: 135,
+      day: 165,
       category: "restriction",
       type: "restriction-no-change",
       themeId: topId,
@@ -350,7 +562,7 @@ function staleRestrictionState(
       body: "[운영 공지] 금제 변경 없음",
     });
   }
-  state.history = [135, 136, 137, 138, 170].map((day) => ({
+  state.history = [135, 136, 137, 165, 170].map((day) => ({
     day,
     totalUsers: 10_000,
     revenue: 0.5,
@@ -433,21 +645,66 @@ test("returns twenty stable posts for every valid campaign day without mutation"
   assert.throws(() => getDailyCommunityPosts(state, state.day + 1), RangeError);
 });
 
-test("cycles through all 64 copy templates across thirty days", () => {
+test("cycles through all 192 ordinary copy templates before repeating", () => {
   const state = makeState(90125);
   const templateKeys = new Set<string>();
+  const firstCycleKeys: string[] = [];
 
   for (let day = 1; day <= 30; day += 1) {
+    const dailyPrefixes = new Set<string>();
     for (const post of getDailyCommunityPosts(state, day)) {
       const match = post.id.match(
-        /-(meta|deck|counter|ban|fan|newbie|tourney|price)-(\d{2})$/,
+        /-(meta|deck|counter|ban|fan|newbie|tourney|price)-(\d{2,})$/,
       );
       assert.ok(match, post.id);
-      templateKeys.add(`${match[1]}-${match[2]}`);
+      const key = `${match[1]}-${match[2]}`;
+      templateKeys.add(key);
+      dailyPrefixes.add(match[1]);
+      if (firstCycleKeys.length < 192) firstCycleKeys.push(key);
+      assert.doesNotMatch(post.body, /\{[a-zA-Z][^}]*\}/);
     }
+    assert.equal(dailyPrefixes.size, 8, `DAY ${day}`);
   }
 
-  assert.equal(templateKeys.size, 64);
+  assert.equal(templateKeys.size, 192);
+  assert.equal(new Set(firstCycleKeys).size, 192);
+  for (const prefix of [
+    "meta",
+    "deck",
+    "counter",
+    "ban",
+    "fan",
+    "newbie",
+    "tourney",
+    "price",
+  ]) {
+    assert.equal(
+      [...templateKeys].filter((key) => key.startsWith(`${prefix}-`)).length,
+      24,
+      prefix,
+    );
+  }
+});
+
+test("every seeded template stride reaches the full ordinary pool", () => {
+  for (let seed = 0; seed < 64; seed += 1) {
+    const state = makeState(seed * 7_919);
+    const firstCycleKeys: string[] = [];
+
+    for (let day = 1; day <= 10 && firstCycleKeys.length < 192; day += 1) {
+      for (const post of getDailyCommunityPosts(state, day)) {
+        const match = post.id.match(
+          /-(meta|deck|counter|ban|fan|newbie|tourney|price)-(\d{2,})$/,
+        );
+        assert.ok(match, `${seed}: ${post.id}`);
+        if (firstCycleKeys.length < 192) {
+          firstCycleKeys.push(`${match[1]}-${match[2]}`);
+        }
+      }
+    }
+
+    assert.equal(new Set(firstCycleKeys).size, 192, `seed ${seed}`);
+  }
 });
 
 test("generated part names avoid stacked possessive particles", () => {
@@ -642,6 +899,841 @@ test("adds current-day fatigue chatter below release priority", () => {
   );
 });
 
+type PrologueRestrictionDecision = {
+  key: string;
+  themeId: ThemeId;
+  partId: string;
+  previousValue: RestrictionLimit;
+  value: RestrictionLimit;
+  part: ThemeContent["parts"][number];
+};
+
+function prologueRestrictionDecisions(
+  state: GameState,
+): PrologueRestrictionDecision[] {
+  return state.community.flatMap((event) => {
+    if (
+      event.day !== 45 ||
+      (event.type !== "restriction-applied" &&
+        event.type !== "cosmetic-restriction") ||
+      !event.partId ||
+      !Number.isInteger(event.previousValue) ||
+      !Number.isInteger(event.value)
+    ) {
+      return [];
+    }
+    const part = THEME_BY_ID[event.themeId]?.parts.find(
+      (candidate) => candidate.id === event.partId,
+    );
+    assert.ok(part);
+    return [{
+      key: `${event.themeId}:${event.partId}`,
+      themeId: event.themeId,
+      partId: event.partId,
+      previousValue: event.previousValue as RestrictionLimit,
+      value: event.value as RestrictionLimit,
+      part,
+    }];
+  });
+}
+
+function restrictionRoleSignal(
+  role: ThemeContent["parts"][number]["role"],
+): RegExp {
+  switch (role) {
+    case "starter1":
+    case "starter2":
+      return /초동|첫 패|손패|시작 카드|시작할 확률|시작하던|입구를 좁|전개 진입/;
+    case "bridge":
+      return /연결|전개 중간|중간 병목|중간다리|전개 경로|완주하는 길/;
+    case "finisher":
+      return /결과물|최종 필드|마무리|도착점|선공 고점/;
+    case "recursion":
+      return /회수축|후속|장기전|두 번째 턴|재전개|자원전/;
+  }
+}
+
+const FALSE_SINGLE_TARGET_SCOPE =
+  /금제표 한 줄|한 장짜리 금제표|변경점(?:은|이) .*하나뿐|실제로 바뀐 카드는 .*한 종뿐|이번 발표는 .*단일 변경|한 카드만 .*끝|여러 곳을 친 금제가 아니다/;
+
+test("prologue four-cut reactions use the actual targets, scope, and roles", () => {
+  const state = reduceGame(createInitialGame(1000), {
+    type: "ADVANCE_DAYS",
+    days: 2,
+  });
+  const decisions = prologueRestrictionDecisions(state);
+  const byKey = new Map(decisions.map((decision) => [decision.key, decision]));
+
+  assert.equal(decisions.length, 4);
+  assert.equal(new Set(decisions.map((decision) => decision.themeId)).size, 4);
+  assert.ok(
+    decisions.every(
+      (decision) =>
+        decision.previousValue === 3 &&
+        (decision.value === 1 || decision.value === 2),
+    ),
+  );
+  assert.ok(
+    decisions.every(
+      (decision) => decision.partId !== "machine-revolution-siege-g09",
+    ),
+  );
+
+  for (const [day, quota] of [
+    [46, 16],
+    [47, 14],
+    [48, 12],
+  ] as const) {
+    const posts = restrictionContextPosts(state, day);
+    assert.equal(posts.length, quota);
+    assert.equal(new Set(posts.map((post) => post.body)).size, quota);
+    assert.deepEqual(
+      new Set(posts.map((post) => `${post.themeId}:${post.partId}`)),
+      new Set(byKey.keys()),
+    );
+    for (const post of posts) {
+      const decision = byKey.get(`${post.themeId}:${post.partId}`);
+      assert.ok(decision);
+      assert.equal(post.previousValue, decision.previousValue);
+      assert.equal(post.value, decision.value);
+      assert.equal(FALSE_SINGLE_TARGET_SCOPE.test(post.body), false);
+      assert.equal(post.body.includes("공성 G-09"), false);
+      const namedTargets = decisions.filter((candidate) =>
+        post.body.includes(candidate.part.name)
+      );
+      assert.ok(
+        namedTargets.every((candidate) => candidate.key === decision.key),
+      );
+    }
+  }
+
+  const dayOne = restrictionContextPosts(state, 46);
+  const debutThemeIds = new Set(
+    state.releaseHistory.flatMap((batch) =>
+      batch.products
+        .filter((product) => product.kind === "new-theme")
+        .map((product) => product.themeId),
+    ),
+  );
+  assert.ok(
+    dayOne.some((post) =>
+      /여러 테마|복수 테마|환경 전체|한쪽만 겨냥한 공지가 아니라|상위권 여러 덱/.test(
+        post.body,
+      )
+    ),
+  );
+  assert.ok(
+    dayOne.some((post) =>
+      /1티어.*2티어|상위 두 구간|상위권 두 층|현역 두 구간/.test(post.body)
+    ),
+  );
+  for (const decision of decisions) {
+    const anchored = dayOne.filter(
+      (post) => `${post.themeId}:${post.partId}` === decision.key,
+    );
+    assert.equal(anchored.length, 4);
+    assert.ok(
+      anchored.some((post) => restrictionRoleSignal(decision.part.role).test(post.body)),
+      `${decision.part.name} (${decision.part.role})`,
+    );
+    if (debutThemeIds.has(decision.themeId)) {
+      assert.ok(
+        anchored.some((post) => /첫 상품|신규 테마|막 데뷔|출시/.test(post.body)),
+        `${decision.part.name} debut timing`,
+      );
+      assert.ok(
+        anchored.every(
+          (post) => !/최근 지원|지원이 나온 뒤|지원으로 채운/.test(post.body),
+        ),
+        `${decision.part.name} is a debut, not a support release`,
+      );
+    }
+  }
+});
+
+test("prologue dynamic four-cut copy stays fact-safe across seeds", () => {
+  const signatures = new Set<string>();
+  for (let seed = 40_001; seed <= 40_032; seed += 1) {
+    const state = reduceGame(createInitialGame(seed), {
+      type: "ADVANCE_DAYS",
+      days: 2,
+    });
+    const decisions = prologueRestrictionDecisions(state);
+    const byKey = new Map(decisions.map((decision) => [decision.key, decision]));
+    assert.equal(decisions.length, 4, `seed ${seed}`);
+    assert.equal(
+      new Set(decisions.map((decision) => decision.themeId)).size,
+      4,
+      `seed ${seed}`,
+    );
+    signatures.add([...byKey.keys()].sort().join("|"));
+
+    for (const [day, quota] of [
+      [46, 16],
+      [47, 14],
+      [48, 12],
+    ] as const) {
+      const posts = restrictionContextPosts(state, day);
+      assert.equal(posts.length, quota, `seed ${seed} DAY ${day}`);
+      assert.equal(
+        new Set(posts.map((post) => post.body)).size,
+        quota,
+        `seed ${seed} DAY ${day} unique copy`,
+      );
+      assert.ok(
+        posts.every((post) => {
+          const decision = byKey.get(`${post.themeId}:${post.partId}`);
+          return Boolean(
+            decision &&
+              post.previousValue === decision.previousValue &&
+              post.value === decision.value &&
+              !FALSE_SINGLE_TARGET_SCOPE.test(post.body) &&
+              !post.body.includes("공성 G-09"),
+          );
+        }),
+        `seed ${seed} DAY ${day} factual anchors`,
+      );
+    }
+
+    const dayOne = restrictionContextPosts(state, 46);
+    for (const decision of decisions) {
+      const anchored = dayOne.filter(
+        (post) => `${post.themeId}:${post.partId}` === decision.key,
+      );
+      assert.ok(
+        anchored.some((post) => restrictionRoleSignal(decision.part.role).test(post.body)),
+        `seed ${seed} ${decision.part.name} (${decision.part.role})`,
+      );
+    }
+  }
+  assert.ok(signatures.size > 1);
+});
+
+test("single-card restriction copy follows starter, bridge, and recursion roles", () => {
+  const cases: Array<{
+    change: RestrictionFixtureChange;
+    expected: RegExp;
+    forbidden: RegExp;
+  }> = [
+    {
+      change: {
+        themeId: "cycle",
+        partId: "cycle-guide",
+        oldLimit: 3,
+        newLimit: 2,
+      },
+      expected: /초동|첫 패|손패|시작|진입|입구|일관성/,
+      forbidden: /최종 필드만|결과물.*공백|회수축|장기전 자원|중간 병목/,
+    },
+    {
+      change: {
+        themeId: "cycle",
+        partId: "cycle-rewound-pact",
+        oldLimit: 3,
+        newLimit: 1,
+      },
+      expected: /연결|병목|전개 경로|중간다리|완주|조합|거치|루트/,
+      forbidden: /초동률|첫 패 확률|최종 필드만|회수축|장기전 자원/,
+    },
+    {
+      change: {
+        themeId: "cycle",
+        partId: "cycle-return",
+        oldLimit: 3,
+        newLimit: 1,
+      },
+      expected: /회수|후속|장기전|재전개|두 번째 턴|복구|자원/,
+      forbidden: /초동률|첫 패 확률|중간 병목|최종 필드만|결과물 공백/,
+    },
+  ];
+
+  for (const [index, { change, expected, forbidden }] of cases.entries()) {
+    const state = makeRestrictionReactionState([change], 35_000 + index);
+    const posts = restrictionContextPosts(state, 46);
+    assert.equal(posts.length, 16);
+    assert.ok(posts.filter((post) => expected.test(post.body)).length >= 3);
+    assert.ok(posts.every((post) => !forbidden.test(post.body)));
+    assert.ok(posts.every((post) => post.partId === change.partId));
+    assert.ok(posts.every((post) => !/[{}]/.test(post.body)));
+  }
+});
+
+test("single cosmetic restriction criticizes both zero impact and missing breadth", () => {
+  const state = makeRestrictionReactionState([
+    {
+      themeId: "cycle",
+      partId: "cycle-eternal-ring",
+      oldLimit: 3,
+      newLimit: 1,
+      type: "cosmetic-restriction",
+    },
+  ], 36_001);
+  const posts = restrictionContextPosts(state, 46);
+  assert.equal(posts.length, 16);
+  assert.ok(
+    posts.filter((post) =>
+      /원래|실사용 매수|체감.*없|숫자|보여 주기|구축.*(?:그대로|유지)|영향이 없어|금제 효과가 어디|조정 의미/.test(
+        post.body,
+      )
+    ).length >= 8,
+    posts.map((post) => post.body).join("\n"),
+  );
+  assert.ok(
+    posts.some((post) =>
+      /한 종만|이것밖에|다른 상위권|1.?2티어|범위.*좁|금제표.*끝|여러 축.*아니/.test(
+        post.body,
+      )
+    ),
+  );
+  assert.ok(
+    posts.every(
+      (post) =>
+        !/덱 해체|본체째|가격 반토막|초동.*줄|기본 동작.*없애|최대 타격|실제로 .*여러 (?:장|종).*바뀌|연좌|우회 전개/.test(
+          post.body,
+        ),
+    ),
+  );
+});
+
+test("one-card and two-card D+1 boards make insufficient breadth the majority", () => {
+  const single = makeRestrictionReactionState([
+    {
+      themeId: "cycle",
+      partId: "cycle-gate",
+      oldLimit: 3,
+      newLimit: 1,
+    },
+  ], 36_101);
+  const singlePosts = restrictionContextPosts(single, 46);
+  const singleBreadth =
+    /왜 이것밖에|금제 범위|하나만 찍|한 줄뿐|한 장짜리|한 종에서 끝|실제 제한은 .*하나|한 종뿐|단일 변경|환경의 여러 강덱|여러 곳을 친 금제가 아니다|상위권 전체를 조정|여러 장을 자른 게 아니다/;
+  assert.ok(
+    singlePosts.filter((post) => singleBreadth.test(post.body)).length > 8,
+    singlePosts.map((post) => post.body).join("\n"),
+  );
+
+  const double = makeRestrictionReactionState([
+    {
+      themeId: "cycle",
+      partId: "cycle-gate",
+      oldLimit: 3,
+      newLimit: 1,
+    },
+    {
+      themeId: "white-night",
+      partId: "white-night-prayer",
+      oldLimit: 3,
+      newLimit: 1,
+    },
+  ], 36_102);
+  const doublePosts = restrictionContextPosts(double, 46);
+  const doubleBreadth =
+    /실효 제한.*뿐|여전히 부족|끝이면|전부 둔|함께 조정|여기서 끝|복수 조정|다른 얘기|규모가 아님|비워 둔|바로 다음 금제|부족함/;
+  assert.ok(
+    doublePosts.filter((post) => doubleBreadth.test(post.body)).length > 8,
+    doublePosts.map((post) => post.body).join("\n"),
+  );
+  assert.ok(
+    doublePosts.every((post) =>
+      !/세 장|서너 장|다섯 장|[3-9]종만|여러 장을 잘랐/.test(post.body)
+    ),
+  );
+});
+
+test("multi-card restriction keeps aggregate and multi-axis reactions", () => {
+  const changes: RestrictionFixtureChange[] = [
+    {
+      themeId: "machine-revolution",
+      partId: "machine-revolution-assembly-line",
+      oldLimit: 3,
+      newLimit: 1,
+    },
+    {
+      themeId: "machine-revolution",
+      partId: "machine-revolution-gear-lift",
+      oldLimit: 3,
+      newLimit: 1,
+    },
+  ];
+  const state = makeRestrictionReactionState(changes, 37_001);
+  const posts = restrictionContextPosts(state, 46);
+  assert.equal(posts.length, 16);
+  assert.deepEqual(
+    new Set(posts.map((post) => post.partId)),
+    new Set(changes.map((change) => change.partId)),
+  );
+  assert.ok(
+    posts.some((post) =>
+      /서로 다른 역할|여러 구간|복수 역할|여러 축|덱 뼈대|구축 전체|다른 축/.test(
+        post.body,
+      )
+    ),
+  );
+  assert.ok(
+    posts.every(
+      (post) =>
+        !/실제로 바뀐 카드는 .*한 종뿐|변경점은 .* 하나임|여러 축 동시 조정이 아니라|한 번에 여러 곳을 친 금제는 아니다/.test(
+          post.body,
+        ),
+    ),
+  );
+});
+
+test("multi-card copy distinguishes same-role and multi-theme scopes", () => {
+  const sameRole = makeRestrictionReactionState([
+    {
+      themeId: "cycle",
+      partId: "cycle-gate",
+      oldLimit: 3,
+      newLimit: 2,
+    },
+    {
+      themeId: "cycle",
+      partId: "cycle-guide",
+      oldLimit: 3,
+      newLimit: 2,
+    },
+  ], 38_001);
+  const sameRolePosts = restrictionContextPosts(sameRole, 46);
+  assert.equal(sameRolePosts.length, 16);
+  assert.ok(
+    sameRolePosts.some((post) =>
+      /같은 역할|같은 기능|역할군|파츠군|한 역할에 제한/.test(post.body)
+    ),
+  );
+
+  const multiTheme = makeRestrictionReactionState([
+    {
+      themeId: "cycle",
+      partId: "cycle-gate",
+      oldLimit: 3,
+      newLimit: 2,
+    },
+    {
+      themeId: "machine-revolution",
+      partId: "machine-revolution-gear-lift",
+      oldLimit: 3,
+      newLimit: 1,
+    },
+  ], 38_002);
+  const multiThemePosts = restrictionContextPosts(multiTheme, 46);
+  assert.equal(multiThemePosts.length, 16);
+  assert.ok(
+    multiThemePosts.some((post) =>
+      /여러 테마|환경 전체|복수 테마|대상 테마|한 테마만이 아니라/.test(
+        post.body,
+      )
+    ),
+  );
+});
+
+test("balanced reviews praise Tier 1/Tier 2 coverage and a full stale release with caveats", () => {
+  const state = makeScheduledRestrictionReactionState([
+    { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 2 },
+    { themeId: "white-night", partId: "white-night-prayer", oldLimit: 3, newLimit: 2 },
+    { themeId: "ironblood", partId: "ironblood-squire", oldLimit: 3, newLimit: 2 },
+    { themeId: "abyss", partId: "abyss-bait", oldLimit: 3, newLimit: 2 },
+    {
+      themeId: "white-night",
+      partId: "white-night-snow-blessing",
+      oldLimit: 1,
+      newLimit: 3,
+    },
+  ], 38_101);
+  state.community.unshift({
+    id: "stale-white-night-start",
+    day: 45,
+    category: "restriction",
+    type: "restriction-applied",
+    themeId: "white-night",
+    partId: "white-night-snow-blessing",
+    value: 1,
+    previousValue: 3,
+    body: "[운영 공지] 백야의 설복 1장 제한",
+  });
+  const profile = getPublishedRestrictionPolicyProfile(state, 165);
+  assert.equal(profile.quality, "balanced");
+  assert.equal(profile.upperMeaningfulCuts, 2);
+  assert.equal(profile.tier2MeaningfulCuts, 2);
+  assert.equal(profile.staleFullyReleased, 1);
+
+  const posts = restrictionContextPosts(state, 166, 165);
+  assert.equal(posts.length, 16);
+  assert.ok(
+    posts.filter((post) =>
+      /방향이 좋|납득|균형|제대로|잘했|좋았|정기 금제|환경 순환|필요한 일|금제는 이래야지|같이 있어서|잘 잡|묶으니/.test(
+        post.body,
+      )
+    ).length >= 8,
+    posts.map((post) => post.body).join("\n"),
+  );
+  assert.ok(
+    posts.some((post) =>
+      /강도|이견|실전 데이터|과하게|계속 봐|확인은 필요/.test(post.body)
+    ),
+  );
+  assert.ok(
+    posts.every((post) =>
+      !/왜 이것밖에|한 장만 찍|실효 제한 [12]종뿐|금제표가 여기서 끝/.test(
+        post.body,
+      )
+    ),
+  );
+
+  const unbanPosts = posts.filter(
+    (post) => post.partId === "white-night-snow-blessing",
+  );
+  assert.ok(unbanPosts.length > 0);
+  assert.ok(
+    unbanPosts.every((post) =>
+      !/덱 처분|가격.*(?:하락|내려)|공백|카드가 빠|매수 감소|대체 카드/.test(
+        post.body,
+      )
+    ),
+  );
+});
+
+test("coverage and cosmetic signals stay in their own factual reaction pools", () => {
+  const upperOnly = makeScheduledRestrictionReactionState([
+    { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 2 },
+    { themeId: "cycle", partId: "cycle-guide", oldLimit: 3, newLimit: 2 },
+    { themeId: "white-night", partId: "white-night-prayer", oldLimit: 3, newLimit: 2 },
+  ], 38_201);
+  const upperPosts = restrictionContextPosts(upperOnly, 166, 165);
+  assert.ok(
+    upperPosts.some((post) =>
+      /2티어를 전부 둔|바로 아래 구간|다음 후보군|한쪽으로 쏠/.test(post.body)
+    ),
+  );
+  assert.ok(upperPosts.every((post) => !/상위 1티어는 그대로/.test(post.body)));
+
+  const lowerOnly = makeScheduledRestrictionReactionState([
+    { themeId: "ironblood", partId: "ironblood-squire", oldLimit: 3, newLimit: 2 },
+    { themeId: "ironblood", partId: "ironblood-mobilization", oldLimit: 3, newLimit: 1 },
+    { themeId: "abyss", partId: "abyss-bait", oldLimit: 3, newLimit: 2 },
+  ], 38_202);
+  const lowerPosts = restrictionContextPosts(lowerOnly, 166, 165);
+  assert.equal(
+    getPublishedRestrictionPolicyProfile(lowerOnly, 165).upperMeaningfulCuts,
+    0,
+  );
+  assert.ok(
+    lowerPosts.some((post) =>
+      /1티어.*그대로|최상위권을 비껴|아래 구간만|대상 선정이 거꾸로|금제 대상.*강한 순서|하위권 파츠|2티어 견제|상위 구간 제한 0종|지금 1등/.test(
+        post.body,
+      )
+    ),
+    lowerPosts.map((post) => post.body).join("\n"),
+  );
+  assert.ok(lowerPosts.every((post) => !/2티어를 전부 둔/.test(post.body)));
+
+  const cosmetic = makeScheduledRestrictionReactionState([
+    {
+      themeId: "cycle",
+      partId: "cycle-eternal-ring",
+      oldLimit: 3,
+      newLimit: 1,
+      type: "cosmetic-restriction",
+    },
+    {
+      themeId: "white-night",
+      partId: "white-night-saint",
+      oldLimit: 3,
+      newLimit: 1,
+      type: "cosmetic-restriction",
+    },
+  ], 38_203);
+  const cosmeticPosts = restrictionContextPosts(cosmetic, 166, 165);
+  assert.ok(
+    cosmeticPosts.some((post) =>
+      /실사용 매수|실제 구축|보여 주기|덱에서 빠지는 카드가 0장|구축 변화 0장/.test(
+        post.body,
+      )
+    ),
+  );
+  assert.ok(
+    cosmeticPosts.every((post) =>
+      !/해제만으로|풀어 주는 표|복권만|묵은 금제 정리/.test(post.body)
+    ),
+  );
+
+  const cosmeticWithRelief = makeScheduledRestrictionReactionState([
+    {
+      themeId: "cycle",
+      partId: "cycle-eternal-ring",
+      oldLimit: 3,
+      newLimit: 1,
+      type: "cosmetic-restriction",
+    },
+    {
+      themeId: "white-night",
+      partId: "white-night-snow-blessing",
+      oldLimit: 1,
+      newLimit: 3,
+    },
+  ], 38_204);
+  cosmeticWithRelief.community.unshift({
+    id: "stale-cosmetic-relief-start",
+    day: 45,
+    category: "restriction",
+    type: "restriction-applied",
+    themeId: "white-night",
+    partId: "white-night-snow-blessing",
+    value: 1,
+    previousValue: 3,
+    body: "[운영 공지] 백야의 설원 축복 3→1장",
+  });
+  const mixedZeroCutPosts = restrictionContextPosts(
+    cosmeticWithRelief,
+    166,
+    165,
+  );
+  assert.ok(
+    mixedZeroCutPosts.some((post) =>
+      /해제 효과|실제 완화·해제|풀린 카드 쪽 복귀|해제 방향/.test(post.body)
+    ),
+  );
+  assert.ok(
+    mixedZeroCutPosts.every((post) =>
+      !/환경은 발표 전과 똑같음|구축 변화 0장짜리|실사용 매수가 줄어드는 카드는 0종/.test(
+        post.body,
+      )
+    ),
+  );
+
+  const partialStaleRelief = makeScheduledRestrictionReactionState([
+    {
+      themeId: "cycle",
+      partId: "cycle-gate",
+      oldLimit: 0,
+      newLimit: 1,
+    },
+  ], 38_205);
+  partialStaleRelief.community.unshift({
+    id: "stale-partial-relief-start",
+    day: 45,
+    category: "restriction",
+    type: "restriction-applied",
+    themeId: "cycle",
+    partId: "cycle-gate",
+    value: 0,
+    previousValue: 3,
+    body: "[운영 공지] 윤회의 문 3→0장",
+  });
+  const partialPosts = restrictionContextPosts(partialStaleRelief, 166, 165);
+  assert.ok(
+    partialPosts.some((post) =>
+      /완화.*완전 해제|한 칸 풀어|부분 완화|완화에서 멈췄|매수를 늘려/.test(
+        post.body,
+      )
+    ),
+  );
+  assert.ok(
+    partialPosts.every((post) =>
+      !/제한한 지 오래되지 않은|빠른 번복|최근 제한을 되돌린|얼마 안 돼/.test(
+        post.body,
+      )
+    ),
+  );
+});
+
+test("narrow D+4 followups split stabilized, ineffective, replacement, and mixed outcomes", () => {
+  const cases: Array<{
+    label: string;
+    shares: number[];
+    expected: RegExp;
+    classification: "ineffective" | "replacement" | "mixed";
+  }> = [
+    {
+      label: "ineffective",
+      shares: [0.32, 0.25, 0.2, 0.13, 0.1],
+      expected: /역시|부족|그대로|안 된다는|고착/,
+      classification: "ineffective",
+    },
+    {
+      label: "replacement",
+      shares: [0.28, 0.36, 0.16, 0.11, 0.09],
+      expected: /풍선|1등 교체|빈자리|새 독주|순위표 이름/,
+      classification: "replacement",
+    },
+    {
+      label: "mixed",
+      shares: [0.29, 0.26, 0.2, 0.14, 0.11],
+      expected: /애매|반반|더 지켜|이르다|확실한 결과는 아직/,
+      classification: "mixed",
+    },
+  ];
+
+  for (const [index, fixture] of cases.entries()) {
+    const state = makeScheduledRestrictionReactionState([
+      { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 1 },
+    ], 39_100 + index);
+    setRestrictionFollowupSnapshot(
+      state,
+      169,
+      Object.fromEntries(
+        state.activeThemeIds.map((themeId, shareIndex) => [
+          themeId,
+          fixture.shares[shareIndex],
+        ]),
+      ),
+    );
+    assert.equal(
+      getRestrictionHistoricalOutcome(state, 165, 169).classification,
+      fixture.classification,
+      fixture.label,
+    );
+    const posts = getDailyCommunityPosts(state, 169).filter((post) =>
+      post.id.startsWith("daily-restriction-followup-165-")
+    );
+    assert.equal(posts.length, 3, fixture.label);
+    assert.equal(new Set(posts.map((post) => post.body)).size, 3, fixture.label);
+    assert.ok(posts.some((post) => fixture.expected.test(post.body)), fixture.label);
+
+    const before = posts.map((post) => post.body);
+    for (const runtime of Object.values(state.themes)) {
+      runtime.share = 0.99;
+      runtime.fatigue = 99;
+      runtime.unpleasantness = 99;
+      runtime.topStreakDays = 999;
+    }
+    assert.deepEqual(
+      getDailyCommunityPosts(state, 169)
+        .filter((post) => post.id.startsWith("daily-restriction-followup-165-"))
+        .map((post) => post.body),
+      before,
+      `${fixture.label} must use history only`,
+    );
+  }
+});
+
+test("one-card and two-card stabilization earn distinct surprised reappraisals", () => {
+  const makeWideMeta = (
+    changes: readonly RestrictionFixtureChange[],
+    seed: number,
+  ) => {
+    const state = makeScheduledRestrictionReactionState(changes, seed);
+    const extraThemes = THEMES.slice(5, 8);
+    for (const [index, theme] of extraThemes.entries()) {
+      state.activeThemeIds.push(theme.id);
+      state.themes[theme.id] = makeRuntime(theme, [0.07, 0.06, 0.05][index]);
+    }
+    const decision = [0.28, 0.2, 0.16, 0.1, 0.08, 0.07, 0.06, 0.05];
+    setRestrictionFollowupSnapshot(
+      state,
+      165,
+      Object.fromEntries(
+        state.activeThemeIds.map((themeId, index) => [themeId, decision[index]]),
+      ),
+    );
+    return state;
+  };
+
+  const single = makeWideMeta([
+    { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 1 },
+  ], 39_201);
+  setRestrictionFollowupSnapshot(
+    single,
+    169,
+    Object.fromEntries(
+      single.activeThemeIds.map((themeId, index) => [
+        themeId,
+        [0.24, 0.18, 0.15, 0.12, 0.1, 0.08, 0.07, 0.06][index],
+      ]),
+    ),
+  );
+  assert.equal(
+    getRestrictionHistoricalOutcome(single, 165, 169).classification,
+    "stabilized",
+  );
+  const singlePosts = getDailyCommunityPosts(single, 169).filter((post) =>
+    post.id.startsWith("daily-restriction-followup-165-")
+  );
+  assert.equal(singlePosts.length, 3);
+  assert.ok(
+    singlePosts.some((post) =>
+      /이걸 노렸|한 장으로 여기까지|다시 봐야|예상 못|병목/.test(post.body)
+    ),
+  );
+
+  const double = makeWideMeta([
+    { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 1 },
+    { themeId: "white-night", partId: "white-night-prayer", oldLimit: 3, newLimit: 1 },
+  ], 39_202);
+  setRestrictionFollowupSnapshot(
+    double,
+    169,
+    Object.fromEntries(
+      double.activeThemeIds.map((themeId, index) => [
+        themeId,
+        [0.25, 0.18, 0.15, 0.12, 0.1, 0.08, 0.07, 0.05][index],
+      ]),
+    ),
+  );
+  assert.equal(
+    getRestrictionHistoricalOutcome(double, 165, 169).classification,
+    "stabilized",
+  );
+  const doublePosts = getDailyCommunityPosts(double, 169).filter((post) =>
+    post.id.startsWith("daily-restriction-followup-165-")
+  );
+  assert.equal(doublePosts.length, 3);
+  assert.ok(
+    doublePosts.some((post) =>
+      /두 장뿐|두 카드|2종|적은 변경|최소 변경/.test(post.body)
+    ),
+  );
+});
+
+test("two-target overcorrection names only the target that actually collapsed", () => {
+  const state = makeScheduledRestrictionReactionState([
+    { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 1 },
+    { themeId: "white-night", partId: "white-night-prayer", oldLimit: 3, newLimit: 1 },
+  ], 39_301);
+  setRestrictionFollowupSnapshot(state, 169, {
+    cycle: 0.15,
+    "white-night": 0.27,
+    "machine-revolution": 0.23,
+    ironblood: 0.18,
+    abyss: 0.17,
+  });
+  const posts = getDailyCommunityPosts(state, 169).filter((post) =>
+    post.id.startsWith("daily-restriction-followup-165-")
+  );
+  assert.equal(posts.length, 3);
+  assert.ok(posts.every((post) => post.partId === "cycle-gate"));
+  assert.ok(posts.some((post) => /붕괴|과잉|퇴출|너무 세게/.test(post.body)));
+  assert.ok(posts.every((post) => !post.body.includes("백야의 기도")));
+});
+
+test("two-target mixed followups do not claim that a rising target fell", () => {
+  const state = makeScheduledRestrictionReactionState([
+    { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 1 },
+    { themeId: "white-night", partId: "white-night-prayer", oldLimit: 3, newLimit: 1 },
+  ], 39_302);
+  setRestrictionFollowupSnapshot(state, 169, {
+    cycle: 0.29,
+    "white-night": 0.27,
+    "machine-revolution": 0.19,
+    ironblood: 0.14,
+    abyss: 0.11,
+  });
+  assert.equal(
+    getRestrictionHistoricalOutcome(state, 165, 169).classification,
+    "mixed",
+  );
+  const posts = getDailyCommunityPosts(state, 169).filter((post) =>
+    post.id.startsWith("daily-restriction-followup-165-")
+  );
+  assert.equal(posts.length, 3);
+  assert.ok(posts.some((post) => post.partId === "white-night-prayer"));
+  assert.ok(
+    posts
+      .filter((post) => post.partId === "white-night-prayer")
+      .every((post) => !/내려갔|하락|감소/.test(post.body)),
+  );
+});
+
 test("restriction reactions start next day and dominate the board 16/14/12", () => {
   let state = createInitialGame(1000);
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 2 });
@@ -662,16 +1754,6 @@ test("restriction reactions start next day and dominate the board 16/14/12", () 
     false,
   );
 
-  const storedNextDayIds = new Set(
-    state.community
-      .filter(
-        (event) =>
-          event.day === 46 &&
-          event.type === "restriction-demand" &&
-          event.partId === announcement.partId,
-      )
-      .map((event) => event.id),
-  );
   const before = JSON.stringify(state);
   for (const [day, expected] of [
     [46, 16],
@@ -680,11 +1762,7 @@ test("restriction reactions start next day and dominate the board 16/14/12", () 
   ] as const) {
     const first = getDailyCommunityPosts(state, day);
     const second = getDailyCommunityPosts(state, day);
-    const contextual = first.filter(
-      (post) =>
-        post.id.startsWith("daily-restriction-45-") ||
-        storedNextDayIds.has(post.id),
-    );
+    const contextual = restrictionContextPosts(state, day);
     assert.equal(first.length, 20);
     assert.equal(contextual.length, expected);
     assert.equal(new Set(contextual.map((post) => post.body)).size, expected);
@@ -694,8 +1772,17 @@ test("restriction reactions start next day and dominate the board 16/14/12", () 
       const theme = THEME_BY_ID[post.themeId];
       assert.ok(theme);
       assert.ok(theme.parts.some((part) => part.id === post.partId));
-      assert.equal(post.value, announcement.value);
-      assert.equal(post.previousValue, announcement.previousValue);
+      const matchingDecision = state.community.find(
+        (event) =>
+          event.day === 45 &&
+          event.themeId === post.themeId &&
+          event.partId === post.partId &&
+          (event.type === "restriction-applied" ||
+            event.type === "cosmetic-restriction"),
+      );
+      assert.ok(matchingDecision);
+      assert.equal(post.value, matchingDecision.value);
+      assert.equal(post.previousValue, matchingDecision.previousValue);
       assert.equal(post.relatedThemeId, undefined);
       assert.equal(post.body.includes("금제표 나온 지 하루 만에"), false);
     }
@@ -769,6 +1856,28 @@ test("no-change debate condemns a stuck meta but defends a healthy one", () => {
         post.body,
       ),
     ).length >= 8,
+  );
+});
+
+test("historical no-change debate ignores later runtime pressure", () => {
+  const state = makeNoChangeRestrictionState(3310);
+  setNoChangeMetaHealth(state, false);
+  const before = getDailyCommunityPosts(state, 46)
+    .filter((post) => post.id.startsWith("daily-restriction-45-"))
+    .map((post) => post.body);
+
+  for (const runtime of Object.values(state.themes)) {
+    runtime.share = 0.99;
+    runtime.unpleasantness = 99;
+    runtime.fatigue = 99;
+    runtime.topStreakDays = 999;
+  }
+
+  assert.deepEqual(
+    getDailyCommunityPosts(state, 46)
+      .filter((post) => post.id.startsWith("daily-restriction-45-"))
+      .map((post) => post.body),
+    before,
   );
 });
 
@@ -1027,8 +2136,8 @@ test("routes unban debate through overdue, dangerous, surge, no-impact, and meas
       [2, 14, 3],
       [3, 12, 2],
     ] as const) {
-      const posts = getDailyCommunityPosts(state, 135 + age).filter((post) =>
-        post.id.startsWith("daily-restriction-135-"),
+      const posts = getDailyCommunityPosts(state, 165 + age).filter((post) =>
+        post.id.startsWith("daily-restriction-165-"),
       );
       assert.equal(posts.length, quota, `${tone} D+${age}`);
       assert.equal(new Set(posts.map((post) => post.body)).size, quota);
@@ -1053,7 +2162,7 @@ test("routes unban debate through overdue, dangerous, surge, no-impact, and meas
 
 test("historical unban reactions ignore later runtime and restriction changes", () => {
   const state = unbanReactionState("surge", 72001);
-  const historical = getDailyCommunityPosts(state, 136);
+  const historical = getDailyCommunityPosts(state, 166);
   const later = structuredClone(state);
   later.day = 230;
   later.themes.cycle.share = 0.5;
@@ -1084,7 +2193,7 @@ test("historical unban reactions ignore later runtime and restriction changes", 
     ),
   });
 
-  assert.deepEqual(getDailyCommunityPosts(later, 136), historical);
+  assert.deepEqual(getDailyCommunityPosts(later, 166), historical);
 });
 
 test("periodically asks to free long-restricted off-meta cards without flooding", () => {
@@ -1151,9 +2260,9 @@ test("periodically asks to free long-restricted off-meta cards without flooding"
 
 test("prioritizes an overdue unban request after a no-change restriction review", () => {
   const state = staleRestrictionState(true, 74001);
-  const posts = getDailyCommunityPosts(state, 136);
+  const posts = getDailyCommunityPosts(state, 166);
   const contextual = posts.filter((post) =>
-    post.id.startsWith("daily-restriction-135-"),
+    post.id.startsWith("daily-restriction-165-"),
   );
   const stale = contextual.filter((post) => post.id.includes("-stale-"));
   assert.equal(posts.length, 20);
@@ -1168,7 +2277,7 @@ test("formats full and partial restriction relief explicitly", () => {
   const state = makeState(75001);
   const base: CommunityEvent = {
     id: "format-unban",
-    day: 135,
+    day: 165,
     category: "restriction",
     type: "restriction-applied",
     themeId: "cycle",
@@ -1184,5 +2293,444 @@ test("formats full and partial restriction relief explicitly", () => {
       state,
     ),
     /제한 완화 1→2장/,
+  );
+});
+
+test("business campaigns fill their opening-day community quotas", () => {
+  const cases = [
+    { type: "tv-cm", expected: 8, duration: 21 },
+    { type: "animation-promotion", expected: 10, duration: 75 },
+    { type: "store-tour", expected: 8, duration: 14 },
+  ] as const;
+
+  for (const [index, campaign] of cases.entries()) {
+    const state = makeState(81_000 + index);
+    state.day = 70;
+    addBusinessRecord(state, {
+      type: campaign.type,
+      startedDay: 59,
+      endsDay: 59 + campaign.duration,
+      cost: campaign.type === "animation-promotion" ? 3 : campaign.type === "tv-cm" ? 0.6 : 0.35,
+      outcome: "active",
+    });
+    const posts = getDailyCommunityPosts(state, 60);
+    const campaignPosts = posts.filter((post) => post.type === "business-reaction");
+    assert.equal(posts.length, 20);
+    assert.equal(campaignPosts.length, campaign.expected, campaign.type);
+    assert.equal(new Set(campaignPosts.map((post) => post.body)).size, campaign.expected);
+    assert.ok(campaignPosts.every((post) => !/[{}]/.test(post.body)));
+  }
+});
+
+test("animation reactions use the matching phase for the full broadcast period", () => {
+  const state = makeState(81_100);
+  state.day = 140;
+  addBusinessRecord(state, {
+    type: "animation-promotion",
+    startedDay: 59,
+    endsDay: 134,
+    cost: 3,
+    outcome: "completed",
+  });
+
+  for (const { day, elapsed, expected } of [
+    { day: 60, elapsed: 1, expected: 10 },
+    { day: 74, elapsed: 15, expected: 2 },
+    { day: 75, elapsed: 16, expected: 2 },
+    { day: 119, elapsed: 60, expected: 2 },
+    { day: 120, elapsed: 61, expected: 2 },
+    { day: 134, elapsed: 75, expected: 2 },
+  ] as const) {
+    const allowed = new Set(getAnimationPromotionCopy(elapsed, 75));
+    const reactions = getDailyCommunityPosts(state, day).filter((post) =>
+      post.id.startsWith("daily-business-business-action-1-"),
+    );
+    assert.equal(reactions.length, expected, `broadcast D+${elapsed}`);
+    assert.ok(
+      reactions.every((post) => allowed.has(post.body)),
+      `wrong phase copy on broadcast D+${elapsed}`,
+    );
+    assert.ok(reactions.every((post) => !/[{}]|반년/.test(post.body)));
+  }
+
+  const afterBroadcast = getDailyCommunityPosts(state, 135).filter((post) =>
+    post.id.startsWith("daily-business-business-action-1-"),
+  );
+  assert.equal(afterBroadcast.length, 0);
+});
+
+test("championship success and backlash dominate the board with distinct decay", () => {
+  for (const [outcome, quotas] of [
+    ["success", [18, 14, 10]],
+    ["backlash", [20, 16, 12]],
+  ] as const) {
+    const state = makeState(outcome === "success" ? 82_001 : 82_002);
+    state.day = 70;
+    addBusinessRecord(state, {
+      type: "championship",
+      startedDay: 59,
+      endsDay: 66,
+      cost: 0.8,
+      outcome,
+      risk: outcome === "success" ? 0.12 : 0.78,
+      environmentHealth: outcome === "success" ? 86 : 24,
+      resolvedDay: 60,
+    });
+    for (let age = 0; age < quotas.length; age += 1) {
+      const posts = getDailyCommunityPosts(state, 60 + age);
+      const contextual = posts.filter((post) =>
+        post.id.startsWith("daily-business-business-action-1-"),
+      );
+      assert.equal(posts.length, 20);
+      assert.equal(contextual.length, quotas[age], `${outcome} D+${age}`);
+      assert.equal(new Set(contextual.map((post) => post.body)).size, quotas[age]);
+      assert.ok(
+        contextual.every((post) =>
+          post.type === (outcome === "backlash" ? "business-scandal" : "business-reaction"),
+        ),
+      );
+    }
+  }
+});
+
+test("pack-odds rumors turn into a four-day scandal only when detected", () => {
+  const state = makeState(83_001);
+  state.day = 70;
+  addBusinessRecord(state, {
+    type: "pack-odds",
+    startedDay: 45,
+    endsDay: 89,
+    cost: 0.1,
+    outcome: "detected",
+    risk: 0.3,
+    appliedDay: 60,
+    resolvedDay: 61,
+  });
+
+  const rumor = getDailyCommunityPosts(state, 60).filter((post) =>
+    post.id.startsWith("daily-business-business-action-1-"),
+  );
+  assert.equal(rumor.length, 12);
+  assert.ok(rumor.every((post) => post.type === "business-reaction"));
+
+  for (const [age, quota] of [18, 14, 10, 6].entries()) {
+    const board = getDailyCommunityPosts(state, 61 + age);
+    const scandal = board.filter((post) => post.type === "business-scandal");
+    assert.equal(board.length, 20);
+    assert.equal(scandal.length, quota, `detected D+${age}`);
+    assert.equal(new Set(scandal.map((post) => post.body)).size, quota);
+    assert.ok(getCommunityHeat(state, 61 + age) >= 96);
+  }
+
+  const clean = structuredClone(state);
+  clean.operations.records[0].outcome = "clean";
+  clean.operations.records[0].resolvedDay = 61;
+  assert.equal(
+    getDailyCommunityPosts(clean, 61).filter((post) => post.type === "business-scandal").length,
+    0,
+  );
+});
+
+test("business scandal priority is stable for historical boards", () => {
+  const state = makeState(84_001);
+  state.day = 70;
+  addBusinessRecord(state, {
+    type: "pack-odds",
+    startedDay: 45,
+    endsDay: 89,
+    cost: 0.1,
+    outcome: "detected",
+    risk: 0.3,
+    appliedDay: 60,
+    resolvedDay: 61,
+  });
+  const part = THEME_BY_ID[state.activeThemeIds[0]].parts[0];
+  state.community.push({
+    id: "colliding-restriction",
+    day: 60,
+    category: "restriction",
+    type: "restriction-applied",
+    themeId: state.activeThemeIds[0],
+    partId: part.id,
+    value: 2,
+    previousValue: 3,
+    body: "동시 금제",
+  });
+
+  const original = structuredClone(state);
+  const board = getDailyCommunityPosts(state, 61);
+  assert.equal(board.filter((post) => post.type === "business-scandal").length, 18);
+  assert.deepEqual(state, original);
+
+  const later = structuredClone(state);
+  later.day = 100;
+  later.purchaseTrust = 1;
+  later.themes[later.activeThemeIds[0]].share = 0.1;
+  assert.deepEqual(getDailyCommunityPosts(later, 61), board);
+});
+
+test("pack scandal and stored restriction overlap is capped at twenty posts", () => {
+  const state = reduceGame(createInitialGame(84_101), {
+    type: "ADVANCE_DAYS",
+    days: 2,
+  });
+  const storedRestrictionCount = state.community.filter(
+    (event) => event.day === 46 && event.type === "restriction-demand",
+  ).length;
+  assert.ok(storedRestrictionCount >= 4);
+  addBusinessRecord(state, {
+    type: "pack-odds",
+    startedDay: 1,
+    endsDay: 45,
+    cost: 0.1,
+    outcome: "detected",
+    risk: 0.3,
+    appliedDay: 45,
+    resolvedDay: 46,
+  });
+
+  const board = getDailyCommunityPosts(state, 46);
+  assert.equal(board.length, 20);
+  assert.equal(new Set(board.map((post) => post.id)).size, 20);
+  assert.equal(
+    board.filter((post) => post.type === "business-scandal").length,
+    18,
+  );
+  assert.ok(
+    board.slice(0, 18).every((post) => post.type === "business-scandal"),
+  );
+});
+
+test("no-change stale prompts never overwrite the business reaction prefix", () => {
+  const state = staleRestrictionState(true, 84_002);
+  addBusinessRecord(state, {
+    type: "tv-cm",
+    startedDay: 165,
+    endsDay: 186,
+    cost: 0.6,
+    outcome: "completed",
+  });
+
+  const board = getDailyCommunityPosts(state, 166);
+  const business = board.filter((post) => post.type === "business-reaction");
+  assert.equal(board.length, 20);
+  assert.equal(business.length, 8);
+  assert.ok(board.slice(0, 8).every((post) => post.type === "business-reaction"));
+  assert.ok(
+    board.slice(8).some((post) =>
+      post.id.startsWith("daily-restriction-165-stale-"),
+    ),
+  );
+});
+
+const VENTURE_FIXTURE = {
+  "season-overhaul": { cost: 3.5, duration: 90 },
+  "global-launch": { cost: 2.5, duration: 75 },
+  "first-print-expansion": { cost: 1.5, duration: 30 },
+} as const satisfies Record<
+  VentureActionType,
+  { cost: number; duration: number }
+>;
+
+function addVentureRecord(
+  state: GameState,
+  action: VentureActionType,
+  outcome: "active" | "pending" | "success" | "backlash",
+  primaryRisk: VentureRiskFactor,
+  primaryStrength: VentureRiskFactor,
+  resolvedDay?: number,
+): void {
+  const fixture = VENTURE_FIXTURE[action];
+  addBusinessRecord(state, {
+    type: action,
+    startedDay: 200,
+    endsDay: 200 + fixture.duration,
+    cost: fixture.cost,
+    outcome,
+    risk: 0.42,
+    riskContext: {
+      environmentHealth: 68,
+      purchaseTrust: 72,
+      releaseQuality: 64,
+      policyQuality: "balanced",
+      timing: "middle",
+      primaryRisk,
+      primaryStrength,
+    },
+    ...(resolvedDay === undefined ? {} : { resolvedDay }),
+  });
+}
+
+test("strategic investment copy pools cover every action, stage, and stored factor", () => {
+  const peakQuota = {
+    waiting: 8,
+    success: 16,
+    backlash: 20,
+  } as const;
+  const minimumCore = {
+    waiting: 4,
+    success: 12,
+    backlash: 16,
+  } as const;
+
+  for (const action of VENTURE_ACTION_TYPES) {
+    for (const stageName of ["waiting", "success", "backlash"] as const) {
+      const stage = VENTURE_BUSINESS_COPY[action][stageName];
+      assert.ok(stage.core.length >= minimumCore[stageName]);
+      for (const factor of VENTURE_RISK_FACTORS) {
+        const factorCopy = stage.byFactor[factor];
+        const merged = [...stage.core, ...factorCopy];
+        assert.ok(factorCopy.length >= 4, `${action}/${stageName}/${factor}`);
+        assert.ok(merged.length >= peakQuota[stageName]);
+        assert.equal(
+          new Set(merged).size,
+          merged.length,
+          `duplicate ${action}/${stageName}/${factor}`,
+        );
+      }
+    }
+  }
+});
+
+test("strategic investments use eight-five-three waiting reactions for active and pending records", () => {
+  for (const action of VENTURE_ACTION_TYPES) {
+    for (const outcome of ["active", "pending"] as const) {
+      for (const factor of VENTURE_RISK_FACTORS) {
+        const state = makeState(90_000 + VENTURE_ACTION_TYPES.indexOf(action));
+        state.day = 300;
+        addVentureRecord(state, action, outcome, factor, "execution");
+        const stage = VENTURE_BUSINESS_COPY[action].waiting;
+        const allowed = new Set<string>([...stage.core, ...stage.byFactor[factor]]);
+
+        for (let age = 0; age < 3; age += 1) {
+          const contextual = getDailyCommunityPosts(state, 201 + age).filter(
+            (post) => post.id.startsWith("daily-business-business-action-1-"),
+          );
+          const expected = [8, 5, 3][age];
+          assert.equal(
+            contextual.length,
+            expected,
+            `${action}/${outcome}/${factor}/D+${age}`,
+          );
+          assert.equal(new Set(contextual.map((post) => post.body)).size, expected);
+          assert.ok(contextual.every((post) => allowed.has(post.body)));
+          assert.ok(contextual.every((post) => post.type === "business-reaction"));
+          assert.ok(
+            contextual.every((post) =>
+              post.category === (action === "season-overhaul" ? "meta" : "finance")
+            ),
+          );
+        }
+      }
+    }
+  }
+});
+
+test("strategic investment results select the stored strength or failure cause and fill their decay quotas", () => {
+  for (const action of VENTURE_ACTION_TYPES) {
+    for (const outcome of ["success", "backlash"] as const) {
+      const quotas = outcome === "success" ? [16, 12, 8, 5] : [20, 16, 12, 8];
+      const stage = VENTURE_BUSINESS_COPY[action][outcome];
+      for (const factor of VENTURE_RISK_FACTORS) {
+        const state = makeState(
+          91_000 +
+            VENTURE_ACTION_TYPES.indexOf(action) * 20 +
+            VENTURE_RISK_FACTORS.indexOf(factor),
+        );
+        state.day = 300;
+        addVentureRecord(
+          state,
+          action,
+          outcome,
+          outcome === "backlash" ? factor : "execution",
+          outcome === "success" ? factor : "execution",
+          230,
+        );
+        const allowed = new Set<string>([...stage.core, ...stage.byFactor[factor]]);
+
+        for (let age = 0; age < quotas.length; age += 1) {
+          const contextual = getDailyCommunityPosts(state, 230 + age).filter(
+            (post) => post.id.startsWith("daily-business-business-action-1-"),
+          );
+          assert.equal(
+            contextual.length,
+            quotas[age],
+            `${action}/${outcome}/${factor}/D+${age}`,
+          );
+          assert.equal(
+            new Set(contextual.map((post) => post.body)).size,
+            quotas[age],
+          );
+          assert.ok(contextual.every((post) => allowed.has(post.body)));
+          assert.ok(
+            contextual.every((post) =>
+              post.type ===
+                (outcome === "backlash" ? "business-scandal" : "business-reaction")
+            ),
+          );
+          assert.ok(
+            contextual.every((post) =>
+              post.category === (action === "season-overhaul" ? "meta" : "finance")
+            ),
+          );
+        }
+
+        const peakBodies = new Set(
+          getDailyCommunityPosts(state, 230)
+            .filter((post) => post.id.startsWith("daily-business-business-action-1-"))
+            .map((post) => post.body),
+        );
+        assert.ok(
+          stage.byFactor[factor].every((body) => peakBodies.has(body)),
+          `missing cause copy ${action}/${outcome}/${factor}`,
+        );
+        assert.ok(getCommunityHeat(state, 230) >= (outcome === "backlash" ? 100 : 92));
+      }
+    }
+  }
+});
+
+test("resolved strategic records retain their original waiting explanation on historical days", () => {
+  const state = makeState(92_001);
+  state.day = 300;
+  addVentureRecord(
+    state,
+    "season-overhaul",
+    "success",
+    "trust",
+    "release",
+    230,
+  );
+
+  const waiting = getDailyCommunityPosts(state, 201).filter((post) =>
+    post.id.startsWith("daily-business-business-action-1-"),
+  );
+  const waitingPool = VENTURE_BUSINESS_COPY["season-overhaul"].waiting;
+  const allowedWaiting = new Set<string>([
+    ...waitingPool.core,
+    ...waitingPool.byFactor.trust,
+  ]);
+  assert.equal(waiting.length, 8);
+  assert.ok(waiting.every((post) => allowedWaiting.has(post.body)));
+  assert.ok(
+    waitingPool.byFactor.trust.every((body) =>
+      waiting.some((post) => post.body === body)
+    ),
+  );
+
+  const result = getDailyCommunityPosts(state, 230).filter((post) =>
+    post.id.startsWith("daily-business-business-action-1-"),
+  );
+  const resultPool = VENTURE_BUSINESS_COPY["season-overhaul"].success;
+  const allowedResult = new Set<string>([
+    ...resultPool.core,
+    ...resultPool.byFactor.release,
+  ]);
+  assert.equal(result.length, 16);
+  assert.ok(result.every((post) => allowedResult.has(post.body)));
+  assert.ok(
+    resultPool.byFactor.release.every((body) =>
+      result.some((post) => post.body === body)
+    ),
   );
 });

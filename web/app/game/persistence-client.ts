@@ -1,7 +1,8 @@
 import { MAX_SAVE_BYTES, parseGameState } from "./save-schema.ts";
 import type { GameState } from "./types";
 
-const STORAGE_KEY = "tcg-regulator-save-v1";
+const STORAGE_KEY = "tcg-regulator-save-v2";
+const LEGACY_STORAGE_KEY = "tcg-regulator-save-v1";
 
 export type PersistenceBackend =
   | { kind: "local" }
@@ -31,6 +32,85 @@ function getLocalStorage(): Storage {
   return window.localStorage;
 }
 
+type PersistenceReader = Pick<Storage, "getItem" | "removeItem">;
+
+function withWarning(
+  game: GameState | null,
+  warning?: string,
+): PersistenceLoadResult {
+  return {
+    backend: { kind: "local" },
+    game,
+    ...(warning ? { warning } : {}),
+  };
+}
+
+/** Exposed for deterministic storage fallback tests. */
+export function loadPersistedGameFromStorage(
+  storage: PersistenceReader,
+): PersistenceLoadResult {
+  let current: string | null;
+  let legacy: string | null;
+  try {
+    current = storage.getItem(STORAGE_KEY);
+    legacy = storage.getItem(LEGACY_STORAGE_KEY);
+  } catch {
+    return unavailable(
+      "저장된 게임에 접근할 수 없습니다. 브라우저의 저장소 권한을 확인해 주세요.",
+    );
+  }
+
+  let currentWarning: string | undefined;
+  if (current) {
+    if (byteLength(current) <= MAX_SAVE_BYTES) {
+      try {
+        return withWarning(parseGameState(JSON.parse(current) as unknown));
+      } catch {
+        currentWarning = "손상된 새 저장 데이터를 제거했습니다.";
+      }
+    } else {
+      currentWarning = "너무 큰 새 저장 데이터를 제거했습니다.";
+    }
+
+    try {
+      storage.removeItem(STORAGE_KEY);
+    } catch {
+      return unavailable(
+        "손상된 저장 데이터를 읽거나 정리할 수 없습니다. 저장소 권한을 확인해 주세요.",
+      );
+    }
+  }
+
+  if (!legacy) return withWarning(null, currentWarning);
+  if (byteLength(legacy) > MAX_SAVE_BYTES) {
+    return withWarning(
+      null,
+      [
+        currentWarning,
+        "이전 1000일 임기 저장은 보존했습니다. 새 500일 임기를 시작해주세요.",
+      ].filter(Boolean).join(" "),
+    );
+  }
+
+  try {
+    const game = parseGameState(JSON.parse(legacy) as unknown);
+    return withWarning(
+      game,
+      currentWarning
+        ? `${currentWarning} 보존된 이전 저장을 새 500일 임기 일정으로 불러왔습니다.`
+        : "기존 저장을 새 500일 임기 일정으로 이어갑니다.",
+    );
+  } catch {
+    return withWarning(
+      null,
+      [
+        currentWarning,
+        "이전 1000일 임기 저장은 보존했습니다. 일정 개편에 맞춰 새 임기를 시작해주세요.",
+      ].filter(Boolean).join(" "),
+    );
+  }
+}
+
 /** Loads the campaign from the fixed-origin WebView/browser localStorage. */
 export async function loadPersistedGame(): Promise<PersistenceLoadResult> {
   let storage: Storage;
@@ -42,51 +122,7 @@ export async function loadPersistedGame(): Promise<PersistenceLoadResult> {
     );
   }
 
-  let saved: string | null;
-  try {
-    saved = storage.getItem(STORAGE_KEY);
-  } catch {
-    return unavailable(
-      "저장된 게임에 접근할 수 없습니다. 브라우저의 저장소 권한을 확인해 주세요.",
-    );
-  }
-
-  if (!saved) return { backend: { kind: "local" }, game: null };
-
-  if (byteLength(saved) > MAX_SAVE_BYTES) {
-    try {
-      storage.removeItem(STORAGE_KEY);
-    } catch {
-      return unavailable(
-        "저장 데이터가 너무 크고 손상된 항목을 정리할 수 없습니다.",
-      );
-    }
-    return {
-      backend: { kind: "local" },
-      game: null,
-      warning: "기존 저장 데이터가 너무 커서 초기화했습니다.",
-    };
-  }
-
-  try {
-    return {
-      backend: { kind: "local" },
-      game: parseGameState(JSON.parse(saved) as unknown),
-    };
-  } catch {
-    try {
-      storage.removeItem(STORAGE_KEY);
-    } catch {
-      return unavailable(
-        "손상된 저장 데이터를 읽거나 정리할 수 없습니다. 저장소 권한을 확인해 주세요.",
-      );
-    }
-    return {
-      backend: { kind: "local" },
-      game: null,
-      warning: "손상된 저장 데이터를 제거하고 새 임기를 준비했습니다.",
-    };
-  }
+  return loadPersistedGameFromStorage(storage);
 }
 
 export async function savePersistedGame(

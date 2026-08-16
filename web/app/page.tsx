@@ -12,13 +12,46 @@ import {
   TrendIcon,
   UsersIcon,
 } from "./components/MetricGlyphs";
+import { BrandMark } from "./components/BrandMark";
+import { ThemeEmblem } from "./components/ThemeEmblem";
 import { THEME_BY_ID, THEMES } from "./game/content";
+import {
+  CAMPAIGN_END_DAY,
+  FIRST_BAN_DAY,
+  LAST_DECISION_DAY,
+  LAST_RELEASE_DAY,
+  PLAYER_CONTROL_DAYS,
+  SETTLEMENT_START_DAY,
+  SETTLEMENT_DAYS,
+} from "./game/campaign";
+import {
+  evaluateCampaignEnding,
+  type CampaignCashBand,
+  type CampaignEnvironmentBand,
+} from "./game/campaign-ending";
+import {
+  getMonthlyOperatingCost,
+  getOperatingRunwayMonths,
+  OPERATING_COST_START_DAY,
+} from "./game/finance";
 import {
   getCommunityHeat,
   getDailyCommunityPosts,
   getReleaseReactionProfile,
   type ReleaseReactionProfile,
 } from "./game/daily-community";
+import {
+  BUSINESS_ACTIONS,
+  BUSINESS_ACTION_BY_TYPE,
+  getBusinessActionAvailability,
+  getBusinessEnvironmentHealth,
+  getChampionshipBacklashRisk,
+  getPackOddsDetectionRisk,
+  getStrategicProjectRiskProfile,
+  isBusinessActionEffectActive,
+  isStrategicBusinessAction,
+  type StrategicBusinessActionType,
+} from "./game/business-actions";
 import {
   canProposeSupport,
   createCampaignStart,
@@ -39,7 +72,13 @@ import {
   savePersistedGame,
   type PersistenceBackend,
 } from "./game/persistence-client";
+import {
+  getRestrictionPolicyProfile,
+  type RestrictionPolicyProfile,
+} from "./game/restriction-policy";
 import type {
+  BusinessActionRecord,
+  BusinessActionType,
   CommunityEvent,
   GameCommand,
   GameState,
@@ -57,6 +96,7 @@ type TabId =
   | "themes"
   | "restrictions"
   | "releases"
+  | "operations"
   | "community"
   | "finance";
 
@@ -65,6 +105,7 @@ const NAV_ITEMS: { id: TabId; label: string }[] = [
   { id: "themes", label: "테마" },
   { id: "restrictions", label: "파츠·금제" },
   { id: "releases", label: "발매 제안" },
+  { id: "operations", label: "사업 운영" },
   { id: "community", label: "커뮤니티" },
   { id: "finance", label: "재무" },
 ];
@@ -121,6 +162,80 @@ function formatUsers(value: number) {
 function formatRevenue(value: number) {
   if (value >= 1) return `${value.toFixed(1)}억`;
   return `${Math.round(value * 10000).toLocaleString("ko-KR")}만`;
+}
+
+function formatSignedRevenue(value: number) {
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  return `${sign}₩${formatRevenue(Math.abs(value))}`;
+}
+
+function getBusinessRecordStatus(record: BusinessActionRecord, day: number) {
+  const remaining = Math.max(0, record.endsDay - day);
+  switch (record.outcome) {
+    case "pending":
+      return "다음 정기 발매 대기";
+    case "success":
+      return remaining > 0 ? `흥행 · ${remaining}일 남음` : "흥행 종료";
+    case "backlash":
+      return remaining > 0 ? `역풍 · ${remaining}일 남음` : "역풍 종료";
+    case "clean":
+      return remaining > 0 ? `미적발 · ${remaining}일 남음` : "조정 종료";
+    case "detected":
+      return "적발 · 효과 중단";
+    case "completed":
+      return "집행 종료";
+    case "active":
+      if (isStrategicBusinessAction(record.type)) {
+        const resultDay = record.startedDay +
+          (BUSINESS_ACTION_BY_TYPE[record.type].resolutionDelay ?? 1);
+        return day < resultDay
+          ? `성과 심사 중 · D-${resultDay - day}`
+          : "성과 확정 대기";
+      }
+      if (day <= record.startedDay) return "집행 완료 · 익일부터 시작";
+      return remaining > 0 ? `진행 중 · ${remaining}일 남음` : "집행 종료";
+  }
+}
+
+function getBusinessRecordProgress(record: BusinessActionRecord, day: number) {
+  if (record.outcome === "pending") return 0;
+  if (record.outcome === "completed" || record.outcome === "detected") {
+    return 100;
+  }
+  const duration = Math.max(1, record.endsDay - record.startedDay);
+  return Math.max(
+    0,
+    Math.min(100, ((day - record.startedDay) / duration) * 100),
+  );
+}
+
+function getBusinessTransitionToast(previous: GameState, next: GameState) {
+  for (const record of [...next.operations.records].reverse()) {
+    const previousRecord = previous.operations.records.find(
+      (candidate) => candidate.id === record.id,
+    );
+    if (!previousRecord || previousRecord.outcome === record.outcome) continue;
+    if (record.outcome === "detected") {
+      return `봉입률 조정이 적발됐습니다. 구매 신뢰가 ${Math.round(next.purchaseTrust)}로 급락했습니다.`;
+    }
+    if (record.outcome === "clean") {
+      return "봉입률 조정이 적발되지 않았습니다. 희소도 효과가 이어집니다.";
+    }
+    if (record.outcome === "active" && previousRecord.outcome === "pending") {
+      return "예약한 봉입률 조정이 이번 정기 발매에 적용됐습니다.";
+    }
+    if (record.outcome === "backlash") {
+      return isStrategicBusinessAction(record.type)
+        ? `${BUSINESS_ACTION_BY_TYPE[record.type].title}이 실패했습니다. 투자금을 회수하지 못했고 후속 역풍이 시작됩니다.`
+        : "챔피언십 중계가 환경 문제를 노출해 역풍이 시작됐습니다.";
+    }
+    if (record.outcome === "success") {
+      return isStrategicBusinessAction(record.type)
+        ? `${BUSINESS_ACTION_BY_TYPE[record.type].title}이 성공했습니다. ₩${formatRevenue(record.cashReturn ?? 0)}을 회수했습니다.`
+        : "챔피언십이 흥행했습니다. 대회 유입 효과가 시작됩니다.";
+    }
+  }
+  return null;
 }
 
 function formatPercent(value: number, digits = 1) {
@@ -258,6 +373,7 @@ function getAdvisorBrief(
   impactNotice: ImpactNotice | null,
   activeTab: TabId,
   concentratedRestrictionRisk: boolean,
+  restrictionPolicy: RestrictionPolicyProfile,
 ): AdvisorBrief {
   const tabBriefs: Record<TabId, AdvisorBrief> = {
     distribution: {
@@ -280,6 +396,12 @@ function getAdvisorBrief(
       kicker: "발매 해석",
       message: "예상 티어는 추정치입니다. 파워 조정은 판매 기대와 환경 충격을 함께 바꿉니다.",
     },
+    operations: {
+      tone: "info",
+      kicker: "사업 운영",
+      message: "한 번의 집행은 오늘의 비용뿐 아니라 여러 날의 유입과 신뢰에 영향을 줍니다.",
+      submessage: "환경을 공개하는 행사는 현재 메타가 건강할 때만 성장으로 돌아옵니다.",
+    },
     community: {
       tone: "info",
       kicker: "커뮤니티 해석",
@@ -290,6 +412,7 @@ function getAdvisorBrief(
       tone: "info",
       kicker: "재무 해석",
       message: "발매일의 급등과 장기 잔존은 분리해서 보아야 합니다.",
+      submessage: "DAY 47부터 기본 조직비와 활성 유저 규모 비용이 매일 일할 정산됩니다.",
     },
   };
   const activeTabBrief = tabBriefs[activeTab];
@@ -327,6 +450,38 @@ function getAdvisorBrief(
         message: "환경 압력은 낮아질 수 있지만, 이 테마에 투자한 경쟁층의 이탈 위험도 함께 커집니다.",
       });
     }
+    if (restrictionPolicy.quality === "narrow") {
+      return withActiveTabHint({
+        tone: "critical",
+        kicker: "금제 범위 부족",
+        message: `실효 조정 ${restrictionPolicy.meaningfulCutCount}종입니다. 상위권과 Tier 2를 함께 보지 않은 단일·솜방망이 금제는 운영 불신을 키웁니다.`,
+        submessage:
+          restrictionPolicy.staleEligible > 0
+            ? `90일 이상 장기 제한 ${restrictionPolicy.staleEligible}종 중 완전 해제 ${restrictionPolicy.staleFullyReleased}종입니다.`
+            : "이번 위원회에는 90일 이상 장기 제한 해제 후보가 없습니다.",
+      });
+    }
+    if (restrictionPolicy.quality === "incomplete") {
+      return withActiveTabHint({
+        tone: "caution",
+        kicker: "금제 커버리지 미완료",
+        message: `상위권 ${restrictionPolicy.upperMeaningfulCuts}/2 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts}/2입니다. 두 구간을 각각 여러 장 조정해야 선두만 바뀌는 금제를 피할 수 있습니다.`,
+        submessage: restrictionPolicy.staleReliefComplete
+          ? "장기 제한 검토 요건은 충족했습니다."
+          : `90일 이상 장기 제한 ${restrictionPolicy.staleEligible}종 중 적어도 1종을 완화해야 합니다.`,
+      });
+    }
+    if (restrictionPolicy.quality === "balanced") {
+      return withActiveTabHint({
+        tone: "calm",
+        kicker: "금제 커버리지 충족",
+        message: `상위권 ${restrictionPolicy.upperMeaningfulCuts}종 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts}종을 함께 조정했습니다.`,
+        submessage:
+          restrictionPolicy.staleEligible > 0
+            ? `장기 제한 완전 해제 ${restrictionPolicy.staleFullyReleased}/${restrictionPolicy.staleEligible}종을 포함했습니다.`
+            : "이번 위원회에는 90일 이상 장기 제한 해제 후보가 없습니다.",
+      });
+    }
     return withActiveTabHint({
       tone: "caution",
       kicker: "금제위원회 진행 중",
@@ -352,6 +507,13 @@ function getAdvisorBrief(
       message: `${impactNotice.metrics.join(" · ")} — ${impactNotice.cause}`,
     });
   }
+  if (game.phase === "running" && game.day > LAST_DECISION_DAY) {
+    return withActiveTabHint({
+      tone: "calm",
+      kicker: "최종 결산 관찰",
+      message: `새 결정은 마감됐습니다. DAY ${CAMPAIGN_END_DAY}까지 최종 금제와 시장 반응을 관측한 뒤 임기 결과를 확정합니다.`,
+    });
+  }
   if (game.phase === "ended" && totalUsers(game) <= 0) {
     return withActiveTabHint({
       tone: "critical",
@@ -363,7 +525,7 @@ function getAdvisorBrief(
     return withActiveTabHint({
       tone: "calm",
       kicker: "임기 종료",
-      message: "1000일의 운영 기록이 확정되었습니다. 로터스는 결과를 정리하고 다음 판단을 기다립니다.",
+      message: `DAY ${CAMPAIGN_END_DAY}까지의 운영 기록이 확정되었습니다. 로터스가 임기 결과를 정리했습니다.`,
     });
   }
 
@@ -644,23 +806,30 @@ function LotusSymbol({ tone = "calm" }: { tone?: "calm" | "info" | "caution" | "
 
 type GuidedStep =
   | "day1-community"
+  | "day1-community-read"
   | "day1-advance"
   | "day8-advance"
   | "day15-themes"
   | "day15-theme"
   | "day15-part"
   | "day15-finance"
+  | "day15-finance-read"
+  | "day15-operations"
+  | "day15-tv-cm"
   | "day15-advance"
   | "day22-advance"
   | "day29-advance"
   | "day30-release"
   | "day30-advance"
+  | "day31-community-read"
   | "day31-advance"
   | "day38-advance"
   | "day45-restriction"
   | "day45-advance"
   | "day46-community"
+  | "day46-community-read"
   | "day46-distribution"
+  | "day46-distribution-read"
   | "day46-start";
 
 type GuidedReleaseTarget =
@@ -695,19 +864,26 @@ type GuidedBrief = {
   title: string;
   message: string;
   placement?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+  inspection?: boolean;
+  confirmLabel?: string;
 };
 
 function getGuidedStep(game: GameState): GuidedStep {
   if (game.day >= 46) return "day46-community";
   if (game.day <= 1) return "day1-community";
   if (game.day <= 8) return "day8-advance";
-  if (game.day <= 15) return "day15-themes";
+  if (game.day <= 15) {
+    const guidedTvCmComplete = game.operations.records.some(
+      (record) => record.type === "tv-cm" && record.startedDay === 15,
+    );
+    return guidedTvCmComplete ? "day15-advance" : "day15-themes";
+  }
   if (game.day <= 22) return "day22-advance";
   if (game.day <= 29) return "day29-advance";
   if (game.day === 30) {
     return game.phase === "release-edit" ? "day30-release" : "day30-advance";
   }
-  if (game.day <= 31) return "day31-advance";
+  if (game.day <= 31) return "day31-community-read";
   if (game.day < 45) return "day38-advance";
   return game.phase === "ban-edit"
     ? "day45-restriction"
@@ -719,7 +895,13 @@ function getGuidedInitialTab(game: GameState): TabId {
   if (game.phase === "release-edit") return "releases";
   if (game.phase === "ban-edit" || game.day === 45) return "restrictions";
   if (game.day === 1) return "distribution";
-  if (game.day === 15) return "distribution";
+  if (game.day === 15) {
+    return game.operations.records.some(
+      (record) => record.type === "tv-cm" && record.startedDay === 15,
+    )
+      ? "operations"
+      : "distribution";
+  }
   if (game.day === 22 || game.day === 29) return "finance";
   return "community";
 }
@@ -738,6 +920,7 @@ function getGuidedBrief(
   game: GameState,
   releaseTarget: GuidedReleaseTarget | null,
   restrictionTarget: GuidedRestrictionTarget | null,
+  restrictionPolicy: RestrictionPolicyProfile,
 ): GuidedBrief {
   if (step === "day1-community") {
     return {
@@ -747,11 +930,21 @@ function getGuidedBrief(
       placement: "bottom-right",
     };
   }
+  if (step === "day1-community-read") {
+    return {
+      kicker: "LOTUS · PUBLIC SENTIMENT",
+      title: "오늘의 커뮤니티 글을 읽어보세요",
+      message: "밝게 열린 글 목록을 직접 스크롤해 확인해주세요. 커뮤니티는 모든 사람이 글을 쓰는 곳이므로, 의견은 판정이 아니라 하나의 신호입니다.",
+      placement: "bottom-left",
+      inspection: true,
+      confirmLabel: "확인 · 다음",
+    };
+  }
   if (step === "day1-advance") {
     return {
       kicker: "LOTUS · PUBLIC SENTIMENT",
-      title: "글은 판정이 아니라 신호입니다",
-      message: "게임을 하지 않은 사람도 글을 씁니다. 첫 일주일의 변화를 보기 위해 강조된 진행 버튼을 선택해주세요.",
+      title: "커뮤니티 확인을 마쳤습니다",
+      message: "첫 일주일의 변화를 보기 위해 강조된 진행 버튼을 선택해주세요.",
     };
   }
   if (step === "day8-advance") {
@@ -797,18 +990,44 @@ function getGuidedBrief(
       placement: "bottom-right",
     };
   }
-  if (step === "day15-advance") {
+  if (step === "day15-finance-read") {
     return {
       kicker: "LOTUS · DAILY MARKET",
-      title: "일별 매출 흐름을 관찰했습니다",
-      message: "DAY 22까지 진행해 단기 급등과 지속 매출을 구분해보겠습니다.",
+      title: "매출과 유저 흐름을 확인해주세요",
+      message: "밝게 열린 차트에서 커뮤니티의 큰 목소리가 실제 구매와 잔류로 이어졌는지 확인한 뒤 다음 안내로 넘어갑니다.",
+      placement: "bottom-left",
+      inspection: true,
+      confirmLabel: "확인 · 다음",
+    };
+  }
+  if (step === "day15-operations") {
+    return {
+      kicker: "LOTUS · BUSINESS OPERATIONS",
+      title: "이제 사업 운영을 선택해주세요",
+      message: "운영자금은 쌓아두는 점수가 아니라 유입과 신뢰를 만드는 수단입니다. 밝게 표시된 ‘사업 운영’을 여세요.",
+      placement: "bottom-right",
+    };
+  }
+  if (step === "day15-tv-cm") {
+    return {
+      kicker: "LOTUS · FIRST CAMPAIGN",
+      title: "TV CM 집중 편성을 집행해주세요",
+      message: "사업 액션은 하루에 한 번만 집행할 수 있습니다. 비용·기간·쿨다운을 확인하고 강조된 버튼을 선택해주세요.",
+      placement: "top-right",
+    };
+  }
+  if (step === "day15-advance") {
+    return {
+      kicker: "LOTUS · CAMPAIGN ACTIVE",
+      title: "첫 사업 액션을 집행했습니다",
+      message: "TV CM 효과는 다음 날부터 반영됩니다. DAY 22까지 진행해 유입과 운영 현금의 변화를 확인하겠습니다.",
     };
   }
   if (step === "day22-advance") {
     return {
       kicker: "LOTUS · TREND CHECK",
-      title: "한 번의 급등만으로 판단하지 않습니다",
-      message: "첫 발매 직전인 DAY 29까지 진행해주세요.",
+      title: "광고 효과와 자연 변동을 함께 확인했습니다",
+      message: "한 번의 급등만으로 판단하지 않습니다. 첫 발매 직전인 DAY 29까지 진행해주세요.",
     };
   }
   if (step === "day29-advance") {
@@ -863,11 +1082,21 @@ function getGuidedBrief(
       message: "메타와 커뮤니티 반응은 다음 날부터 시작됩니다. DAY 31로 +1일 진행해주세요.",
     };
   }
+  if (step === "day31-community-read") {
+    return {
+      kicker: "LOTUS · DAY-AFTER REACTION",
+      title: "발매 다음 날의 글을 읽어보세요",
+      message: "발매 반응이 집중된 20개 글을 직접 확인해주세요. 체감과 실제 수치를 구분해서 읽어야 합니다.",
+      placement: "bottom-left",
+      inspection: true,
+      confirmLabel: "확인 · 다음",
+    };
+  }
   if (step === "day31-advance") {
     return {
       kicker: "LOTUS · DAY-AFTER REACTION",
-      title: "발매 반응이 커뮤니티에 집중됐습니다",
-      message: "오늘의 20개 글을 읽어보세요. 체감과 실제 수치를 구분하며 DAY 38까지 진행합니다.",
+      title: "발매 반응을 확인했습니다",
+      message: "초기 반응이 얼마나 남는지 보기 위해 DAY 38까지 진행합니다.",
     };
   }
   if (step === "day38-advance") {
@@ -882,7 +1111,7 @@ function getGuidedBrief(
       return {
         kicker: "LOTUS · RESTRICTION BOARD",
         title: "금제안을 제출해주세요",
-        message: "허용 매수 변경을 확인했습니다. 밝게 표시된 제출 버튼으로 결정을 확정합니다.",
+        message: `상위권 ${restrictionPolicy.upperMeaningfulCuts}/2 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts}/2 커버리지를 확인했습니다. 첫 위원회라 90일 장기 제한 해제 후보는 없습니다. 밝게 표시된 제출 버튼으로 확정합니다.`,
         placement: "top-left",
       };
     }
@@ -893,7 +1122,7 @@ function getGuidedBrief(
     return {
       kicker: "LOTUS · RESTRICTION BOARD",
       title: `${withKoreanObjectParticle(partName)} ${restrictionTarget.limit}장으로 조정해주세요`,
-      message: "강한 테마를 자르는 일은 메타뿐 아니라 기존 경쟁층의 잔류와 구매 신뢰에도 영향을 줍니다.",
+      message: `한 장만 찍는 대신 상위권과 Tier 2에서 각각 2종을 얕게 조정합니다. 현재 상위권 ${restrictionPolicy.upperMeaningfulCuts}/2 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts}/2입니다.`,
       placement: "top-left",
     };
   }
@@ -905,12 +1134,32 @@ function getGuidedBrief(
       placement: "bottom-right",
     };
   }
+  if (step === "day46-community-read") {
+    return {
+      kicker: "LOTUS · POST-RESTRICTION",
+      title: "금제 다음 날의 글을 읽어보세요",
+      message: "밝게 열린 20개 글에서 금제 반응과 이탈 신호를 확인해주세요. 확인 후 실제 메타 분포와 대조합니다.",
+      placement: "bottom-left",
+      inspection: true,
+      confirmLabel: "확인 · 분포 대조",
+    };
+  }
   if (step === "day46-distribution") {
     return {
       kicker: "LOTUS · FINAL META CHECK",
       title: "반응과 실제 분포를 대조해주세요",
       message: "커뮤니티의 목소리가 곧 전체 시장은 아닙니다. ‘분포’에서 실제 점유율과 활성 유저를 마지막으로 확인합니다.",
       placement: "bottom-right",
+    };
+  }
+  if (step === "day46-distribution-read") {
+    return {
+      kicker: "LOTUS · FINAL META CHECK",
+      title: "최종 메타표를 확인해주세요",
+      message: "밝게 열린 분포에서 실제 점유율, 활성 유저, 순환 신호를 확인해주세요. 이 환경을 정상화한 상태로 인계합니다.",
+      placement: "bottom-left",
+      inspection: true,
+      confirmLabel: "확인 · 인수 완료",
     };
   }
   if (step === "day46-start") {
@@ -923,7 +1172,7 @@ function getGuidedBrief(
         : "이제 직접 운영을 시작합니다",
       message: game.handoverComplete
         ? "진행은 완료됐습니다. 강조된 버튼으로 저장을 다시 시도해주세요."
-        : "강조된 ‘업무 시작’을 선택하면 인수인계가 종료되고 모든 메뉴가 해제됩니다.",
+        : `업무 시작 뒤 DAY ${LAST_DECISION_DAY}까지 직접 운영합니다. DAY 47부터 기본 운영비와 활성 유저 규모 비용이 매일 정산됩니다. 정기 발매는 30일, 금제위원회는 DAY ${FIRST_BAN_DAY} 이후 60일 주기이며, 마지막 결정 뒤 ${SETTLEMENT_DAYS}일은 자동 결산 관찰 기간입니다.`,
     };
   }
   return {
@@ -937,6 +1186,7 @@ function GuidedTutorialOverlay({
   brief,
   busy,
   day,
+  onConfirm,
   onPause,
   targetKey,
   onSkip,
@@ -944,6 +1194,7 @@ function GuidedTutorialOverlay({
   brief: GuidedBrief;
   busy: boolean;
   day: number;
+  onConfirm: () => void;
   onPause: () => void;
   targetKey: string;
   onSkip: () => void;
@@ -954,9 +1205,27 @@ function GuidedTutorialOverlay({
     width: number;
     height: number;
   } | null>(null);
+  const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
+  const skipTriggerRef = useRef<HTMLButtonElement>(null);
+  const skipCancelRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!skipConfirmOpen) return;
+    const previouslyFocused = document.activeElement;
+    const frame = window.requestAnimationFrame(() => {
+      skipCancelRef.current?.focus({ preventScroll: true });
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (previouslyFocused instanceof HTMLElement) {
+        previouslyFocused.focus({ preventScroll: true });
+      }
+    };
+  }, [skipConfirmOpen]);
 
   useEffect(() => {
     let frame = 0;
+    let targetAttempts = 0;
     let target: HTMLElement | null = null;
     const measure = () => {
       if (!target) {
@@ -977,12 +1246,16 @@ function GuidedTutorialOverlay({
       });
     };
     const resizeObserver = new ResizeObserver(measure);
-    frame = window.requestAnimationFrame(() => {
+    const connectTarget = () => {
       target = document.querySelector<HTMLElement>(
         '[data-tutorial-target="active"]',
       );
       if (!target) {
         setRect(null);
+        targetAttempts += 1;
+        if (targetAttempts < 12) {
+          frame = window.requestAnimationFrame(connectTarget);
+        }
         return;
       }
       target.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -990,21 +1263,39 @@ function GuidedTutorialOverlay({
       target.focus({ preventScroll: true });
       resizeObserver.observe(target);
       measure();
-    });
+    };
+    frame = window.requestAnimationFrame(connectTarget);
     const handleViewportChange = () => {
       window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(measure);
     };
     const trapFocus = (event: KeyboardEvent) => {
+      const skipDialog = document.querySelector<HTMLElement>(
+        ".guided-skip-dialog",
+      );
+      if (skipDialog && event.key === "Escape") {
+        event.preventDefault();
+        setSkipConfirmOpen(false);
+        return;
+      }
       if (event.key !== "Tab") return;
-      const coachButtons = Array.from(
-        document.querySelectorAll<HTMLElement>(
-          ".guided-coach button:not(:disabled)",
-        ),
-      );
-      const focusables = [target, ...coachButtons].filter(
-        (candidate): candidate is HTMLElement => Boolean(candidate),
-      );
+      const dialogButtons = skipDialog
+        ? Array.from(
+            skipDialog.querySelectorAll<HTMLElement>("button:not(:disabled)"),
+          )
+        : [];
+      const coachButtons = skipDialog
+        ? []
+        : Array.from(
+            document.querySelectorAll<HTMLElement>(
+              ".guided-coach button:not(:disabled)",
+            ),
+          );
+      const focusables = skipDialog
+        ? dialogButtons
+        : [target, ...coachButtons].filter(
+            (candidate): candidate is HTMLElement => Boolean(candidate),
+          );
       if (focusables.length === 0) return;
       const currentIndex = focusables.indexOf(
         document.activeElement as HTMLElement,
@@ -1019,6 +1310,16 @@ function GuidedTutorialOverlay({
     const guardPointerInput = (event: Event) => {
       const eventTarget = event.target;
       if (!(eventTarget instanceof Element)) return;
+      const skipDialog = document.querySelector<HTMLElement>(
+        ".guided-skip-dialog",
+      );
+      if (skipDialog) {
+        if (skipDialog.contains(eventTarget)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        return;
+      }
       const activeTarget = document.querySelector<HTMLElement>(
         '[data-tutorial-target="active"]',
       );
@@ -1050,31 +1351,40 @@ function GuidedTutorialOverlay({
     };
   }, [targetKey]);
 
-  const right = rect ? Math.max(0, window.innerWidth - rect.left - rect.width) : 0;
-  const bottom = rect ? Math.max(0, window.innerHeight - rect.top - rect.height) : 0;
-
   return (
-    <div className="guided-tour-layer">
+    <div
+      className={`guided-tour-layer${brief.inspection ? " is-inspection" : ""}${
+        skipConfirmOpen ? " is-skip-confirming" : ""
+      }`}
+    >
       {rect ? (
         <>
-          <div aria-hidden="true" className="guided-shade guided-shade-top" style={{ height: rect.top }} />
-          <div aria-hidden="true" className="guided-shade guided-shade-left" style={{ height: rect.height, top: rect.top, width: rect.left }} />
-          <div aria-hidden="true" className="guided-shade guided-shade-right" style={{ height: rect.height, right: 0, top: rect.top, width: right }} />
-          <div aria-hidden="true" className="guided-shade guided-shade-bottom" style={{ bottom: 0, height: bottom }} />
-          <button
-            aria-label={`안내 대상 실행: ${brief.title}`}
-            className="guided-spotlight-ring"
-            onClick={() => {
-              const target = document.querySelector<HTMLElement>(
-                '[data-tutorial-target="active"]',
-              );
-              target?.focus({ preventScroll: true });
-              target?.click();
+          <div
+            aria-hidden="true"
+            className="guided-spotlight-cutout"
+            style={{
+              height: rect.height,
+              left: rect.left,
+              top: rect.top,
+              width: rect.width,
             }}
-            style={{ height: rect.height, left: rect.left, top: rect.top, width: rect.width }}
-            tabIndex={-1}
-            type="button"
           />
+          {!brief.inspection && !skipConfirmOpen ? (
+            <button
+              aria-label={`안내 대상 실행: ${brief.title}`}
+              className="guided-spotlight-ring"
+              onClick={() => {
+                const target = document.querySelector<HTMLElement>(
+                  '[data-tutorial-target="active"]',
+                );
+                target?.focus({ preventScroll: true });
+                target?.click();
+              }}
+              style={{ height: rect.height, left: rect.left, top: rect.top, width: rect.width }}
+              tabIndex={-1}
+              type="button"
+            />
+          ) : null}
         </>
       ) : (
         <div aria-hidden="true" className="guided-shade guided-shade-full" />
@@ -1093,6 +1403,16 @@ function GuidedTutorialOverlay({
         <div className="guided-coach-footer">
           <span>DAY {day} / 46 · 인수인계</span>
           <div>
+            {brief.inspection && brief.confirmLabel ? (
+              <button
+                className="guided-coach-confirm"
+                disabled={busy}
+                onClick={onConfirm}
+                type="button"
+              >
+                {brief.confirmLabel}
+              </button>
+            ) : null}
             <button
               className="guided-coach-pause"
               disabled={busy}
@@ -1104,7 +1424,8 @@ function GuidedTutorialOverlay({
             <button
               className="guided-coach-skip"
               disabled={busy}
-              onClick={onSkip}
+              onClick={() => setSkipConfirmOpen(true)}
+              ref={skipTriggerRef}
               type="button"
             >
               {busy ? "저장 중" : "건너뛰기"}
@@ -1112,6 +1433,49 @@ function GuidedTutorialOverlay({
           </div>
         </div>
       </aside>
+      {skipConfirmOpen ? (
+        <>
+          <div aria-hidden="true" className="guided-skip-dialog-backdrop" />
+          <section
+            aria-describedby="guided-skip-description"
+            aria-labelledby="guided-skip-title"
+            aria-modal="true"
+            className="guided-skip-dialog"
+            role="alertdialog"
+          >
+            <LotusSymbol tone="caution" />
+            <div className="guided-skip-dialog-copy">
+              <span>LOTUS · HANDOVER OVERRIDE</span>
+              <strong id="guided-skip-title">프롤로그를 건너뛸까요?</strong>
+              <p id="guided-skip-description">
+                안내 과정을 종료하고, 동일한 결정이 반영된 DAY 46부터 직접 운영을 시작합니다.
+              </p>
+            </div>
+            <div className="guided-skip-dialog-note">
+              DAY 1~45의 인수인계 과정만 생략되며 캠페인 결과는 동일합니다.
+            </div>
+            <div className="guided-skip-dialog-actions">
+              <button
+                className="guided-skip-dialog-cancel"
+                disabled={busy}
+                onClick={() => setSkipConfirmOpen(false)}
+                ref={skipCancelRef}
+                type="button"
+              >
+                계속 안내받기
+              </button>
+              <button
+                className="guided-skip-dialog-confirm"
+                disabled={busy}
+                onClick={onSkip}
+                type="button"
+              >
+                {busy ? "DAY 46 준비 중" : "DAY 46부터 시작"}
+              </button>
+            </div>
+          </section>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -1167,6 +1531,9 @@ function GameSession({
   const [impactNotice, setImpactNotice] = useState<ImpactNotice | null>(null);
   const [advisorOpen, setAdvisorOpen] = useState(true);
   const [advisorPulseKey, setAdvisorPulseKey] = useState(1);
+  const [packOddsConfirmOpen, setPackOddsConfirmOpen] = useState(false);
+  const [strategicConfirmAction, setStrategicConfirmAction] =
+    useState<StrategicBusinessActionType | null>(null);
   const [toast, setToast] = useState<string | null>(initialWarning ?? null);
   const [mobileDetail, setMobileDetail] = useState(
     guided && initialGame.phase === "ban-edit",
@@ -1175,12 +1542,15 @@ function GameSession({
   const [persistence, setPersistence] =
     useState<PersistenceBackend>(initialPersistence);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const packOddsDialogRef = useRef<HTMLDivElement>(null);
+  const packOddsCancelRef = useRef<HTMLButtonElement>(null);
   const detailHeadingRef = useRef<HTMLHeadingElement>(null);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const saveFailureReportedRef = useRef(false);
   const lastQueuedGameRef = useRef<GameState>(initialGame);
   const seenAdvisorTabsRef = useRef(new Set<TabId>([initialTab]));
   const guidedFinishingRef = useRef(false);
+  const packOddsCommittedRef = useRef(false);
 
   useEffect(() => {
     if (
@@ -1228,6 +1598,63 @@ function GameSession({
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [supportTarget]);
 
+  useEffect(() => {
+    if (!packOddsConfirmOpen && !strategicConfirmAction) return;
+    const previouslyFocused = document.activeElement;
+    const previousBodyOverflow = document.body.style.overflow;
+    const frame = window.requestAnimationFrame(() => {
+      packOddsCancelRef.current?.focus({ preventScroll: true });
+    });
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setPackOddsConfirmOpen(false);
+        setStrategicConfirmAction(null);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusables = Array.from(
+        packOddsDialogRef.current?.querySelectorAll<HTMLElement>(
+          '.pack-odds-confirm-body, button:not(:disabled)',
+        ) ?? [],
+      );
+      if (focusables.length === 0) return;
+      const currentIndex = focusables.indexOf(
+        document.activeElement as HTMLElement,
+      );
+      const direction = event.shiftKey ? -1 : 1;
+      const nextIndex =
+        currentIndex < 0
+          ? 0
+          : (currentIndex + direction + focusables.length) % focusables.length;
+      event.preventDefault();
+      focusables[nextIndex].focus({ preventScroll: true });
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousBodyOverflow;
+      if (packOddsCommittedRef.current) {
+        packOddsCommittedRef.current = false;
+        window.requestAnimationFrame(() => {
+          const actionHeading = document.getElementById(
+            "business-actions-title",
+          );
+          if (actionHeading) {
+            actionHeading.focus();
+          } else if (previouslyFocused instanceof HTMLElement) {
+            previouslyFocused.focus();
+          }
+        });
+      } else if (previouslyFocused instanceof HTMLElement) {
+        previouslyFocused.focus({ preventScroll: true });
+      }
+    };
+  }, [packOddsConfirmOpen, strategicConfirmAction]);
+
   const rankedThemes = useMemo(
     () =>
       game.activeThemeIds.map((themeId) => THEME_BY_ID[themeId]).sort(
@@ -1242,13 +1669,55 @@ function GameSession({
     (theme) => theme.id === selectedTheme.id,
   );
   const selectedTier = getTierLabel(selectedRank, selectedRuntime.share);
-  const nextReleaseDay = getNextReleaseDay(game.day);
-  const nextBanDay = getNextBanDay(game.day);
+  const nextReleaseDay = game.phase === "release-edit"
+    ? game.day
+    : getNextReleaseDay(game.day);
+  const nextBanDay = game.phase === "ban-edit"
+    ? game.day
+    : getNextBanDay(game.day);
   const releaseCountdown = Math.max(0, nextReleaseDay - game.day);
   const banCountdown = Math.max(0, nextBanDay - game.day);
-  const nearestEventDay = Math.min(nextReleaseDay, nextBanDay, 1000);
+  const hasFutureRelease =
+    game.phase === "release-edit" || game.day < LAST_RELEASE_DAY;
+  const hasFutureBan =
+    game.phase === "ban-edit" || game.day < LAST_DECISION_DAY;
+  const campaignEnded = game.phase === "ended";
+  const decisionsComplete =
+    game.phase === "running" && game.day >= LAST_DECISION_DAY;
+  const settlementPeriod =
+    game.phase === "running" && game.day >= SETTLEMENT_START_DAY;
+  const mandateProgress =
+    game.day <= FIRST_BAN_DAY
+      ? (game.day / FIRST_BAN_DAY) * 100
+      : ((Math.min(game.day, LAST_DECISION_DAY) - FIRST_BAN_DAY) /
+          PLAYER_CONTROL_DAYS) *
+        100;
+  const settlementProgress =
+    ((Math.min(game.day, CAMPAIGN_END_DAY) - LAST_DECISION_DAY) /
+      SETTLEMENT_DAYS) *
+    100;
+  const displayedProgress = campaignEnded
+    ? 100
+    : Math.max(
+        0,
+        Math.min(100, settlementPeriod ? settlementProgress : mandateProgress),
+      );
+  const progressLabel =
+    campaignEnded
+      ? "임기 종료"
+      : game.day <= FIRST_BAN_DAY
+      ? "인수인계 진행"
+      : settlementPeriod
+        ? "결산 관찰"
+        : "임기 진행률";
+  const nearestEventDay = campaignEnded
+    ? game.day
+    : decisionsComplete
+      ? CAMPAIGN_END_DAY
+      : Math.min(nextReleaseDay, nextBanDay, CAMPAIGN_END_DAY);
   const total = totalUsers(game);
   const gameOver = total <= 0;
+  const campaignComplete = game.phase === "ended" && !gameOver;
   const previousUserTotal = [...game.history]
     .reverse()
     .find((entry) => entry.day < game.day)?.totalUsers ?? total;
@@ -1269,6 +1738,10 @@ function GameSession({
     )?.legalLimits[partId];
     return official !== undefined && official !== value;
   });
+  const restrictionPolicy = getRestrictionPolicyProfile(
+    game,
+    Object.fromEntries(restrictionChanges) as Record<string, RestrictionLimit>,
+  );
   const concentratedRestrictionRisk = hasConcentratedRestrictionRisk(
     game,
     banDraft,
@@ -1278,6 +1751,7 @@ function GameSession({
     impactNotice,
     activeTab,
     concentratedRestrictionRisk,
+    restrictionPolicy,
   );
   const guidedDossierTarget = guided
     ? getGuidedDossierTarget(game)
@@ -1336,6 +1810,7 @@ function GameSession({
         game,
         guidedReleaseTarget,
         guidedRestrictionTarget,
+        restrictionPolicy,
       )
     : null;
   const guidedTargetKey = guidedReleaseTarget
@@ -1377,17 +1852,30 @@ function GameSession({
       return null;
     }
     const next = dispatch({ type: "ADVANCE_DAYS", days });
+    const businessToast = getBusinessTransitionToast(game, next);
     showImpact(next);
     if (next.phase === "ban-edit") {
       setBanDraft(makeRestrictionDraft(next));
-      setToast(`DAY ${next.day} 금제위원회가 열렸습니다.`);
+      setToast(
+        [`DAY ${next.day} 금제위원회가 열렸습니다.`, businessToast]
+          .filter(Boolean)
+          .join(" "),
+      );
       activateTab("restrictions", true);
     } else if (next.phase === "release-edit") {
       setReleaseDraft({});
-      setToast(`DAY ${next.day} 발매 시안 6개가 도착했습니다.`);
+      setToast(
+        [`DAY ${next.day} 발매 시안 6개가 도착했습니다.`, businessToast]
+          .filter(Boolean)
+          .join(" "),
+      );
       activateTab("releases", true);
     } else {
-      setToast(`DAY ${next.day}까지 진행했습니다.`);
+      setToast(
+        [`DAY ${next.day}까지 진행했습니다.`, businessToast]
+          .filter(Boolean)
+          .join(" "),
+      );
     }
     return next;
   }
@@ -1457,6 +1945,54 @@ function GameSession({
     setSupportTarget(null);
   }
 
+  function runBusinessAction(
+    action: BusinessActionType,
+    confirmed = false,
+  ) {
+    if (
+      guided &&
+      (guidedStep !== "day15-tv-cm" || action !== "tv-cm")
+    ) {
+      return null;
+    }
+    const definition = BUSINESS_ACTION_BY_TYPE[action];
+    const availability = getBusinessActionAvailability(game, action);
+    if (!availability.available) {
+      setToast(availability.reason ?? "현재 이 사업 액션을 집행할 수 없습니다.");
+      return null;
+    }
+    if (action === "pack-odds" && !confirmed) {
+      packOddsCommittedRef.current = false;
+      setPackOddsConfirmOpen(true);
+      return null;
+    }
+    if (isStrategicBusinessAction(action) && !confirmed) {
+      packOddsCommittedRef.current = false;
+      setStrategicConfirmAction(action);
+      return null;
+    }
+
+    const next = dispatch({ type: "RUN_BUSINESS_ACTION", action });
+    const record = next.operations.records.at(-1);
+    setImpactNotice(null);
+    setAdvisorPulseKey((current) => current + 1);
+    if (record?.outcome === "backlash") {
+      setToast("챔피언십이 환경 문제를 노출해 역풍이 시작됐습니다.");
+    } else if (record?.outcome === "success") {
+      setToast("챔피언십이 흥행했습니다. 대회 유입 효과가 시작됩니다.");
+    } else if (record?.outcome === "pending") {
+      setToast("봉입률 하향 조정을 다음 정기 발매에 예약했습니다.");
+    } else {
+      setToast(
+        `${withKoreanObjectParticle(definition.title)} 집행했습니다. ₩${formatRevenue(definition.cost)}을 사용했습니다.`,
+      );
+    }
+    if (guided && action === "tv-cm") {
+      setGuidedStep("day15-advance");
+    }
+    return next;
+  }
+
   function toggleReleaseOption(optionId: string) {
     if (
       !Object.prototype.hasOwnProperty.call(releaseDraft, optionId) &&
@@ -1484,10 +2020,15 @@ function GameSession({
       return null;
     }
     const next = dispatch({ type: "SUBMIT_RELEASE", selections });
+    const businessToast = getBusinessTransitionToast(game, next);
     setImpactNotice(null);
     setReleaseDraft({});
     setReactionFlashDay(next.day + 1);
-    setToast(`DAY ${next.day} 정기 발매 3종을 출시했습니다.`);
+    setToast(
+      [`DAY ${next.day} 정기 발매 3종을 출시했습니다.`, businessToast]
+        .filter(Boolean)
+        .join(" "),
+    );
     return next;
   }
 
@@ -1515,7 +2056,7 @@ function GameSession({
     }
     if (guidedStep === "day1-community" && tab === "community") {
       activateTab(tab, true);
-      setGuidedStep("day1-advance");
+      setGuidedStep("day1-community-read");
       return;
     }
     if (guidedStep === "day15-themes" && tab === "themes") {
@@ -1525,16 +2066,36 @@ function GameSession({
     }
     if (guidedStep === "day15-finance" && tab === "finance") {
       activateTab(tab, true);
-      setGuidedStep("day15-advance");
+      setGuidedStep("day15-finance-read");
+      return;
+    }
+    if (guidedStep === "day15-operations" && tab === "operations") {
+      activateTab(tab, true);
+      setGuidedStep("day15-tv-cm");
       return;
     }
     if (guidedStep === "day46-community" && tab === "community") {
       activateTab(tab, true);
-      setGuidedStep("day46-distribution");
+      setGuidedStep("day46-community-read");
       return;
     }
     if (guidedStep === "day46-distribution" && tab === "distribution") {
       activateTab(tab, true);
+      setGuidedStep("day46-distribution-read");
+    }
+  }
+
+  function confirmGuidedInspection() {
+    if (!guided || guidedBusy) return;
+    if (guidedStep === "day1-community-read") {
+      setGuidedStep("day1-advance");
+    } else if (guidedStep === "day15-finance-read") {
+      setGuidedStep("day15-operations");
+    } else if (guidedStep === "day31-community-read") {
+      setGuidedStep("day31-advance");
+    } else if (guidedStep === "day46-community-read") {
+      setGuidedStep("day46-distribution");
+    } else if (guidedStep === "day46-distribution-read") {
       setGuidedStep("day46-start");
     }
   }
@@ -1544,6 +2105,7 @@ function GameSession({
       (guidedStep === "day1-community" && tab === "community") ||
       (guidedStep === "day15-themes" && tab === "themes") ||
       (guidedStep === "day15-finance" && tab === "finance") ||
+      (guidedStep === "day15-operations" && tab === "operations") ||
       (guidedStep === "day46-community" && tab === "community") ||
       (guidedStep === "day46-distribution" && tab === "distribution")
     );
@@ -1578,10 +2140,6 @@ function GameSession({
 
   function skipGuidedTutorial() {
     if (!guided || guidedBusy) return;
-    const confirmed = window.confirm(
-      "프롤로그를 건너뛰고 동일한 DAY 46 상태에서 직접 운영을 시작할까요?",
-    );
-    if (!confirmed) return;
     const finalGame = createInitialGame(initialGame.seed);
     void finishGuidedTutorial(finalGame);
   }
@@ -1640,7 +2198,7 @@ function GameSession({
       nextTab = "releases";
     } else if (guidedStep === "day30-advance") {
       targetDay = 31;
-      nextStep = "day31-advance";
+      nextStep = "day31-community-read";
       nextTab = "community";
     } else if (guidedStep === "day31-advance") {
       targetDay = 38;
@@ -1708,12 +2266,9 @@ function GameSession({
     >
       <header className="topbar">
         <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true">
-            TR
-          </div>
+          <BrandMark className="brand-mark" />
           <div>
             <div className="brand-name">TCG REGULATOR</div>
-            <div className="brand-subtitle">META OPERATIONS</div>
           </div>
         </div>
 
@@ -1722,7 +2277,7 @@ function GameSession({
             <CalendarIcon />
             <span>DAY</span>
             <strong>{game.day}</strong>
-            <small>/ 1000</small>
+            <small>/ {CAMPAIGN_END_DAY}</small>
           </div>
           <div
             aria-label={`${userBreakdown} · 전일 대비 ${dailyUserDelta >= 0 ? "+" : ""}${formatUsers(dailyUserDelta)}명`}
@@ -1748,13 +2303,35 @@ function GameSession({
             <ReleaseIcon />
             <span>다음 발매</span>
             <strong>
-              {game.phase === "release-edit" ? "선정 중" : `D-${releaseCountdown}`}
+              {campaignEnded
+                ? "종료"
+                : settlementPeriod
+                  ? "결산 중"
+                  : !hasFutureRelease
+                    ? "일정 종료"
+                  : game.phase === "release-edit"
+                    ? "선정 중"
+                    : `D-${releaseCountdown}`}
             </strong>
           </div>
-          <div className={`header-metric ${banCountdown <= 3 ? "metric-alert" : ""}`}>
+          <div
+            className={`header-metric ${
+              hasFutureBan && banCountdown <= 3 ? "metric-alert" : ""
+            }`}
+          >
             <GavelIcon />
             <span>금제위원회</span>
-            <strong>{game.phase === "ban-edit" ? "진행 중" : `D-${banCountdown}`}</strong>
+            <strong>
+              {campaignEnded
+                ? "종료"
+                : settlementPeriod
+                  ? "결산 중"
+                  : !hasFutureBan
+                    ? "일정 종료"
+                  : game.phase === "ban-edit"
+                    ? "진행 중"
+                    : `D-${banCountdown}`}
+            </strong>
           </div>
         </div>
       </header>
@@ -1770,7 +2347,9 @@ function GameSession({
                   : undefined
               }
               disabled={
-                gameOver || (guided && !isGuidedNavigationTarget(item.id))
+                gameOver ||
+                campaignComplete ||
+                (guided && !isGuidedNavigationTarget(item.id))
               }
               key={item.id}
               onClick={() => handleGuidedNavigation(item.id)}
@@ -1800,12 +2379,21 @@ function GameSession({
         </button>
       </nav>
 
-      <main className={`workspace ${gameOver ? "game-over-workspace" : ""}`}>
+      <main
+        className={`workspace ${
+          gameOver || campaignComplete ? "game-over-workspace" : ""
+        }`}
+      >
         {gameOver ? (
           <GameOverPanel
             day={game.day}
             onReturnToPlay={() => onExit(game, persistence)}
             revenue={game.finance.cumulative}
+          />
+        ) : campaignComplete ? (
+          <CampaignEndPanel
+            game={game}
+            onReturnToPlay={() => onExit(game, persistence)}
           />
         ) : (
           <>
@@ -1840,6 +2428,7 @@ function GameSession({
             nextBanDay={nextBanDay}
             rankedThemes={rankedThemes}
             restrictionChanges={restrictionChanges}
+            restrictionPolicy={restrictionPolicy}
             guidedThemeTarget={
               guided && guidedStep === "day15-theme"
                 ? guidedDossierTarget?.themeId
@@ -1869,7 +2458,26 @@ function GameSession({
               ) {
                 return;
               }
-              setBanDraft((current) => ({ ...current, [partId]: limit }));
+              const nextDraft = { ...banDraft, [partId]: limit };
+              setBanDraft(nextDraft);
+              if (guided && guidedStep === "day45-restriction") {
+                const nextTargetPartId = Object.entries(
+                  guidedRestrictionPlan,
+                ).find(
+                  ([candidatePartId, expectedLimit]) =>
+                    nextDraft[candidatePartId] !== expectedLimit,
+                )?.[0];
+                const nextTargetThemeId = nextTargetPartId
+                  ? game.activeThemeIds.find((themeId) =>
+                      THEME_BY_ID[themeId].parts.some(
+                        (part) => part.id === nextTargetPartId,
+                      ),
+                    )
+                  : undefined;
+                if (nextTargetThemeId && nextTargetThemeId !== selectedTheme.id) {
+                  selectTheme(nextTargetThemeId, nextTargetPartId);
+                }
+              }
             }}
             onOpenSupport={openSupport}
             onResetDraft={() => setBanDraft(makeRestrictionDraft(game))}
@@ -1884,6 +2492,7 @@ function GameSession({
         {activeTab === "distribution" ? (
           <DistributionView
             game={game}
+            guidedInspection={guided && guidedStep === "day46-distribution-read"}
             nextBanDay={nextBanDay}
             nextReleaseDay={nextReleaseDay}
             onSelectTheme={selectTheme}
@@ -1925,28 +2534,57 @@ function GameSession({
           />
         ) : null}
 
+        {activeTab === "operations" ? (
+          <OperationsView
+            game={game}
+            guided={guided}
+            guidedActionTarget={
+              guided && guidedStep === "day15-tv-cm" ? "tv-cm" : null
+            }
+            onRunAction={runBusinessAction}
+          />
+        ) : null}
+
         {activeTab === "community" ? (
           <CommunityView
             flashDay={reactionFlashDay}
             game={game}
+            guidedInspection={
+              guided &&
+              (guidedStep === "day1-community-read" ||
+                guidedStep === "day31-community-read" ||
+                guidedStep === "day46-community-read")
+            }
             onFlashComplete={() => setReactionFlashDay(null)}
             onSelectTheme={selectTheme}
           />
         ) : null}
 
-        {activeTab === "finance" ? <FinanceView game={game} /> : null}
+        {activeTab === "finance" ? (
+          <FinanceView
+            game={game}
+            guidedInspection={guided && guidedStep === "day15-finance-read"}
+          />
+        ) : null}
           </>
         )}
       </main>
 
       <footer className="time-dock">
-        <div className="campaign-progress" aria-label={`1000일 중 ${game.day}일 진행`}>
+        <div
+          className="campaign-progress"
+          aria-label={`${progressLabel} ${displayedProgress.toFixed(1)}%`}
+          aria-valuemax={100}
+          aria-valuemin={0}
+          aria-valuenow={Number(displayedProgress.toFixed(1))}
+          role="progressbar"
+        >
           <div className="progress-copy">
-            <span>임기 진행률</span>
-            <strong>{((game.day / 1000) * 100).toFixed(1)}%</strong>
+            <span>{progressLabel}</span>
+            <strong>{displayedProgress.toFixed(1)}%</strong>
           </div>
           <div className="progress-track">
-            <span style={{ width: `${Math.min(100, game.day / 10)}%` }} />
+            <span style={{ width: `${displayedProgress}%` }} />
           </div>
         </div>
         <div className="time-actions">
@@ -1977,13 +2615,17 @@ function GameSession({
               (guided &&
                 !guidedStep.endsWith("advance") &&
                 guidedStep !== "day46-start") ||
-              guidedBusy
+              (guided && guidedBusy)
             }
             onClick={guided ? advanceGuidedTutorial : advanceToNextEvent}
             type="button"
           >
             <ClockIcon size={16} />
-            {guided ? guidedAdvanceLabel() : "다음 주요 일정까지"}
+            {guided
+              ? guidedAdvanceLabel()
+              : settlementPeriod
+                ? "임기 결산일까지"
+                : "다음 주요 일정까지"}
           </button>
         </div>
       </footer>
@@ -1997,6 +2639,35 @@ function GameSession({
           onDirectionChange={setSupportDirection}
           onSubmit={submitSupport}
           theme={THEME_BY_ID[supportTarget]}
+        />
+      ) : null}
+
+      {packOddsConfirmOpen ? (
+        <PackOddsConfirmFloat
+          cancelButtonRef={packOddsCancelRef}
+          detectionRisk={Math.round(getPackOddsDetectionRisk(game) * 100)}
+          dialogRef={packOddsDialogRef}
+          onCancel={() => setPackOddsConfirmOpen(false)}
+          onConfirm={() => {
+            const next = runBusinessAction("pack-odds", true);
+            packOddsCommittedRef.current = Boolean(next);
+            setPackOddsConfirmOpen(false);
+          }}
+        />
+      ) : null}
+
+      {strategicConfirmAction ? (
+        <StrategicProjectConfirmFloat
+          action={strategicConfirmAction}
+          cancelButtonRef={packOddsCancelRef}
+          dialogRef={packOddsDialogRef}
+          game={game}
+          onCancel={() => setStrategicConfirmAction(null)}
+          onConfirm={() => {
+            const next = runBusinessAction(strategicConfirmAction, true);
+            packOddsCommittedRef.current = Boolean(next);
+            setStrategicConfirmAction(null);
+          }}
         />
       ) : null}
 
@@ -2032,6 +2703,8 @@ function GameSession({
           brief={guidedBrief}
           busy={guidedBusy}
           day={game.day}
+          key={guidedTargetKey}
+          onConfirm={confirmGuidedInspection}
           onPause={() => void pauseGuidedTutorial()}
           onSkip={skipGuidedTutorial}
           targetKey={guidedTargetKey}
@@ -2076,6 +2749,104 @@ function GameOverPanel({
   );
 }
 
+const CAMPAIGN_CASH_LABEL: Record<CampaignCashBand, string> = {
+  crisis: "자금 위기",
+  tight: "긴축 운영",
+  reserve: "투자 여력",
+};
+
+const CAMPAIGN_ENVIRONMENT_LABEL: Record<CampaignEnvironmentBand, string> = {
+  danger: "환경 위험",
+  caution: "환경 주의",
+  stable: "환경 안정",
+};
+
+function CampaignEndPanel({
+  game,
+  onReturnToPlay,
+}: {
+  game: GameState;
+  onReturnToPlay: () => void;
+}) {
+  const ending = evaluateCampaignEnding(game);
+  const handoverUsers =
+    game.history.find((entry) => entry.day === 46)?.totalUsers ??
+    game.history[0]?.totalUsers ??
+    ending.totalUsers;
+  const userDelta = Math.round(ending.totalUsers - handoverUsers);
+  const runwayMonths = getOperatingRunwayMonths(
+    ending.scores.cash,
+    ending.totalUsers,
+  );
+  const strategicRecord = game.operations.records.find((record) =>
+    isStrategicBusinessAction(record.type)
+  );
+  const strategicEndingCopy = !strategicRecord
+    ? "대형 프로젝트 슬롯은 사용하지 않았습니다."
+    : strategicRecord.outcome === "success"
+      ? `${BUSINESS_ACTION_BY_TYPE[strategicRecord.type].title} 성공으로 ₩${formatRevenue(strategicRecord.cashReturn ?? 0)}을 회수했습니다.`
+      : strategicRecord.outcome === "backlash"
+        ? `${BUSINESS_ACTION_BY_TYPE[strategicRecord.type].title} 실패로 투자금을 회수하지 못했습니다.`
+        : `${BUSINESS_ACTION_BY_TYPE[strategicRecord.type].title}의 성과가 확정되지 않았습니다.`;
+  const endingTone =
+    ending.bands.environment === "danger" || ending.bands.cash === "crisis"
+      ? "danger"
+      : ending.bands.environment === "caution" || ending.bands.cash === "tight"
+        ? "caution"
+        : "stable";
+  const tone =
+    endingTone === "stable"
+      ? "calm"
+      : endingTone === "caution"
+        ? "caution"
+        : "critical";
+
+  return (
+    <section
+      aria-labelledby="campaign-end-title"
+      className={`game-over-panel campaign-end-panel ending-${endingTone}`}
+    >
+      <LotusSymbol tone={tone} />
+      <span className="game-over-kicker">MANDATE COMPLETE · FINAL AUDIT</span>
+      <h1 id="campaign-end-title">{ending.title}</h1>
+      <strong>
+        {CAMPAIGN_CASH_LABEL[ending.bands.cash]} ·{" "}
+        {CAMPAIGN_ENVIRONMENT_LABEL[ending.bands.environment]}
+      </strong>
+      <p>{ending.body} {strategicEndingCopy}</p>
+      <dl className="campaign-end-metrics">
+        <div>
+          <dt>최종 운영자금</dt>
+          <dd>₩{formatRevenue(ending.scores.cash)}</dd>
+          <small>현 규모 기준 약 {runwayMonths.toFixed(1)}개월</small>
+        </div>
+        <div>
+          <dt>환경 안정률</dt>
+          <dd>{ending.scores.environmentHealth.toFixed(1)}%</dd>
+        </div>
+        <div>
+          <dt>활성 유저</dt>
+          <dd>{formatUsers(ending.totalUsers)}명</dd>
+          <small>
+            인수 대비 {userDelta >= 0 ? "+" : ""}{formatUsers(userDelta)}명
+          </small>
+        </div>
+        <div>
+          <dt>구매 신뢰</dt>
+          <dd>{Math.round(game.purchaseTrust)} / 100</dd>
+        </div>
+      </dl>
+      <small className="campaign-end-note">
+        DAY {LAST_DECISION_DAY} 최종 금제 이후 {SETTLEMENT_DAYS}일의 관측
+        결과로 확정된 공식 기록입니다.
+      </small>
+      <button className="primary-action" onClick={onReturnToPlay} type="button">
+        PLAY 화면으로 돌아가기
+      </button>
+    </section>
+  );
+}
+
 function PlayScreen({
   busy,
   savedGame,
@@ -2095,11 +2866,11 @@ function PlayScreen({
     <main aria-busy={busy} className="play-screen">
       <section className="play-card" aria-labelledby="play-title">
         <div className="play-brand">
-          <span aria-hidden="true">TR</span>
+          <BrandMark className="play-brand-mark" />
           <strong>TCG REGULATOR</strong>
         </div>
         <div className="play-heading">
-          <span>1000 DAY META MANDATE</span>
+          <span>{CAMPAIGN_END_DAY} DAY META MANDATE</span>
           <h1 id="play-title">PLAY</h1>
         </div>
         <div className="play-actions" aria-label="게임 시작">
@@ -2120,7 +2891,12 @@ function PlayScreen({
                 : savedGame
                   ? !savedGame.handoverComplete
                     ? `DAY ${savedGame.day} · 인수인계 진행 중`
-                    : `DAY ${savedGame.day} · 임기 진행 중`
+                    : savedGame.phase === "ended"
+                      ? `DAY ${savedGame.day} · 임기 결과 보기`
+                      : savedGame.phase === "running" &&
+                          savedGame.day >= SETTLEMENT_START_DAY
+                        ? `DAY ${savedGame.day} · 결산 관찰 중`
+                        : `DAY ${savedGame.day} · 임기 진행 중`
                   : "저장된 임기 없음"}
             </span>
           </button>
@@ -2159,6 +2935,201 @@ function ConfirmNewGameDialog({
   );
 }
 
+function PackOddsConfirmFloat({
+  detectionRisk,
+  dialogRef,
+  cancelButtonRef,
+  onCancel,
+  onConfirm,
+}: {
+  detectionRisk: number;
+  dialogRef: React.RefObject<HTMLDivElement | null>;
+  cancelButtonRef: React.RefObject<HTMLButtonElement | null>;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const action = BUSINESS_ACTION_BY_TYPE["pack-odds"];
+  return (
+    <div className="pack-odds-confirm-layer">
+      <div
+        aria-describedby="pack-odds-confirm-description"
+        aria-labelledby="pack-odds-confirm-title"
+        aria-modal="true"
+        className="pack-odds-confirm-float"
+        ref={dialogRef}
+        role="alertdialog"
+      >
+        <div className="pack-odds-confirm-heading">
+          <div className="pack-odds-confirm-mark" aria-hidden="true">
+            <span>!</span>
+          </div>
+          <header className="pack-odds-confirm-copy">
+            <span>RISK AUTHORIZATION · PACK ODDS</span>
+            <h2 id="pack-odds-confirm-title">봉입률 하향을 예약할까요?</h2>
+            <p id="pack-odds-confirm-description">
+              다음 정기 발매의 희소도와 매출이 오르지만, 조정 사실이
+              적발되면 구매 신뢰가 크게 하락합니다.
+            </p>
+          </header>
+        </div>
+
+        <div
+          aria-label="봉입률 조정 위험 상세"
+          className="pack-odds-confirm-body"
+          role="region"
+          tabIndex={-1}
+        >
+          <dl className="pack-odds-confirm-facts">
+            <div className="critical">
+              <dt>현재 추정 적발률</dt>
+              <dd>{detectionRisk}%</dd>
+            </div>
+            <div>
+              <dt>집행 비용</dt>
+              <dd>₩{formatRevenue(action.cost)}</dd>
+            </div>
+            <div>
+              <dt>적용 시점</dt>
+              <dd>다음 정기 발매</dd>
+            </div>
+          </dl>
+
+          <div className="pack-odds-confirm-warning">
+            <strong>적발 시 구매 신뢰 급락</strong>
+            <span>
+              예약 후 발매일까지 대기하며, 실행 결과는 되돌릴 수 없습니다.
+            </span>
+          </div>
+        </div>
+
+        <div className="pack-odds-confirm-actions">
+          <small>ESC · 취소</small>
+          <button
+            className="pack-odds-confirm-cancel"
+            onClick={onCancel}
+            ref={cancelButtonRef}
+            type="button"
+          >
+            취소
+          </button>
+          <button
+            className="pack-odds-confirm-accept"
+            onClick={onConfirm}
+            type="button"
+          >
+            위험 감수 · 예약
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const BUSINESS_RISK_FACTOR_LABEL = {
+  environment: "환경 안정도",
+  trust: "구매 신뢰",
+  policy: "최근 금제 품질",
+  release: "최근 발매 성과",
+  timing: "남은 임기",
+  execution: "실행 변수",
+} as const;
+
+function StrategicProjectConfirmFloat({
+  action,
+  game,
+  dialogRef,
+  cancelButtonRef,
+  onCancel,
+  onConfirm,
+}: {
+  action: StrategicBusinessActionType;
+  game: GameState;
+  dialogRef: React.RefObject<HTMLDivElement | null>;
+  cancelButtonRef: React.RefObject<HTMLButtonElement | null>;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const definition = BUSINESS_ACTION_BY_TYPE[action];
+  const profile = getStrategicProjectRiskProfile(game, action);
+  return (
+    <div className="pack-odds-confirm-layer">
+      <div
+        aria-describedby="strategic-project-confirm-description"
+        aria-labelledby="strategic-project-confirm-title"
+        aria-modal="true"
+        className="pack-odds-confirm-float"
+        ref={dialogRef}
+        role="alertdialog"
+      >
+        <div className="pack-odds-confirm-heading">
+          <div className="pack-odds-confirm-mark" aria-hidden="true">
+            <span>!</span>
+          </div>
+          <header className="pack-odds-confirm-copy">
+            <span>RISK AUTHORIZATION · STRATEGIC PROJECT</span>
+            <h2 id="strategic-project-confirm-title">
+              {withKoreanObjectParticle(definition.title)} 집행할까요?
+            </h2>
+            <p id="strategic-project-confirm-description">
+              대형 프로젝트 슬롯은 임기 중 한 번뿐입니다. 표시된 위험은
+              지금의 환경·신뢰·최근 발매와 금제 기록으로 확정됩니다.
+            </p>
+          </header>
+        </div>
+
+        <div
+          aria-label="대형 프로젝트 위험 상세"
+          className="pack-odds-confirm-body"
+          role="region"
+          tabIndex={-1}
+        >
+          <dl className="pack-odds-confirm-facts">
+            <div className="critical">
+              <dt>현재 실패 위험</dt>
+              <dd>{Math.round(profile.risk * 100)}%</dd>
+            </div>
+            <div>
+              <dt>집행 / 성공 회수</dt>
+              <dd>₩{formatRevenue(definition.cost)} / ₩{formatRevenue(definition.successReturn ?? 0)}</dd>
+            </div>
+            <div>
+              <dt>결과 발표</dt>
+              <dd>DAY {game.day + (definition.resolutionDelay ?? 1)}</dd>
+            </div>
+          </dl>
+
+          <div className="pack-odds-confirm-warning">
+            <strong>최대 위험 요인 · {BUSINESS_RISK_FACTOR_LABEL[profile.context.primaryRisk]}</strong>
+            <span>
+              실패하면 투자금을 회수하지 못하며 유저와 구매 신뢰가 함께
+              하락합니다. 집행 뒤 결과는 되돌릴 수 없습니다.
+            </span>
+          </div>
+        </div>
+
+        <div className="pack-odds-confirm-actions">
+          <small>ESC · 취소</small>
+          <button
+            className="pack-odds-confirm-cancel"
+            onClick={onCancel}
+            ref={cancelButtonRef}
+            type="button"
+          >
+            취소
+          </button>
+          <button
+            className="pack-odds-confirm-accept"
+            onClick={onConfirm}
+            type="button"
+          >
+            위험 감수 · 집행
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type MetaWorkspaceProps = {
   view: "themes" | "restrictions";
   game: GameState;
@@ -2172,6 +3143,7 @@ type MetaWorkspaceProps = {
   nextBanDay: number;
   banDraft: Record<string, RestrictionLimit>;
   restrictionChanges: [string, RestrictionLimit][];
+  restrictionPolicy: RestrictionPolicyProfile;
   highlightedPartId: string | null;
   mobileDetail: boolean;
   guidedThemeTarget?: ThemeId | null;
@@ -2201,6 +3173,7 @@ function MetaWorkspace({
   nextBanDay,
   banDraft,
   restrictionChanges,
+  restrictionPolicy,
   highlightedPartId,
   mobileDetail,
   guidedThemeTarget = null,
@@ -2258,6 +3231,7 @@ function MetaWorkspace({
                   className={theme.id === selectedTheme.id ? "theme-row selected" : "theme-row"}
                   key={theme.id}
                   role="listitem"
+                  style={{ "--theme-accent": theme.color } as React.CSSProperties}
                 >
                   <button
                     aria-current={theme.id === selectedTheme.id ? "true" : undefined}
@@ -2277,9 +3251,16 @@ function MetaWorkspace({
                     type="button"
                   >
                     <span
-                      className="theme-color"
-                      style={{ backgroundColor: theme.color }}
-                    />
+                      aria-hidden="true"
+                      className="theme-emblem-frame"
+                    >
+                      <ThemeEmblem
+                        decorative
+                        detail="compact"
+                        size="100%"
+                        themeId={theme.id}
+                      />
+                    </span>
                     <span className="theme-row-copy">
                       <strong>{theme.name}</strong>
                       <small>{theme.playstyle}</small>
@@ -2306,17 +3287,29 @@ function MetaWorkspace({
           <button className="mobile-back" onClick={onBackToThemes} type="button">
             <span aria-hidden="true">←</span> 테마 목록
           </button>
-          <div className="detail-hero">
+          <div
+            className="detail-hero"
+            style={{ "--theme-accent": selectedTheme.color } as React.CSSProperties}
+          >
             <div className="detail-title-block">
               <div className="theme-identity">
                 <span
-                  className="theme-monogram"
-                  style={{ backgroundColor: selectedTheme.color }}
+                  className="theme-emblem-hero"
+                  style={{ "--theme-accent": selectedTheme.color } as React.CSSProperties}
                 >
-                  {selectedTheme.shortName.slice(0, 1)}
+                  <ThemeEmblem
+                    decorative={false}
+                    detail="full"
+                    label={`${selectedTheme.name} 테마 상징`}
+                    size="100%"
+                    themeId={selectedTheme.id}
+                  />
                 </span>
                 <div>
-                  <span className="eyebrow">THEME DOSSIER</span>
+                  <span className="eyebrow theme-registry-kicker">
+                    THEME DOSSIER
+                    <b>#{String(selectedRank + 1).padStart(3, "0")}</b>
+                  </span>
                   <h2 id="theme-detail-title" ref={detailHeadingRef} tabIndex={-1}>
                     {selectedTheme.name}
                   </h2>
@@ -2491,6 +3484,8 @@ function MetaWorkspace({
                   <GavelIcon size={14} />
                   금제안 편집 중
                 </span>
+              ) : game.day >= LAST_DECISION_DAY ? (
+                <span className="readonly-chip">최종 금제 반영 · 결산 중</span>
               ) : (
                 <span className="readonly-chip">DAY {nextBanDay} 조정 가능</span>
               )}
@@ -2609,14 +3604,20 @@ function MetaWorkspace({
             <div>
               <strong>
                 {game.phase === "ban-edit"
-                  ? restrictionChanges.length > 0
-                    ? `${restrictionChanges.length}건 변경 예정`
-                    : "변경 없는 금제안"
+                  ? restrictionPolicy.quality === "balanced"
+                    ? `적정 커버리지 · ${restrictionChanges.length}건 변경`
+                    : restrictionChanges.length > 0
+                      ? `커버리지 미완료 · ${restrictionChanges.length}건 변경 예정`
+                      : "변경 없는 금제안"
+                  : game.day >= LAST_DECISION_DAY
+                    ? `DAY ${CAMPAIGN_END_DAY} 최종 결산 대기`
                   : `다음 금제위원회까지 D-${Math.max(0, nextBanDay - game.day)}`}
               </strong>
               <p>
                 {game.phase === "ban-edit"
-                  ? "초동 제한은 안정성을 크게 낮추고, 권장 1장 결과물의 3→1은 영향이 거의 없습니다."
+                  ? `상위권 ${restrictionPolicy.upperMeaningfulCuts >= 2 ? "✓" : "○"} ${restrictionPolicy.upperMeaningfulCuts}/2 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts >= 2 ? "✓" : "○"} ${restrictionPolicy.tier2MeaningfulCuts}/2 · ${restrictionPolicy.staleEligible === 0 ? "장기 제한 후보 없음 ✓" : `90일 제한 완전 해제 ${restrictionPolicy.staleReliefComplete ? "✓" : "○"} ${restrictionPolicy.staleFullyReleased}/${restrictionPolicy.staleEligible}`}`
+                  : game.day >= LAST_DECISION_DAY
+                    ? "최종 금제 이후에는 새 결정을 받지 않고 환경과 시장의 반응만 관측합니다."
                   : "금제는 제출되는 날에만 적용됩니다. 지금 보이는 현행 수치는 공식 환경입니다."}
               </p>
             </div>
@@ -2658,6 +3659,7 @@ function MetaWorkspace({
 
 function DistributionView({
   game,
+  guidedInspection = false,
   total,
   nextReleaseDay,
   nextBanDay,
@@ -2665,6 +3667,7 @@ function DistributionView({
   onSelectTheme,
 }: {
   game: GameState;
+  guidedInspection?: boolean;
   total: number;
   nextReleaseDay: number;
   nextBanDay: number;
@@ -2707,6 +3710,13 @@ function DistributionView({
         ),
     ),
   );
+  const hasFutureRelease =
+    game.phase === "release-edit" || game.day < LAST_RELEASE_DAY;
+  const hasFutureBan =
+    game.phase === "ban-edit" || game.day < LAST_DECISION_DAY;
+  const settlementPeriod =
+    game.phase === "ended" ||
+    (game.phase === "running" && game.day >= LAST_DECISION_DAY);
   const leader = rankedThemes[0];
   const leaderRuntime = leader ? game.themes[leader.id] : null;
   const inspectedThemeId = hoveredThemeId ?? focusedThemeId;
@@ -2744,7 +3754,12 @@ function DistributionView({
     : null;
 
   return (
-    <section className="distribution-page">
+    <section
+      className="distribution-page"
+      data-tutorial-inspection={guidedInspection ? "active" : undefined}
+      data-tutorial-target={guidedInspection ? "active" : undefined}
+      tabIndex={guidedInspection ? -1 : undefined}
+    >
       <header className="subpage-heading distribution-heading">
         <div>
           <span className="eyebrow">META DISTRIBUTION</span>
@@ -2767,12 +3782,27 @@ function DistributionView({
             </div>
           ) : null}
           <div className="distribution-schedule" aria-label="다음 운영 일정">
-            <span>
-              <ReleaseIcon size={16} /> 다음 발매 <strong>DAY {nextReleaseDay}</strong>
-            </span>
-            <span>
-              <GavelIcon size={16} /> 다음 금제 <strong>DAY {nextBanDay}</strong>
-            </span>
+            {settlementPeriod ? (
+              <span>
+                <CalendarIcon size={16} /> 최종 결산{" "}
+                <strong>DAY {CAMPAIGN_END_DAY}</strong>
+              </span>
+            ) : (
+              <>
+                {hasFutureRelease ? (
+                  <span>
+                    <ReleaseIcon size={16} /> {game.phase === "release-edit" ? "현재 발매" : "다음 발매"}{" "}
+                    <strong>DAY {nextReleaseDay}</strong>
+                  </span>
+                ) : null}
+                {hasFutureBan ? (
+                  <span>
+                    <GavelIcon size={16} /> {game.phase === "ban-edit" ? "현재 금제" : "다음 금제"}{" "}
+                    <strong>DAY {nextBanDay}</strong>
+                  </span>
+                ) : null}
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -2807,6 +3837,7 @@ function DistributionView({
                 return (
                   <g
                     aria-label={`${theme.name}, 점유율 ${shareLabel}. 상세 정보 열기`}
+                    aria-disabled={guidedInspection || undefined}
                     className={`distribution-donut-segment${isActive ? " is-active" : ""}`}
                     data-theme-id={theme.id}
                     key={theme.id}
@@ -2815,17 +3846,19 @@ function DistributionView({
                         current === theme.id ? null : current,
                       );
                     }}
-                    onClick={() => onSelectTheme(theme.id)}
+                    onClick={() => {
+                      if (!guidedInspection) onSelectTheme(theme.id);
+                    }}
                     onFocus={() => setFocusedThemeId(theme.id)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
-                        onSelectTheme(theme.id);
+                        if (!guidedInspection) onSelectTheme(theme.id);
                       }
                     }}
                     onPointerEnter={() => setHoveredThemeId(theme.id)}
                     role="button"
-                    tabIndex={0}
+                    tabIndex={guidedInspection ? -1 : 0}
                   >
                     <title>{`${theme.name}: ${shareLabel}`}</title>
                     <circle
@@ -2901,7 +3934,13 @@ function DistributionView({
             const fatigue = getFatigueSignal(runtime);
             return (
               <li className={`fatigue-${fatigue.level}`} key={theme.id}>
-                <button onClick={() => onSelectTheme(theme.id)} type="button">
+                <button
+                  aria-disabled={guidedInspection || undefined}
+                  onClick={() => {
+                    if (!guidedInspection) onSelectTheme(theme.id);
+                  }}
+                  type="button"
+                >
                   <span className="legend-rank">{index + 1}</span>
                   <span
                     aria-hidden="true"
@@ -2941,11 +3980,13 @@ function DistributionView({
         </span>
         <span>
           <CalendarIcon size={16} /> 임기 종료
-          <strong>DAY 1000 · {Math.max(0, 1000 - game.day)}일 남음</strong>
+          <strong>
+            DAY {CAMPAIGN_END_DAY} · {Math.max(0, CAMPAIGN_END_DAY - game.day)}일 남음
+          </strong>
         </span>
         <span>
-          <TrendIcon size={16} /> 현재 목표
-          <strong>매출 성장과 이탈 억제</strong>
+          <TrendIcon size={16} /> 결산 분기선
+          <strong>자금 5·10억 · 환경 50·70</strong>
         </span>
       </div>
     </section>
@@ -3127,14 +4168,22 @@ function ReleasesView({
     <section className="subpage release-planning-page">
       <div className="subpage-heading">
         <div><span className="eyebrow">RELEASE PIPELINE</span><h1>발매 제안</h1><p>30일마다 신테마 3안과 기존 테마 지원 3안이 도착하며, 그중 3개를 출시합니다.</p></div>
-        <div className="cadence-card"><ReleaseIcon /><span>다음 시안</span><strong>DAY {getNextReleaseDay(game.day)}</strong></div>
+        <div className="cadence-card">
+          <ReleaseIcon />
+          <span>{game.day >= LAST_RELEASE_DAY ? "발매 일정" : "다음 시안"}</span>
+          <strong>
+            {game.day >= LAST_RELEASE_DAY
+              ? `DAY ${LAST_RELEASE_DAY} 종료`
+              : `DAY ${getNextReleaseDay(game.day)}`}
+          </strong>
+        </div>
       </div>
 
       <div className="release-rules-grid">
         <article><span>SUPPORT CARD POOL</span><strong>5 → 8 → 11 → 14장</strong><p>초기 5장, 지원마다 준비된 카드 3장 추가</p></article>
         <article><span>MONTHLY SLATE</span><strong>신규 3 + 지원 3</strong><p>6개 중 원하는 조합으로 3개 선택</p></article>
         <article><span>POWER CONTROL</span><strong>-3 ··· +3</strong><p>각 선택안을 7단계로 최종 조정</p></article>
-        <article><span>SUPPORT REQUEST</span><strong>{cooldown > 0 ? `D-${cooldown}` : "제안 가능"}</strong><p>30일에 한 번, 다음 지원 시안 한 자리 보장</p></article>
+        <article><span>SUPPORT REQUEST</span><strong>{game.day >= LAST_RELEASE_DAY ? "마감" : cooldown > 0 ? `D-${cooldown}` : "제안 가능"}</strong><p>30일에 한 번, 다음 지원 시안 한 자리 보장</p></article>
       </div>
 
       <section className="recent-releases">
@@ -3155,7 +4204,13 @@ function ReleasesView({
               </article>
             ))}
           </div>
-        ) : <div className="empty-state">첫 발매 시안은 DAY {getNextReleaseDay(game.day)}에 도착합니다.</div>}
+        ) : (
+          <div className="empty-state">
+            {game.day >= LAST_RELEASE_DAY
+              ? "이번 임기의 정기 발매 일정이 종료되었습니다."
+              : `첫 발매 시안은 DAY ${getNextReleaseDay(game.day)}에 도착합니다.`}
+          </div>
+        )}
       </section>
     </section>
   );
@@ -3180,11 +4235,13 @@ function getPostReactionTone(
 
 function CommunityView({
   game,
+  guidedInspection = false,
   flashDay,
   onFlashComplete,
   onSelectTheme,
 }: {
   game: GameState;
+  guidedInspection?: boolean;
   flashDay: number | null;
   onFlashComplete: () => void;
   onSelectTheme: (themeId: ThemeId, partId?: string) => void;
@@ -3256,6 +4313,9 @@ function CommunityView({
         showReleaseSurge ? " is-release-surge" : ""
       }${showBanAftermath ? " is-ban-aftermath" : ""
       }${shouldFlash ? " is-impact-flashing" : ""}`}
+      data-tutorial-inspection={guidedInspection ? "active" : undefined}
+      data-tutorial-target={guidedInspection ? "active" : undefined}
+      tabIndex={guidedInspection ? -1 : undefined}
     >
       {shouldFlash ? <div aria-hidden="true" className="community-impact-flash" /> : null}
       <div className="subpage-heading">
@@ -3352,9 +4412,12 @@ function CommunityView({
             : null;
           return (
             <button
+              aria-disabled={guidedInspection || undefined}
               className={`feed-post reaction-${reactionTone}${isRestrictionWave ? " restriction-wave" : ""}`}
               key={event.id}
-              onClick={() => onSelectTheme(event.themeId, event.partId)}
+              onClick={() => {
+                if (!guidedInspection) onSelectTheme(event.themeId, event.partId);
+              }}
               style={{ "--post-index": index } as React.CSSProperties}
               type="button"
             >
@@ -3640,19 +4703,295 @@ function FinanceMarketChart({ game }: { game: GameState }) {
   );
 }
 
-function FinanceView({ game }: { game: GameState }) {
+function OperationsView({
+  game,
+  guided = false,
+  guidedActionTarget = null,
+  onRunAction,
+}: {
+  game: GameState;
+  guided?: boolean;
+  guidedActionTarget?: BusinessActionType | null;
+  onRunAction: (action: BusinessActionType) => void;
+}) {
+  const environmentHealth = getBusinessEnvironmentHealth(game);
+  const monthlyOperatingCost = getMonthlyOperatingCost(totalUsers(game));
+  const isTodayRecorded = game.history.at(-1)?.day === game.day;
+  const operatingDayLabel = isTodayRecorded
+    ? "오늘"
+    : `DAY ${game.history.at(-1)?.day ?? game.day}`;
+  const environmentLabel = environmentHealth >= 70
+    ? "안정"
+    : environmentHealth >= 50
+      ? "주의"
+      : "위험";
+  const records = [...game.operations.records].reverse();
+  const activeRecords = records.filter(
+    (record) =>
+      record.outcome === "pending" ||
+      isBusinessActionEffectActive(record, game.day) ||
+      (record.startedDay === game.day &&
+        (record.outcome === "active" ||
+          record.outcome === "success" ||
+          record.outcome === "backlash")),
+  );
+
+  return (
+    <section className="subpage operations-page">
+      <div className="subpage-heading operations-heading">
+        <div>
+          <span className="eyebrow">BUSINESS OPERATIONS</span>
+          <h1>사업 운영</h1>
+          <p>운영자금을 집행해 발매 사이의 유입·구매·신뢰 흐름을 설계합니다.</p>
+        </div>
+        <div className="cadence-card operations-cadence">
+          <ClockIcon />
+          <span>집행 주기</span>
+          <strong>하루 1회 · 액션별 쿨다운</strong>
+        </div>
+      </div>
+
+      <div className="operations-kpis">
+        <OverviewCard
+          className="primary"
+          icon={<RevenueIcon />}
+          label="보유 운영자금"
+          note={`월 예상 운영비 ₩${formatRevenue(monthlyOperatingCost)}`}
+          value={`₩${formatRevenue(game.finance.cash)}`}
+        />
+        <OverviewCard
+          icon={<TrendIcon />}
+          label={`${operatingDayLabel} 순운영 현금`}
+          note={isTodayRecorded
+            ? game.day < OPERATING_COST_START_DAY
+              ? `운영비는 DAY ${OPERATING_COST_START_DAY}부터 매일 정산`
+              : `매출 32% − 운영비 ₩${formatRevenue(game.finance.todayOperatingCost)} − 집행비`
+            : "오늘 결정 제출 후 정산"}
+          value={formatSignedRevenue(game.finance.todayOperatingCash)}
+        />
+        <OverviewCard
+          icon={<GavelIcon />}
+          label="구매 신뢰"
+          note="광고보다 오래 남는 구매 기반"
+          value={`${Math.round(game.purchaseTrust)} / 100`}
+        />
+        <OverviewCard
+          icon={<UsersIcon />}
+          label="환경 건강"
+          note="챔피언십 흥행 위험 판정 기준"
+          value={`${Math.round(environmentHealth)} · ${environmentLabel}`}
+        />
+      </div>
+
+      <div className="operations-workspace">
+        <section className="operations-action-panel" aria-labelledby="business-actions-title">
+          <div className="operations-section-heading">
+            <div>
+              <span className="eyebrow">ACTION DESK</span>
+              <h2 id="business-actions-title" tabIndex={-1}>
+                집행 가능한 사업 액션
+              </h2>
+            </div>
+            <span>비용 단위 · 원</span>
+          </div>
+          <div className="business-action-grid">
+            {BUSINESS_ACTIONS.map((action) => {
+              const availability = getBusinessActionAvailability(
+                game,
+                action.type,
+              );
+              const latest = records.find(
+                (record) => record.type === action.type,
+              );
+              const risk = action.type === "championship"
+                ? getChampionshipBacklashRisk(game)
+                : action.type === "pack-odds"
+                  ? getPackOddsDetectionRisk(game)
+                  : isStrategicBusinessAction(action.type)
+                    ? getStrategicProjectRiskProfile(game, action.type).risk
+                  : null;
+              const strategicSlotUsed =
+                isStrategicBusinessAction(action.type) &&
+                game.operations.records.some((record) =>
+                  isStrategicBusinessAction(record.type)
+                );
+              const guidedLocked = guided && guidedActionTarget !== action.type;
+              const reason = guidedLocked
+                ? "인수인계에서는 강조된 액션만 집행할 수 있습니다."
+                : availability.reason;
+              const descriptionId = `business-action-${action.type}-status`;
+              return (
+                <article
+                  className={`business-action-card tone-${action.tone}${
+                    latest &&
+                    (latest.outcome === "pending" ||
+                      isBusinessActionEffectActive(latest, game.day))
+                      ? " is-running"
+                      : ""
+                  }`}
+                  key={action.type}
+                >
+                  <div className="business-action-title">
+                    <span>{action.kicker}</span>
+                    <strong>{action.title}</strong>
+                    <small>{action.summary}</small>
+                  </div>
+                  <dl className="business-action-facts">
+                    <div><dt>비용</dt><dd>₩{formatRevenue(action.cost)}</dd></div>
+                    <div><dt>효과 기간</dt><dd>{action.duration}일</dd></div>
+                    <div>
+                      <dt>{"oncePerCampaign" in action && action.oncePerCampaign ? "집행 한도" : "쿨다운"}</dt>
+                      <dd>{"oncePerCampaign" in action && action.oncePerCampaign ? "임기 1회" : `${action.cooldown}일`}</dd>
+                    </div>
+                  </dl>
+                  <p className="business-action-effect">{action.effect}</p>
+                  <div className={`business-action-risk ${action.tone}`}>
+                    <span>{risk === null ? "직접 위험" : action.type === "pack-odds" ? "현재 적발 위험" : isStrategicBusinessAction(action.type) ? "현재 실패 위험" : "현재 역풍 위험"}</span>
+                    <strong>{risk === null ? action.tone === "safe" ? "매우 낮음" : "낮음" : `${Math.round(risk * 100)}%`}</strong>
+                    {risk !== null ? (
+                      <i aria-hidden="true"><span style={{ width: `${risk * 100}%` }} /></i>
+                    ) : null}
+                  </div>
+                  <div className="business-action-footer">
+                    <small id={descriptionId}>
+                      {reason
+                        ? reason
+                        : latest
+                          ? `최근 DAY ${latest.startedDay} · ${getBusinessRecordStatus(latest, game.day)}`
+                          : "집행 이력 없음 · 오늘 실행 가능"}
+                    </small>
+                    <button
+                      aria-describedby={descriptionId}
+                      className={action.tone === "danger" ? "danger-action" : "primary-action"}
+                      data-tutorial-target={
+                        guidedActionTarget === action.type ? "active" : undefined
+                      }
+                      disabled={!availability.available || guidedLocked}
+                      onClick={() => onRunAction(action.type)}
+                      type="button"
+                    >
+                      {strategicSlotUsed
+                        ? "슬롯 사용됨"
+                        : availability.cooldownRemaining > 0
+                        ? `D-${availability.cooldownRemaining}`
+                        : action.type === "pack-odds"
+                          ? "위험 확인 · 예약"
+                          : isStrategicBusinessAction(action.type)
+                            ? "위험 확인 · 집행"
+                          : "집행"}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+
+        <aside className="operations-ledger" aria-label="사업 액션 진행 및 최근 기록">
+          <section className="operations-active-records">
+            <div className="operations-section-heading compact">
+              <div>
+                <span className="eyebrow">IN PROGRESS</span>
+                <h2>진행 중</h2>
+              </div>
+              <span>{activeRecords.length}건</span>
+            </div>
+            {activeRecords.length > 0 ? (
+              <div className="operations-record-list active">
+                {activeRecords.map((record) => {
+                  const definition = BUSINESS_ACTION_BY_TYPE[record.type];
+                  const progress = getBusinessRecordProgress(record, game.day);
+                  return (
+                    <article className={`operations-record outcome-${record.outcome}`} key={record.id}>
+                      <div><strong>{definition.title}</strong><span>{getBusinessRecordStatus(record, game.day)}</span></div>
+                      <div
+                        aria-label={`${progress.toFixed(0)}% 진행`}
+                        aria-valuemax={100}
+                        aria-valuemin={0}
+                        aria-valuenow={Math.round(progress)}
+                        className="operations-record-progress"
+                        role="progressbar"
+                      >
+                        <span style={{ width: `${progress}%` }} />
+                      </div>
+                      <small>DAY {record.startedDay} 집행 · 종료 기준 DAY {record.endsDay}</small>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="operations-empty">진행 중인 사업 액션이 없습니다.</p>
+            )}
+          </section>
+
+          <section className="operations-history">
+            <div className="operations-section-heading compact">
+              <div>
+                <span className="eyebrow">RECENT LOG</span>
+                <h2>최근 기록</h2>
+              </div>
+              <span>최근 8건</span>
+            </div>
+            {records.length > 0 ? (
+              <div className="operations-record-list history">
+                {records.slice(0, 8).map((record) => (
+                  <article className={`operations-record outcome-${record.outcome}`} key={`history-${record.id}`}>
+                    <div>
+                      <strong>{BUSINESS_ACTION_BY_TYPE[record.type].title}</strong>
+                      <span>{getBusinessRecordStatus(record, game.day)}</span>
+                    </div>
+                    <small>
+                      DAY {record.startedDay} · ₩{formatRevenue(record.cost)}
+                      {record.risk !== undefined ? ` · 위험 ${Math.round(record.risk * 100)}%` : ""}
+                      {record.cashReturn !== undefined ? ` · 회수 ₩${formatRevenue(record.cashReturn)}` : ""}
+                    </small>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="operations-empty">아직 집행 기록이 없습니다.</p>
+            )}
+          </section>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function FinanceView({
+  game,
+  guidedInspection = false,
+}: {
+  game: GameState;
+  guidedInspection?: boolean;
+}) {
   const latestRecord = game.history.at(-1);
   const previousRecord = game.history.at(-2);
   const latestRevenue = latestRecord?.revenue ?? game.finance.today;
   const previousRevenue = previousRecord?.revenue;
   const isTodayRecorded = latestRecord?.day === game.day;
+  const settledDayLabel = isTodayRecorded
+    ? "오늘"
+    : `DAY ${latestRecord?.day ?? game.day}`;
   const dailyRate = previousRevenue && previousRevenue > 0
     ? ((latestRevenue - previousRevenue) / previousRevenue) * 100
     : 0;
   const dailyDirection = dailyRate > 0 ? "상승" : dailyRate < 0 ? "하락" : "보합";
+  const activeUsers = totalUsers(game);
+  const monthlyOperatingCost = getMonthlyOperatingCost(activeUsers);
+  const runwayMonths = getOperatingRunwayMonths(game.finance.cash, activeUsers);
+  const strategicReturns = game.operations.records.reduce(
+    (sum, record) => sum + (record.cashReturn ?? 0),
+    0,
+  );
 
   return (
-    <section className="subpage finance-page">
+    <section
+      className="subpage finance-page"
+      data-tutorial-inspection={guidedInspection ? "active" : undefined}
+      data-tutorial-target={guidedInspection ? "active" : undefined}
+      tabIndex={guidedInspection ? -1 : undefined}
+    >
       <div className="subpage-heading">
         <div>
           <span className="eyebrow">FINANCE OFFICE</span>
@@ -3665,10 +5004,14 @@ function FinanceView({ game }: { game: GameState }) {
           <strong>{dailyDirection} {dailyRate >= 0 ? "+" : ""}{dailyRate.toFixed(1)}%</strong>
         </div>
       </div>
-      <div className="finance-kpis">
+      <div className="finance-kpis expanded">
         <OverviewCard className="primary" icon={<RevenueIcon />} label={isTodayRecorded ? "오늘 매출" : `DAY ${latestRecord?.day ?? game.day} 매출`} value={`₩${formatRevenue(latestRevenue)}`} note={isTodayRecorded ? "카탈로그 + 오늘의 발매 반응" : "오늘 결정 제출 후 결산"} />
-        <OverviewCard icon={<TrendIcon />} label="최근 30일" value={`₩${formatRevenue(game.finance.rolling30)}`} note="일별 매출 이동 합계" />
-        <OverviewCard icon={<RevenueIcon />} label="누적 매출" value={`₩${formatRevenue(game.finance.cumulative)}`} note={`DAY ${game.day} 누적`} />
+        <OverviewCard icon={<RevenueIcon />} label="보유 운영자금" value={`₩${formatRevenue(game.finance.cash)}`} note={`현 규모 기준 약 ${runwayMonths.toFixed(1)}개월`} />
+        <OverviewCard icon={<TrendIcon />} label={`${settledDayLabel} 순운영 현금`} value={formatSignedRevenue(game.finance.todayOperatingCash)} note={isTodayRecorded ? "매출 32% − 운영비 − 오늘 집행비" : "오늘 결정 제출 후 정산"} />
+        <OverviewCard icon={<RevenueIcon />} label={game.day < OPERATING_COST_START_DAY ? "운영비 정산 시작" : `${settledDayLabel} 운영비`} value={game.day < OPERATING_COST_START_DAY ? `DAY ${OPERATING_COST_START_DAY}` : formatSignedRevenue(-game.finance.todayOperatingCost)} note={`월 예상 ₩${formatRevenue(monthlyOperatingCost)}`} />
+        <OverviewCard icon={<TrendIcon />} label="최근 30일" value={`₩${formatRevenue(game.finance.rolling30)}`} note={`누적 매출 ₩${formatRevenue(game.finance.cumulative)}`} />
+        <OverviewCard icon={<RevenueIcon />} label="누적 운영비" value={`₩${formatRevenue(game.finance.cumulativeOperatingCosts)}`} note="DAY 47부터 일할 정산" />
+        <OverviewCard icon={<RevenueIcon />} label="누적 사업비" value={`₩${formatRevenue(game.finance.cumulativeExpenses)}`} note={strategicReturns > 0 ? `대형 프로젝트 회수 ₩${formatRevenue(strategicReturns)}` : "사업 액션 집행 누계"} />
         <OverviewCard icon={<GavelIcon />} label="구매 신뢰" value={`${Math.round(game.purchaseTrust)}`} note="100점 기준" />
       </div>
       <FinanceMarketChart game={game} />

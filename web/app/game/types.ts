@@ -106,7 +106,9 @@ export type CommunityEventType =
   | "restriction-applied"
   | "cosmetic-restriction"
   | "restriction-no-change"
-  | "top-theme-changed";
+  | "top-theme-changed"
+  | "business-reaction"
+  | "business-scandal";
 
 export interface CommunityEvent {
   id: string;
@@ -179,6 +181,79 @@ export interface FinanceState {
   today: number;
   rolling30: number;
   cumulative: number;
+  /** Spendable operating cash, also expressed in eok won. */
+  cash: number;
+  /** Net cash generated today after margin, recurring operations, and actions. */
+  todayOperatingCash: number;
+  /** Recurring organization and audience-service cost charged today. */
+  todayOperatingCost: number;
+  /** Total recurring operating costs charged since the handover. */
+  cumulativeOperatingCosts: number;
+  /** Total discretionary business-action spend. */
+  cumulativeExpenses: number;
+}
+
+export type BusinessActionType =
+  | "tv-cm"
+  | "animation-promotion"
+  | "championship"
+  | "store-tour"
+  | "pack-odds"
+  | "season-overhaul"
+  | "global-launch"
+  | "first-print-expansion";
+
+export type BusinessRiskFactor =
+  | "environment"
+  | "trust"
+  | "policy"
+  | "release"
+  | "timing"
+  | "execution";
+
+export interface BusinessActionRiskContext {
+  environmentHealth: number;
+  purchaseTrust: number;
+  releaseQuality: number;
+  policyQuality: "balanced" | "incomplete" | "narrow" | "none";
+  timing: "early" | "middle" | "late";
+  primaryRisk: BusinessRiskFactor;
+  primaryStrength: BusinessRiskFactor;
+}
+
+export type BusinessActionOutcome =
+  | "active"
+  | "pending"
+  | "completed"
+  | "success"
+  | "backlash"
+  | "clean"
+  | "detected";
+
+export interface BusinessActionRecord {
+  id: string;
+  type: BusinessActionType;
+  startedDay: number;
+  endsDay: number;
+  cost: number;
+  outcome: BusinessActionOutcome;
+  /** Risk shown to the player when the action was committed. */
+  risk?: number;
+  /** Environment health snapshot used to judge a championship. */
+  environmentHealth?: number;
+  /** Immutable launch-day facts used to resolve and explain strategic risk. */
+  riskContext?: BusinessActionRiskContext;
+  /** Cash recovered when a strategic project succeeds. */
+  cashReturn?: number;
+  /** Release day affected by a pack-odds adjustment. */
+  appliedDay?: number;
+  /** Day on which a random or delayed outcome became public. */
+  resolvedDay?: number;
+}
+
+export interface OperationsState {
+  nextActionId: number;
+  records: BusinessActionRecord[];
 }
 
 export interface DailyHistory {
@@ -190,7 +265,7 @@ export interface DailyHistory {
 }
 
 export interface GameState {
-  schemaVersion: 3;
+  schemaVersion: 6;
   seed: number;
   day: number;
   phase: "running" | "release-edit" | "ban-edit" | "ended";
@@ -198,6 +273,7 @@ export interface GameState {
   themes: Record<ThemeId, ThemeRuntime>;
   users: UserState;
   finance: FinanceState;
+  operations: OperationsState;
   community: CommunityEvent[];
   supportRequests: SupportRequest[];
   releaseSlate: ReleaseSlate | null;
@@ -229,4 +305,5 @@ export type GameCommand =
       type: "SUBMIT_RELEASE";
       selections: ReleaseSelection[];
     }
+  | { type: "RUN_BUSINESS_ACTION"; action: BusinessActionType }
   | { type: "COMPLETE_HANDOVER" };

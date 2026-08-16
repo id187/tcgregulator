@@ -796,6 +796,38 @@ const FUTURE_THEME_ROOTS = [
     motif: "별빛과 낙하하는 운석",
     visual: "밤하늘 궤적, 보랏빛 운석, 은빛 별가루",
   },
+  // Expansion catalog roots. Keeping these after the original nine preserves
+  // every existing future-001..090 theme while appending future-091..140.
+  {
+    marker: "경면",
+    slug: "mirror-realm",
+    motif: "거울 세계와 반사된 분신",
+    visual: "은빛 손거울, 깨진 유리면, 좌우대칭 눈동자",
+  },
+  {
+    marker: "태엽",
+    slug: "clockwork-spring",
+    motif: "태엽 장치와 되감기는 시간",
+    visual: "황동 태엽키, 청록 시계바늘, 동심원 톱니",
+  },
+  {
+    marker: "해등",
+    slug: "abyssal-lantern",
+    motif: "심해의 등불과 발광 해파리",
+    visual: "청록 발광낭, 반투명 촉수, 짙은 남색 수압환",
+  },
+  {
+    marker: "몽접",
+    slug: "dream-butterfly",
+    motif: "꿈을 옮기는 나비와 수면의 안개",
+    visual: "무지갯빛 나비날개, 자주색 수면안개, 초승달 더듬이",
+  },
+  {
+    marker: "석림",
+    slug: "stone-grove",
+    motif: "살아 움직이는 바위숲과 고대 거석",
+    visual: "현무암 기둥, 형광 이끼, 주황 룬 각인",
+  },
 ] as const;
 
 const FUTURE_THEME_ORDERS = [
@@ -1154,9 +1186,9 @@ export const THEMES: ThemeContent[] = [
 ].map(prepareFullPartPool);
 
 function validateThemeCatalog(themes: readonly ThemeContent[]) {
-  if (themes.length !== 100) {
+  if (themes.length !== 150) {
     throw new Error(
-      `Theme catalog must contain exactly 100 themes; received ${themes.length}.`,
+      `Theme catalog must contain exactly 150 themes; received ${themes.length}.`,
     );
   }
 

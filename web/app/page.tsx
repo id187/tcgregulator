@@ -25,9 +25,27 @@ import {
   SETTLEMENT_DAYS,
 } from "./game/campaign";
 import {
+  CAMPAIGN_CASH_RESERVE_MIN,
+  CAMPAIGN_CASH_TIGHT_MIN,
+  CAMPAIGN_BALANCED_REVIEW_MIN,
+  CAMPAIGN_BUSINESS_ACTION_MIN,
+  CAMPAIGN_BUSINESS_TONE_MIN,
+  CAMPAIGN_BUSINESS_TYPE_MIN,
+  CAMPAIGN_ENVIRONMENT_CAUTION_MIN,
+  CAMPAIGN_ENVIRONMENT_STABLE_MIN,
+  CAMPAIGN_EVENT_RESOLUTION_MIN,
+  CAMPAIGN_EVENT_SUCCESS_RATE_MIN,
+  CAMPAIGN_RELEASE_POSITIVE_PRESSURE_MAX,
+  CAMPAIGN_RELEASE_TIER_ZERO_MAX,
+  CAMPAIGN_STALE_RELEASE_MIN,
+  CAMPAIGN_SUPPORT_DIRECTION_MIN,
+  CAMPAIGN_SUPPORT_RELEASE_MIN,
+  CAMPAIGN_SUPPORT_THEME_MIN,
   evaluateCampaignEnding,
+  getCampaignStewardshipEvaluation,
   type CampaignCashBand,
   type CampaignEnvironmentBand,
+  type CampaignStewardshipEvaluation,
 } from "./game/campaign-ending";
 import {
   getMonthlyOperatingCost,
@@ -43,7 +61,11 @@ import {
 import {
   BUSINESS_ACTIONS,
   BUSINESS_ACTION_BY_TYPE,
+  BUSINESS_ACTION_DAILY_REVENUE_CAP,
   getBusinessActionAvailability,
+  getBusinessActionDailyGrossRevenue,
+  getBusinessActionProjectedDirectCash,
+  getBusinessActionProjectedDirectGrossRevenue,
   getBusinessEnvironmentHealth,
   getChampionshipBacklashRisk,
   getPackOddsDetectionRisk,
@@ -372,10 +394,23 @@ function buildImpactNotice(game: GameState): ImpactNotice | null {
   if (heatShock) metrics.push(`커뮤니티 열기 ${heat}`);
 
   const releaseToday = game.releaseHistory.some((batch) => batch.day === game.day);
+  const activeRevenueAction = [...game.operations.records]
+    .reverse()
+    .find(
+      (record) =>
+        isBusinessActionEffectActive(record, game.day) &&
+        getBusinessActionDailyGrossRevenue(
+          game,
+          record.type,
+          record.outcome,
+        ) > 0,
+    );
   const cause = releaseToday
     ? profile.headline || "신제품 발매 직후 반응"
     : isBanDay(game.day)
       ? "금제 시행 후 시장 재평가"
+      : activeRevenueAction
+        ? `${BUSINESS_ACTION_BY_TYPE[activeRevenueAction.type].title} 직접 매출 효과`
       : fatigue >= 75 && mostFatiguedTheme
         ? `${THEME_BY_ID[mostFatiguedTheme].shortName} 장기 노출 · 반감 폭발`
         : "메타와 시장의 일일 급변";
@@ -3015,6 +3050,82 @@ const CAMPAIGN_ENVIRONMENT_LABEL: Record<CampaignEnvironmentBand, string> = {
   stable: "환경 안정",
 };
 
+function CampaignStewardshipAudit({
+  evaluation,
+}: {
+  evaluation: CampaignStewardshipEvaluation;
+}) {
+  const { support, policy, business, events } = evaluation.pillars;
+  const items = [
+    {
+      id: "support",
+      title: "발매 · 지원",
+      passed: support.passed,
+      detail: `요청 지원 ${support.releasedRequests}/${CAMPAIGN_SUPPORT_RELEASE_MIN} · 테마 ${support.distinctThemes}/${CAMPAIGN_SUPPORT_THEME_MIN} · 방향 ${support.distinctDirections}/${CAMPAIGN_SUPPORT_DIRECTION_MIN}`,
+      note: `양수 조정 ${support.positivePowerPressure}/${CAMPAIGN_RELEASE_POSITIVE_PRESSURE_MAX} 이하 · Tier 0 ${support.tierZeroProducts}/${CAMPAIGN_RELEASE_TIER_ZERO_MAX} 이하`,
+    },
+    {
+      id: "policy",
+      title: "금제 운영",
+      passed: policy.passed,
+      detail: `균형 판정 ${policy.balancedReviews}/${CAMPAIGN_BALANCED_REVIEW_MIN} · 검토 완료 ${policy.reviewed}회`,
+      note: `90일 장기 금제 완전 해제 ${policy.staleFullyReleased}/${CAMPAIGN_STALE_RELEASE_MIN}`,
+    },
+    {
+      id: "business",
+      title: "사업 포트폴리오",
+      passed: business.passed,
+      detail: `성과 액션 ${business.qualifyingActions}/${CAMPAIGN_BUSINESS_ACTION_MIN} · 유형 ${business.distinctTypes}/${CAMPAIGN_BUSINESS_TYPE_MIN} · 노선 ${business.distinctTones}/${CAMPAIGN_BUSINESS_TONE_MIN}`,
+      note: business.strategicSuccesses > 0
+        ? `대형 프로젝트 성공 ${business.strategicSuccesses}회`
+        : business.usedRecoveryPath
+          ? "대형 프로젝트 실패를 다각화 운영으로 만회"
+          : `대형 프로젝트 도전 ${business.strategicAttempts}회 · 성공 또는 만회 운영 필요`,
+    },
+    {
+      id: "events",
+      title: "돌발 대응",
+      passed: events.passed,
+      detail: `해결 ${events.resolved}/${CAMPAIGN_EVENT_RESOLUTION_MIN} · 성공 ${events.successes}회 (${Math.round(events.successRate * 100)}%)`,
+      note: events.usedTrustRecoveryPath &&
+        events.successes < events.requiredSuccesses
+        ? "구매 신뢰로 불운한 결과를 만회"
+        : `성공률 ${Math.round(CAMPAIGN_EVENT_SUCCESS_RATE_MIN * 100)}% 목표`,
+    },
+  ];
+
+  return (
+    <section className="stewardship-audit" aria-label="최고 결산 운영 감사">
+      <div className="stewardship-audit-heading">
+        <div>
+          <span>FINAL AUDIT QUALIFICATION</span>
+          <strong>최고 결산 운영 감사</strong>
+          <small>
+            네 항목과 최종 자금 {CAMPAIGN_CASH_RESERVE_MIN}억 · 환경{" "}
+            {CAMPAIGN_ENVIRONMENT_STABLE_MIN}%를 모두 충족해야 합니다.
+          </small>
+        </div>
+        <b>{evaluation.passedPillars} / {items.length}</b>
+      </div>
+      <div className="stewardship-audit-grid">
+        {items.map((item) => (
+          <article
+            className={item.passed ? "is-complete" : "is-pending"}
+            key={item.id}
+          >
+            <div>
+              <i aria-hidden="true">{item.passed ? "✓" : "·"}</i>
+              <strong>{item.title}</strong>
+            </div>
+            <span>{item.detail}</span>
+            <small>{item.note}</small>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function CampaignEndPanel({
   game,
   onReturnToPlay,
@@ -3042,12 +3153,11 @@ function CampaignEndPanel({
       : strategicRecord.outcome === "backlash"
         ? `${BUSINESS_ACTION_BY_TYPE[strategicRecord.type].title} 실패로 투자금을 회수하지 못했습니다.`
         : `${BUSINESS_ACTION_BY_TYPE[strategicRecord.type].title}의 성과가 확정되지 않았습니다.`;
-  const endingTone =
-    ending.bands.environment === "danger" || ending.bands.cash === "crisis"
+  const endingTone = ending.qualifiedForBestEnding
+    ? "stable"
+    : ending.bands.environment === "danger" || ending.bands.cash === "crisis"
       ? "danger"
-      : ending.bands.environment === "caution" || ending.bands.cash === "tight"
-        ? "caution"
-        : "stable";
+      : "caution";
   const tone =
     endingTone === "stable"
       ? "calm"
@@ -3065,7 +3175,8 @@ function CampaignEndPanel({
       <h1 id="campaign-end-title">{ending.title}</h1>
       <strong>
         {CAMPAIGN_CASH_LABEL[ending.bands.cash]} ·{" "}
-        {CAMPAIGN_ENVIRONMENT_LABEL[ending.bands.environment]}
+        {CAMPAIGN_ENVIRONMENT_LABEL[ending.bands.environment]} · 운영 감사{" "}
+        {ending.stewardship.passedPillars}/4
       </strong>
       <p>{ending.body} {strategicEndingCopy}</p>
       <dl className="campaign-end-metrics">
@@ -3090,6 +3201,7 @@ function CampaignEndPanel({
           <dd>{Math.round(game.purchaseTrust)} / 100</dd>
         </div>
       </dl>
+      <CampaignStewardshipAudit evaluation={ending.stewardship} />
       <small className="campaign-end-note">
         DAY {LAST_DECISION_DAY} 최종 금제 이후 {SETTLEMENT_DAYS}일의 관측
         결과로 확정된 공식 기록입니다.
@@ -4240,7 +4352,9 @@ function DistributionView({
         </span>
         <span>
           <TrendIcon size={16} /> 결산 분기선
-          <strong>자금 5·10억 · 환경 50·70</strong>
+          <strong>
+            자금 {CAMPAIGN_CASH_TIGHT_MIN}·{CAMPAIGN_CASH_RESERVE_MIN}억 · 환경 {CAMPAIGN_ENVIRONMENT_CAUTION_MIN}·{CAMPAIGN_ENVIRONMENT_STABLE_MIN}
+          </strong>
         </span>
       </div>
     </section>
@@ -4969,6 +5083,7 @@ function OperationsView({
   onRunAction: (action: BusinessActionType) => void;
 }) {
   const environmentHealth = getBusinessEnvironmentHealth(game);
+  const stewardship = getCampaignStewardshipEvaluation(game);
   const monthlyOperatingCost = getMonthlyOperatingCost(totalUsers(game));
   const isTodayRecorded = game.history.at(-1)?.day === game.day;
   const operatingDayLabel = isTodayRecorded
@@ -5055,6 +5170,8 @@ function OperationsView({
         />
       </div>
 
+      <CampaignStewardshipAudit evaluation={stewardship} />
+
       <section className="operations-strategy-strip" aria-labelledby="business-strategy-title">
         <div className="operations-strategy-heading">
           <div>
@@ -5115,6 +5232,25 @@ function OperationsView({
                   : isStrategicBusinessAction(action.type)
                     ? getStrategicProjectRiskProfile(game, action.type).risk
                   : null;
+              const projectedOutcome = action.type === "championship"
+                ? "success"
+                : "active";
+              const hasDirectRevenue = getBusinessActionDailyGrossRevenue(
+                game,
+                action.type,
+                projectedOutcome,
+              ) > 0;
+              const projectedDirectGrossRevenue =
+                getBusinessActionProjectedDirectGrossRevenue(
+                  game,
+                  action.type,
+                  projectedOutcome,
+                );
+              const projectedDirectCash = getBusinessActionProjectedDirectCash(
+                game,
+                action.type,
+                projectedOutcome,
+              );
               const strategicSlotUsed =
                 isStrategicBusinessAction(action.type) &&
                 game.operations.records.some((record) =>
@@ -5150,6 +5286,21 @@ function OperationsView({
                     </div>
                   </dl>
                   <p className="business-action-effect">{action.effect}</p>
+                  {hasDirectRevenue ? (
+                    <div className="business-action-return">
+                      <span>
+                        {action.type === "championship"
+                          ? "흥행 시 추가 현금(추정)"
+                          : "현재 조건 추가 현금(추정)"}
+                      </span>
+                      <strong>{formatSignedRevenue(projectedDirectCash)}</strong>
+                      <small>
+                        추가 직접매출 ₩{formatRevenue(projectedDirectGrossRevenue)} · {action.type === "championship"
+                          ? "유저 성장 제외"
+                          : `행사 합계 일 ₩${formatRevenue(BUSINESS_ACTION_DAILY_REVENUE_CAP)} 상한`}
+                      </small>
+                    </div>
+                  ) : null}
                   <div className={`business-action-risk ${action.tone}`}>
                     <span>{risk === null ? "직접 위험" : action.type === "pack-odds" ? "현재 적발 위험" : isStrategicBusinessAction(action.type) ? "현재 실패 위험" : "현재 역풍 위험"}</span>
                     <strong>{risk === null ? action.tone === "safe" ? "매우 낮음" : "낮음" : `${Math.round(risk * 100)}%`}</strong>
@@ -5360,7 +5511,7 @@ function FinanceView({
         </div>
       </div>
       <div className="finance-kpis expanded">
-        <OverviewCard className="primary" icon={<RevenueIcon />} label={isTodayRecorded ? "오늘 매출" : `DAY ${latestRecord?.day ?? game.day} 매출`} value={`₩${formatRevenue(latestRevenue)}`} note={isTodayRecorded ? "카탈로그 + 오늘의 발매 반응" : "오늘 결정 제출 후 결산"} />
+        <OverviewCard className="primary" icon={<RevenueIcon />} label={isTodayRecorded ? "오늘 매출" : `DAY ${latestRecord?.day ?? game.day} 매출`} value={`₩${formatRevenue(latestRevenue)}`} note={isTodayRecorded ? "카탈로그 + 발매 + 사업 효과" : "오늘 결정 제출 후 결산"} />
         <OverviewCard icon={<RevenueIcon />} label="보유 운영자금" value={`₩${formatRevenue(game.finance.cash)}`} note={`현 규모 기준 약 ${runwayMonths.toFixed(1)}개월`} />
         <OverviewCard icon={<TrendIcon />} label={`${settledDayLabel} 순운영 현금`} value={formatSignedRevenue(game.finance.todayOperatingCash)} note={isTodayRecorded ? "매출 32% − 운영비 − 오늘 집행비" : "오늘 결정 제출 후 정산"} />
         <OverviewCard icon={<RevenueIcon />} label={game.day < OPERATING_COST_START_DAY ? "운영비 정산 시작" : `${settledDayLabel} 운영비`} value={game.day < OPERATING_COST_START_DAY ? `DAY ${OPERATING_COST_START_DAY}` : formatSignedRevenue(-game.finance.todayOperatingCost)} note={`월 예상 ₩${formatRevenue(monthlyOperatingCost)}`} />

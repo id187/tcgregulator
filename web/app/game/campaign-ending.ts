@@ -1,4 +1,15 @@
-import { getBusinessEnvironmentHealth } from "./business-actions.ts";
+import {
+  BUSINESS_ACTION_BY_TYPE,
+  getBusinessEnvironmentHealth,
+  isStrategicBusinessAction,
+} from "./business-actions.ts";
+import {
+  BAN_INTERVAL,
+  FIRST_BAN_DAY,
+  LAST_DECISION_DAY,
+  PLAYER_START_DAY,
+} from "./campaign.ts";
+import { getPublishedRestrictionPolicyProfile } from "./restriction-policy.ts";
 import type { GameState } from "./types.ts";
 
 /** Monetary values are in eok won (KRW 100,000,000). */
@@ -7,9 +18,64 @@ export type CampaignCashBand = "crisis" | "tight" | "reserve";
 export type CampaignEnvironmentBand = "danger" | "caution" | "stable";
 
 export const CAMPAIGN_CASH_TIGHT_MIN = 5;
-export const CAMPAIGN_CASH_RESERVE_MIN = 10;
+export const CAMPAIGN_CASH_RESERVE_MIN = 14;
 export const CAMPAIGN_ENVIRONMENT_CAUTION_MIN = 50;
 export const CAMPAIGN_ENVIRONMENT_STABLE_MIN = 70;
+
+export const CAMPAIGN_SUPPORT_RELEASE_MIN = 3;
+export const CAMPAIGN_SUPPORT_THEME_MIN = 2;
+export const CAMPAIGN_SUPPORT_DIRECTION_MIN = 2;
+export const CAMPAIGN_RELEASE_POSITIVE_PRESSURE_MAX = 14;
+export const CAMPAIGN_RELEASE_TIER_ZERO_MAX = 3;
+export const CAMPAIGN_BALANCED_REVIEW_MIN = 5;
+export const CAMPAIGN_STALE_RELEASE_MIN = 2;
+export const CAMPAIGN_BUSINESS_ACTION_MIN = 6;
+export const CAMPAIGN_BUSINESS_TYPE_MIN = 4;
+export const CAMPAIGN_BUSINESS_TONE_MIN = 3;
+export const CAMPAIGN_BUSINESS_RECOVERY_ACTION_MIN = 9;
+export const CAMPAIGN_BUSINESS_RECOVERY_TYPE_MIN = 5;
+export const CAMPAIGN_EVENT_RESOLUTION_MIN = 20;
+export const CAMPAIGN_EVENT_SUCCESS_RATE_MIN = 0.7;
+export const CAMPAIGN_EVENT_RECOVERY_RATE_MIN = 0.65;
+export const CAMPAIGN_EVENT_RECOVERY_TRUST_MIN = 80;
+
+export type CampaignStewardshipEvaluation = {
+  complete: boolean;
+  passedPillars: number;
+  pillars: {
+    support: {
+      passed: boolean;
+      releasedRequests: number;
+      distinctThemes: number;
+      distinctDirections: number;
+      positivePowerPressure: number;
+      tierZeroProducts: number;
+    };
+    policy: {
+      passed: boolean;
+      reviewed: number;
+      balancedReviews: number;
+      staleFullyReleased: number;
+    };
+    business: {
+      passed: boolean;
+      qualifyingActions: number;
+      distinctTypes: number;
+      distinctTones: number;
+      strategicAttempts: number;
+      strategicSuccesses: number;
+      usedRecoveryPath: boolean;
+    };
+    events: {
+      passed: boolean;
+      resolved: number;
+      successes: number;
+      successRate: number;
+      requiredSuccesses: number;
+      usedTrustRecoveryPath: boolean;
+    };
+  };
+};
 
 export type CampaignEndingEvaluation = {
   scores: {
@@ -20,6 +86,8 @@ export type CampaignEndingEvaluation = {
     cash: CampaignCashBand;
     environment: CampaignEnvironmentBand;
   };
+  stewardship: CampaignStewardshipEvaluation;
+  qualifiedForBestEnding: boolean;
   title: string;
   body: string;
   /** Informational context only; it never changes the nine-way ending. */
@@ -76,6 +144,177 @@ const ENDING_COPY = {
   Record<CampaignEnvironmentBand, EndingCopy>
 >;
 
+const INCOMPLETE_STEWARDSHIP_COPY: EndingCopy = {
+  title: "성장 뒤의 숙제",
+  body: "운영자금과 환경은 안정권이지만 지원 육성·금제 운영·사업 포트폴리오·돌발 대응의 최종 감사가 미완료다. 다음 시즌을 맡기기에는 운영 체계가 한쪽에 치우쳤다.",
+};
+
+function isRestrictionDecisionType(type: string): boolean {
+  return (
+    type === "restriction-applied" ||
+    type === "cosmetic-restriction" ||
+    type === "restriction-no-change"
+  );
+}
+
+function isQualifyingBusinessOutcome(outcome: string): boolean {
+  return (
+    outcome === "completed" ||
+    outcome === "success" ||
+    outcome === "clean"
+  );
+}
+
+/**
+ * Final-audit progress derived exclusively from existing immutable histories.
+ * No additional save fields are needed, so old saves remain structurally valid.
+ */
+export function getCampaignStewardshipEvaluation(
+  state: GameState,
+): CampaignStewardshipEvaluation {
+  const releasedRequests = state.supportRequests.filter(
+    (request) =>
+      request.proposedDay >= PLAYER_START_DAY &&
+      request.status === "released" &&
+      request.releasedDay !== null,
+  );
+  const playerProducts = state.releaseHistory
+    .filter((batch) => batch.day >= PLAYER_START_DAY)
+    .flatMap((batch) => batch.products);
+  const support = {
+    releasedRequests: releasedRequests.length,
+    distinctThemes: new Set(releasedRequests.map((request) => request.themeId)).size,
+    distinctDirections: new Set(
+      releasedRequests.map((request) => request.direction),
+    ).size,
+    positivePowerPressure: playerProducts.reduce(
+      (total, product) => total + Math.max(0, product.powerAdjustment),
+      0,
+    ),
+    tierZeroProducts: playerProducts.filter(
+      (product) => product.expectedTier === "Tier 0",
+    ).length,
+    passed: false,
+  };
+  support.passed =
+    support.releasedRequests >= CAMPAIGN_SUPPORT_RELEASE_MIN &&
+    support.distinctThemes >= CAMPAIGN_SUPPORT_THEME_MIN &&
+    support.distinctDirections >= CAMPAIGN_SUPPORT_DIRECTION_MIN &&
+    support.positivePowerPressure <=
+      CAMPAIGN_RELEASE_POSITIVE_PRESSURE_MAX &&
+    support.tierZeroProducts <= CAMPAIGN_RELEASE_TIER_ZERO_MAX;
+
+  const publishedProfiles = [];
+  for (
+    let day = FIRST_BAN_DAY + BAN_INTERVAL;
+    day <= LAST_DECISION_DAY;
+    day += BAN_INTERVAL
+  ) {
+    const reviewed = state.community.some(
+      (event) => event.day === day && isRestrictionDecisionType(event.type),
+    );
+    if (reviewed) {
+      publishedProfiles.push(getPublishedRestrictionPolicyProfile(state, day));
+    }
+  }
+  const policy = {
+    reviewed: publishedProfiles.length,
+    balancedReviews: publishedProfiles.filter(
+      (profile) => profile.quality === "balanced",
+    ).length,
+    staleFullyReleased: publishedProfiles.reduce(
+      (total, profile) => total + profile.staleFullyReleased,
+      0,
+    ),
+    passed: false,
+  };
+  policy.passed =
+    policy.balancedReviews >= CAMPAIGN_BALANCED_REVIEW_MIN &&
+    policy.staleFullyReleased >= CAMPAIGN_STALE_RELEASE_MIN;
+
+  const playerActionRecords = state.operations.records.filter(
+    (record) => record.startedDay >= PLAYER_START_DAY,
+  );
+  const qualifyingActionRecords = playerActionRecords.filter((record) =>
+    isQualifyingBusinessOutcome(record.outcome)
+  );
+  const strategicAttempts = playerActionRecords.filter(
+    (record) =>
+      isStrategicBusinessAction(record.type) &&
+      (record.outcome === "success" || record.outcome === "backlash"),
+  );
+  const strategicSuccesses = strategicAttempts.filter(
+    (record) => record.outcome === "success",
+  ).length;
+  const distinctTypes = new Set(
+    qualifyingActionRecords.map((record) => record.type),
+  ).size;
+  const distinctTones = new Set(
+    qualifyingActionRecords.map(
+      (record) => BUSINESS_ACTION_BY_TYPE[record.type].tone,
+    ),
+  ).size;
+  const usedRecoveryPath =
+    strategicSuccesses === 0 &&
+    strategicAttempts.length > 0 &&
+    qualifyingActionRecords.length >= CAMPAIGN_BUSINESS_RECOVERY_ACTION_MIN &&
+    distinctTypes >= CAMPAIGN_BUSINESS_RECOVERY_TYPE_MIN;
+  const business = {
+    qualifyingActions: qualifyingActionRecords.length,
+    distinctTypes,
+    distinctTones,
+    strategicAttempts: strategicAttempts.length,
+    strategicSuccesses,
+    usedRecoveryPath,
+    passed: false,
+  };
+  business.passed =
+    business.qualifyingActions >= CAMPAIGN_BUSINESS_ACTION_MIN &&
+    business.distinctTypes >= CAMPAIGN_BUSINESS_TYPE_MIN &&
+    business.distinctTones >= CAMPAIGN_BUSINESS_TONE_MIN &&
+    (business.strategicSuccesses > 0 || business.usedRecoveryPath);
+
+  const resolvedEvents = state.operations.eventRecords.filter(
+    (record) =>
+      record.appearedDay >= PLAYER_START_DAY && record.outcome !== "pending",
+  );
+  const successes = resolvedEvents.filter(
+    (record) => record.outcome === "success",
+  ).length;
+  const successRate = resolvedEvents.length > 0
+    ? successes / resolvedEvents.length
+    : 0;
+  const requiredSuccesses = Math.ceil(
+    resolvedEvents.length * CAMPAIGN_EVENT_SUCCESS_RATE_MIN,
+  );
+  const usedTrustRecoveryPath =
+    successes < requiredSuccesses &&
+    successRate + 1e-9 >= CAMPAIGN_EVENT_RECOVERY_RATE_MIN &&
+    state.purchaseTrust >= CAMPAIGN_EVENT_RECOVERY_TRUST_MIN;
+  const events = {
+    resolved: resolvedEvents.length,
+    successes,
+    successRate,
+    requiredSuccesses,
+    usedTrustRecoveryPath,
+    passed: false,
+  };
+  events.passed =
+    events.resolved >= CAMPAIGN_EVENT_RESOLUTION_MIN &&
+    (events.successes >= events.requiredSuccesses ||
+      events.usedTrustRecoveryPath);
+
+  const pillars = { support, policy, business, events };
+  const passedPillars = Object.values(pillars).filter(
+    (pillar) => pillar.passed,
+  ).length;
+  return {
+    complete: passedPillars === Object.keys(pillars).length,
+    passedPillars,
+    pillars,
+  };
+}
+
 export function getCampaignCashBand(cash: number): CampaignCashBand {
   const score = Math.round(cash * 10) / 10;
   if (score < CAMPAIGN_CASH_TIGHT_MIN) return "crisis";
@@ -110,11 +349,18 @@ export function evaluateCampaignEnding(
   const environmentHealth = getCampaignEnvironmentStability(state);
   const cashBand = getCampaignCashBand(cash);
   const environmentBand = getCampaignEnvironmentBand(environmentHealth);
-  const copy = ENDING_COPY[cashBand][environmentBand];
+  const stewardship = getCampaignStewardshipEvaluation(state);
+  const stableFoundation = cashBand === "reserve" && environmentBand === "stable";
+  const qualifiedForBestEnding = stableFoundation && stewardship.complete;
+  const copy = stableFoundation && !qualifiedForBestEnding
+    ? INCOMPLETE_STEWARDSHIP_COPY
+    : ENDING_COPY[cashBand][environmentBand];
 
   return {
     scores: { cash, environmentHealth },
     bands: { cash: cashBand, environment: environmentBand },
+    stewardship,
+    qualifiedForBestEnding,
     title: copy.title,
     body: copy.body,
     totalUsers: state.users.tier + state.users.casual + state.users.collector,

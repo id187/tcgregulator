@@ -3208,6 +3208,109 @@ body {
   font-size: 13px;
 }
 
+.stewardship-audit {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-soft);
+}
+
+.stewardship-audit-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.stewardship-audit-heading > div {
+  display: grid;
+  gap: 2px;
+}
+
+.stewardship-audit-heading span {
+  color: var(--ink-500);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.stewardship-audit-heading strong {
+  color: var(--ink-950);
+  font-size: 14px;
+}
+
+.stewardship-audit-heading small {
+  color: var(--ink-500);
+  font-size: 8px;
+}
+
+.stewardship-audit-heading > b {
+  color: var(--ink-950);
+  font-size: 18px;
+}
+
+.stewardship-audit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 7px;
+}
+
+.stewardship-audit-grid article {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-height: 84px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.stewardship-audit-grid article > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stewardship-audit-grid article i {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: #efe7d5;
+  color: #8a671d;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.stewardship-audit-grid article.is-complete {
+  border-color: #b7d9ca;
+  background: #f2f8f5;
+}
+
+.stewardship-audit-grid article.is-complete i {
+  background: #d6eee3;
+  color: #24725a;
+}
+
+.stewardship-audit-grid article strong {
+  color: var(--ink-800);
+  font-size: 10px;
+}
+
+.stewardship-audit-grid article span,
+.stewardship-audit-grid article small {
+  color: var(--ink-600);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.stewardship-audit-grid article small {
+  color: var(--ink-500);
+}
+
 .campaign-end-panel {
   width: min(840px, 100%);
   border-color: var(--line-strong);
@@ -7078,6 +7181,28 @@ body {
   font-size: 9px;
   font-weight: 700;
   line-height: 1.45;
+}
+
+.business-action-return {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1px 8px;
+  padding: 5px 6px;
+  background: #f0f7f3;
+  border: 1px solid #cfe3d8;
+  color: var(--ink-600);
+  font-size: 8px;
+}
+
+.business-action-return strong {
+  color: #24725a;
+  font-size: 9px;
+}
+
+.business-action-return small {
+  grid-column: 1 / -1;
+  color: var(--ink-500);
+  font-size: 7px;
 }
 
 .business-action-risk {

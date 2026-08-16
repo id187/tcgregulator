@@ -3,8 +3,13 @@ import test from "node:test";
 
 import { THEMES } from "../app/game/content.ts";
 import {
+  BUSINESS_ACTION_DAILY_REVENUE_CAP,
   getBusinessActionAvailability,
+  getBusinessActionDailyGrossRevenue,
+  getBusinessActionProjectedDirectCash,
+  getBusinessActionProjectedDirectGrossRevenue,
   getChampionshipBacklashRisk,
+  getStackedBusinessActionDailyGrossRevenue,
   getStrategicProjectRiskProfile,
 } from "../app/game/business-actions.ts";
 import {
@@ -1871,8 +1876,85 @@ test("marketing and store tours affect users and trust from the following day", 
   assert.ok(tourNext.purchaseTrust > lowTrustNext.purchaseTrust);
 });
 
+test("direct-revenue business actions project a positive cash contribution", () => {
+  const state = createCampaignStart(21_099);
+  const cases = [
+    { type: "store-tour", dailyGross: 0.086, projectedCash: 0.0353 },
+    { type: "beginner-camp", dailyGross: 0.094, projectedCash: 0.0211 },
+    { type: "local-league", dailyGross: 0.081, projectedCash: 0.0443 },
+    { type: "reprint-campaign", dailyGross: 0.065, projectedCash: 0.074 },
+    { type: "collector-fair", dailyGross: 0.17, projectedCash: 0.1116 },
+  ] as const;
+
+  for (const fixture of cases) {
+    assert.equal(
+      getBusinessActionDailyGrossRevenue(state, fixture.type),
+      fixture.dailyGross,
+      fixture.type,
+    );
+    assert.equal(
+      getBusinessActionProjectedDirectCash(state, fixture.type),
+      fixture.projectedCash,
+      fixture.type,
+    );
+  }
+
+  assert.equal(
+    getBusinessActionDailyGrossRevenue(state, "championship", "backlash"),
+    0,
+  );
+  assert.equal(
+    getBusinessActionDailyGrossRevenue(state, "championship", "success"),
+    0.47,
+  );
+  assert.equal(
+    getBusinessActionProjectedDirectCash(state, "championship", "success"),
+    0.2528,
+  );
+
+  assert.equal(BUSINESS_ACTION_DAILY_REVENUE_CAP, 0.18);
+  assert.equal(
+    getStackedBusinessActionDailyGrossRevenue(state, [
+      { type: "store-tour", outcome: "active" },
+      { type: "collector-fair", outcome: "active" },
+    ]),
+    0.18,
+  );
+  assert.equal(
+    getStackedBusinessActionDailyGrossRevenue(state, [
+      { type: "championship", outcome: "success" },
+      { type: "collector-fair", outcome: "active" },
+    ]),
+    0.64,
+  );
+
+  const largeAudience = structuredClone(state);
+  largeAudience.users = { tier: 35_000, casual: 45_000, collector: 20_000 };
+  assert.ok(
+    getBusinessActionDailyGrossRevenue(largeAudience, "collector-fair") >
+      BUSINESS_ACTION_DAILY_REVENUE_CAP,
+  );
+  assert.equal(
+    getBusinessActionProjectedDirectCash(largeAudience, "collector-fair"),
+    0.1564,
+  );
+
+  const overlapping = reduceGame(state, {
+    type: "RUN_BUSINESS_ACTION",
+    action: "collector-fair",
+  });
+  assert.ok(
+    getBusinessActionProjectedDirectGrossRevenue(overlapping, "store-tour") <
+      getBusinessActionDailyGrossRevenue(overlapping, "store-tour") * 14,
+  );
+  assert.ok(
+    getBusinessActionProjectedDirectCash(overlapping, "store-tour") < 0,
+  );
+});
+
 test("recurring business events generate revenue and grow their intended audience", () => {
   const cases = [
+    { type: "store-tour", segment: "casual", cost: 0.35 },
     { type: "beginner-camp", segment: "casual", cost: 0.4 },
     { type: "local-league", segment: "tier", cost: 0.5 },
     { type: "reprint-campaign", segment: "collector", cost: 0.55 },

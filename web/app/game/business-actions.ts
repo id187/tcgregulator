@@ -1,5 +1,6 @@
 import type {
   BusinessActionRecord,
+  BusinessActionOutcome,
   BusinessActionRiskContext,
   BusinessActionType,
   BusinessRiskFactor,
@@ -12,6 +13,7 @@ import {
   LAST_RELEASE_DAY,
   RELEASE_INTERVAL,
 } from "./campaign.ts";
+import { OPERATING_CASH_MARGIN } from "./finance.ts";
 import { getPublishedRestrictionPolicyProfile } from "./restriction-policy.ts";
 
 export type BusinessActionDefinition = {
@@ -63,7 +65,7 @@ export const BUSINESS_ACTIONS = [
     cooldown: 21,
     tone: "event",
     summary: "현재 환경을 대중 앞에 그대로 중계하는 승부수",
-    effect: "건강한 환경은 흥행하지만 나쁜 환경은 이탈로 역류",
+    effect: "흥행 시 7일간 티켓·스폰서 매출 · 나쁜 환경은 이탈로 역류",
   },
   {
     type: "store-tour",
@@ -74,7 +76,7 @@ export const BUSINESS_ACTIONS = [
     cooldown: 21,
     tone: "safe",
     summary: "지역 매장과 함께 진행하는 저위험 입문 행사",
-    effect: "14일간 완만한 신규 유입과 구매 신뢰 회복",
+    effect: "14일간 현장 판매 매출 + 완만한 신규 유입과 구매 신뢰 회복",
   },
   {
     type: "beginner-camp",
@@ -191,11 +193,145 @@ export const STRATEGIC_BUSINESS_ACTION_TYPES = [
 export type StrategicBusinessActionType =
   (typeof STRATEGIC_BUSINESS_ACTION_TYPES)[number];
 
+/** Repeatable event sales saturate when several campaigns run concurrently. */
+export const BUSINESS_ACTION_DAILY_REVENUE_CAP = 0.18;
+
 export function isStrategicBusinessAction(
   type: BusinessActionType,
 ): type is StrategicBusinessActionType {
   return (STRATEGIC_BUSINESS_ACTION_TYPES as readonly BusinessActionType[])
     .includes(type);
+}
+
+/**
+ * Incremental gross revenue generated each active day by an action.
+ *
+ * Values are expressed in eok won and deliberately exclude catalog sales,
+ * release sales, user growth, purchase-rate bonuses, strategy modifiers, and
+ * daily noise. This keeps the estimate useful both to the engine and to the
+ * player-facing action card without duplicating persisted finance fields.
+ */
+export function getBusinessActionDailyGrossRevenue(
+  state: Pick<GameState, "users">,
+  type: BusinessActionType,
+  outcome: BusinessActionOutcome = "active",
+): number {
+  const totalUsers =
+    state.users.tier + state.users.casual + state.users.collector;
+  let revenueWon = 0;
+
+  switch (type) {
+    case "championship":
+      if (outcome === "success") {
+        revenueWon = totalUsers * 4_000 + state.users.tier * 2_000;
+      }
+      break;
+    case "store-tour":
+      revenueWon = totalUsers * 500 + state.users.casual * 800;
+      break;
+    case "beginner-camp":
+      revenueWon = totalUsers * 400 + state.users.casual * 1_200;
+      break;
+    case "local-league":
+      revenueWon = totalUsers * 250 + state.users.tier * 1_600;
+      break;
+    case "reprint-campaign":
+      revenueWon = totalUsers * 650;
+      break;
+    case "collector-fair":
+      revenueWon = totalUsers * 300 + state.users.collector * 7_000;
+      break;
+    case "tv-cm":
+    case "animation-promotion":
+    case "pack-odds":
+    case "season-overhaul":
+    case "global-launch":
+    case "first-print-expansion":
+      break;
+  }
+
+  return round(revenueWon / 100_000_000, 4);
+}
+
+/**
+ * Combines active action revenue while preventing concurrent event spam from
+ * scaling linearly. Championship revenue is a risk-gated sponsorship payout
+ * and remains outside the repeatable-event saturation cap.
+ */
+export function getStackedBusinessActionDailyGrossRevenue(
+  state: Pick<GameState, "users">,
+  records: readonly Pick<BusinessActionRecord, "type" | "outcome">[],
+): number {
+  let repeatableRevenue = 0;
+  let championshipRevenue = 0;
+
+  for (const record of records) {
+    const revenue = getBusinessActionDailyGrossRevenue(
+      state,
+      record.type,
+      record.outcome,
+    );
+    if (record.type === "championship") {
+      championshipRevenue += revenue;
+    } else {
+      repeatableRevenue += revenue;
+    }
+  }
+
+  return round(
+    championshipRevenue +
+      Math.min(BUSINESS_ACTION_DAILY_REVENUE_CAP, repeatableRevenue),
+    4,
+  );
+}
+
+/**
+ * Static incremental gross revenue estimate against actions already running.
+ * Audience growth, release-purchase lift, strategy and daily noise are excluded.
+ */
+export function getBusinessActionProjectedDirectGrossRevenue(
+  state: Pick<GameState, "day" | "operations" | "users">,
+  type: BusinessActionType,
+  outcome: BusinessActionOutcome = "active",
+): number {
+  const definition = BUSINESS_ACTION_BY_TYPE[type];
+  let grossRevenue = 0;
+
+  for (let offset = 1; offset <= definition.duration; offset += 1) {
+    const projectedDay = state.day + offset;
+    const activeRecords = state.operations.records.filter((record) =>
+      isBusinessActionEffectActive(record, projectedDay)
+    );
+    const baseline = getStackedBusinessActionDailyGrossRevenue(
+      state,
+      activeRecords,
+    );
+    const withAction = getStackedBusinessActionDailyGrossRevenue(state, [
+      ...activeRecords,
+      { type, outcome },
+    ]);
+    grossRevenue += withAction - baseline;
+  }
+
+  return round(grossRevenue, 4);
+}
+
+/** Direct operating-cash estimate after the action's up-front cost. */
+export function getBusinessActionProjectedDirectCash(
+  state: Pick<GameState, "day" | "operations" | "users">,
+  type: BusinessActionType,
+  outcome: BusinessActionOutcome = "active",
+): number {
+  const definition = BUSINESS_ACTION_BY_TYPE[type];
+  const grossRevenue = getBusinessActionProjectedDirectGrossRevenue(
+    state,
+    type,
+    outcome,
+  );
+  return round(
+    grossRevenue * OPERATING_CASH_MARGIN - definition.cost,
+    4,
+  );
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

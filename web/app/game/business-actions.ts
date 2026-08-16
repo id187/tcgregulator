@@ -77,6 +77,50 @@ export const BUSINESS_ACTIONS = [
     effect: "14일간 완만한 신규 유입과 구매 신뢰 회복",
   },
   {
+    type: "beginner-camp",
+    kicker: "ONBOARDING",
+    title: "스타터 번들 캠프",
+    cost: 0.4,
+    duration: 14,
+    cooldown: 21,
+    tone: "safe",
+    summary: "대여 덱·룰 코칭·스타터 묶음 판매를 결합한 입문 행사",
+    effect: "14일간 스타터 번들 매출 + 캐주얼 유입",
+  },
+  {
+    type: "local-league",
+    kicker: "LOCAL CIRCUIT",
+    title: "지역 리그 지원금",
+    cost: 0.5,
+    duration: 21,
+    cooldown: 30,
+    tone: "event",
+    summary: "공인 매장 리그에 상금·심판·중계 장비를 지원하는 경쟁층 투자",
+    effect: "21일간 참가 키트 매출 + 경쟁층 유입",
+  },
+  {
+    type: "reprint-campaign",
+    kicker: "ACCESSIBILITY",
+    title: "수요 카드 긴급 재판",
+    cost: 0.55,
+    duration: 30,
+    cooldown: 45,
+    tone: "safe",
+    summary: "품귀 핵심 파츠를 재판하고 매장 교환 지원을 함께 여는 공급 대책",
+    effect: "30일간 재판 상품 매출 + 구매 신뢰 회복",
+  },
+  {
+    type: "collector-fair",
+    kicker: "COLLECTOR EVENT",
+    title: "일러스트·컬렉터 페어",
+    cost: 0.65,
+    duration: 14,
+    cooldown: 30,
+    tone: "growth",
+    summary: "원화 전시·작가 토크·한정 프로모를 묶은 단기 수집 행사",
+    effect: "14일간 한정 굿즈 매출 크게 상승 + 컬렉터 유입",
+  },
+  {
     type: "pack-odds",
     kicker: "MONETIZATION",
     title: "봉입률 하향 조정",
@@ -386,7 +430,9 @@ export function getBusinessActionAvailability(
   const cooldownRemaining = getBusinessActionCooldownRemaining(state, type);
   let reason: string | null = null;
 
-  if (state.phase !== "running") {
+  if (state.operations.pendingEvent) {
+    reason = "도착한 돌발 경영 이벤트의 방향을 먼저 결정해야 합니다.";
+  } else if (state.phase !== "running") {
     reason = "의사결정을 먼저 마쳐야 합니다.";
   } else if (state.day >= LAST_DECISION_DAY) {
     reason = "결산 기간에는 새 사업 액션을 시작할 수 없습니다.";

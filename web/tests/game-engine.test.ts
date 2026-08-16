@@ -8,6 +8,18 @@ import {
   getStrategicProjectRiskProfile,
 } from "../app/game/business-actions.ts";
 import {
+  BUSINESS_EVENTS,
+  BUSINESS_EVENT_BY_TYPE,
+  BUSINESS_EVENT_TYPES,
+  applyBusinessStrategyDelta,
+  getBusinessEventChoice,
+  getBusinessEventOutcome,
+  getBusinessEventResult,
+  getBusinessEventType,
+  getBusinessStrategyModifiers,
+  getInitialBusinessEventDay,
+} from "../app/game/business-events.ts";
+import {
   CAMPAIGN_END_DAY,
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
@@ -43,6 +55,81 @@ import {
 type State = ReturnType<typeof createInitialGame>;
 type Adjustment = -3 | -2 | -1 | 0 | 1 | 2 | 3;
 
+function choosePendingBusinessEvent(
+  state: State,
+  preferredChoice?: "a" | "b",
+): State {
+  const pending = state.operations.pendingEvent;
+  assert.ok(pending, "expected a pending business event");
+  const definition = BUSINESS_EVENT_BY_TYPE[pending.type];
+  const choice = preferredChoice ??
+    definition.choices.find((candidate) => candidate.cost === 0)?.id ??
+    "a";
+  return reduceGame(state, {
+    type: "CHOOSE_BUSINESS_EVENT",
+    eventId: pending.id,
+    choice,
+  });
+}
+
+function advanceToPendingBusinessEvent(
+  state: State,
+  advanceChunk = 1_000,
+): State {
+  let next = state;
+  for (let guard = 0; guard < 1_000; guard += 1) {
+    if (next.operations.pendingEvent) return next;
+    if (next.phase === "release-edit") {
+      next = submitFirstThree(next);
+    } else if (next.phase === "ban-edit") {
+      next = reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
+    } else {
+      next = reduceGame(next, { type: "ADVANCE_DAYS", days: advanceChunk });
+    }
+    if (next.phase === "ended") break;
+  }
+  throw new Error("A business event did not appear before the campaign ended.");
+}
+
+function advanceUntilDayOrDecisionHandlingBusinessEvents(
+  state: State,
+  targetDay: number,
+): State {
+  let next = state;
+  while (next.day < targetDay && next.phase === "running") {
+    if (next.operations.pendingEvent) {
+      next = choosePendingBusinessEvent(next);
+    } else {
+      next = reduceGame(next, {
+        type: "ADVANCE_DAYS",
+        days: targetDay - next.day,
+      });
+    }
+  }
+  if (next.operations.pendingEvent) {
+    next = choosePendingBusinessEvent(next);
+  }
+  return next;
+}
+
+function advanceToNextReleaseHandlingBusinessEvents(state: State): State {
+  let next = state;
+  for (let guard = 0; guard < 1_000; guard += 1) {
+    if (next.operations.pendingEvent) {
+      next = choosePendingBusinessEvent(next);
+    } else if (next.phase === "release-edit") {
+      return next;
+    } else if (next.phase === "ban-edit") {
+      next = reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
+    } else if (next.phase === "ended") {
+      break;
+    } else {
+      next = reduceGame(next, { type: "ADVANCE_DAYS", days: 1_000 });
+    }
+  }
+  throw new Error("A release review did not appear before the campaign ended.");
+}
+
 test("restriction announcements state whether limits tighten or loosen", () => {
   const state = createCampaignStart(9001);
   const baseEvent = {
@@ -72,7 +159,14 @@ test("restriction announcements state whether limits tighten or loosen", () => {
 });
 
 function advanceToFirstRelease(state: State): State {
-  const next = reduceGame(state, { type: "ADVANCE_DAYS", days: 30 });
+  let next = state;
+  while (next.day < 60) {
+    if (next.operations.pendingEvent) {
+      next = choosePendingBusinessEvent(next);
+    } else {
+      next = reduceGame(next, { type: "ADVANCE_DAYS", days: 60 - next.day });
+    }
+  }
   assert.equal(next.day, 60);
   assert.equal(next.phase, "release-edit");
   assert.ok(next.releaseSlate);
@@ -110,7 +204,9 @@ function submitFirstThree(
 function advanceThroughDecisions(state: State, targetDay: number): State {
   let next = state;
   while (next.day < targetDay) {
-    if (next.phase === "release-edit") {
+    if (next.operations.pendingEvent) {
+      next = choosePendingBusinessEvent(next);
+    } else if (next.phase === "release-edit") {
       next = submitFirstThree(next);
     } else if (next.phase === "ban-edit") {
       next = reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
@@ -121,11 +217,53 @@ function advanceThroughDecisions(state: State, targetDay: number): State {
       });
     }
   }
+  if (next.operations.pendingEvent) return choosePendingBusinessEvent(next);
   if (next.phase === "release-edit") return submitFirstThree(next);
   if (next.phase === "ban-edit") {
     return reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
   }
   return next;
+}
+
+function advanceBusinessEventResult(state: State, targetDay: number): State {
+  let next = state;
+  while (next.day < targetDay) {
+    if (next.phase === "release-edit") {
+      next = submitFirstThree(next);
+    } else if (next.phase === "ban-edit") {
+      next = reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
+    } else {
+      next = reduceGame(next, {
+        type: "ADVANCE_DAYS",
+        days: targetDay - next.day,
+      });
+      if (next.operations.pendingEvent && next.day < targetDay) {
+        throw new Error("A later business event appeared before the pending result.");
+      }
+    }
+  }
+  if (next.phase === "release-edit") return submitFirstThree(next);
+  if (next.phase === "ban-edit") {
+    return reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
+  }
+  return next;
+}
+
+function playBusinessEvents(
+  seed: number,
+  count: number,
+  advanceChunk: number,
+): State {
+  let state = createInitialGame(seed);
+  state.finance.cash = 100;
+  while (state.operations.eventRecords.length < count) {
+    state = advanceToPendingBusinessEvent(state, advanceChunk);
+    state = choosePendingBusinessEvent(
+      state,
+      state.operations.eventRecords.length % 2 === 0 ? "a" : "b",
+    );
+  }
+  return state;
 }
 
 function assertHealthyShares(state: State): void {
@@ -503,7 +641,7 @@ test("stops at restriction and release gates until each review is submitted", ()
   assert.equal(initial.phase, "running");
 
   for (const releaseDay of [60, 90]) {
-    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 100 });
+    state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, releaseDay);
     assert.equal(state.day, releaseDay);
     assert.equal(state.phase, "release-edit");
 
@@ -516,14 +654,14 @@ test("stops at restriction and release gates until each review is submitted", ()
     state = submitFirstThree(releaseBlocked);
   }
 
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 100 });
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 105);
   assert.equal(state.day, 105);
   assert.equal(state.phase, "ban-edit");
   const banBlocked = reduceGame(state, { type: "ADVANCE_DAYS", days: 100 });
   assert.equal(banBlocked.day, 105);
   state = reduceGame(banBlocked, { type: "SUBMIT_BAN", changes: {} });
 
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 100 });
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 120);
   assert.equal(state.day, 120);
   assert.equal(state.phase, "release-edit");
 });
@@ -551,7 +689,7 @@ test("is deterministic for the same seed and release command log", () => {
         powerAdjustment: ([-1, 0, 1] as const)[index],
       })),
     });
-    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 45 });
+    state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 90);
     assert.equal(state.day, 90);
     assert.equal(state.phase, "release-edit");
     return submitFirstThree(state, [1, 0, -1]);
@@ -779,8 +917,14 @@ test("a restriction review preserves single-card scope and supports a balanced m
       atGate.day - 45 >= 90
     )
   ) {
-    atGate = reduceGame(atGate, { type: "ADVANCE_DAYS", days: 100 });
-    if (atGate.phase === "release-edit") {
+    if (atGate.operations.pendingEvent) {
+      atGate = choosePendingBusinessEvent(atGate);
+    } else {
+      atGate = reduceGame(atGate, { type: "ADVANCE_DAYS", days: 100 });
+    }
+    if (atGate.operations.pendingEvent) {
+      atGate = choosePendingBusinessEvent(atGate);
+    } else if (atGate.phase === "release-edit") {
       atGate = submitFirstThree(atGate);
     } else if (atGate.phase === "ban-edit" && atGate.day - 45 < 90) {
       atGate = reduceGame(atGate, { type: "SUBMIT_BAN", changes: {} });
@@ -1190,7 +1334,7 @@ test("support proposals have a thirty-day cooldown and are guaranteed on the nex
   assert.equal(state.supportRequests[0].status, "released");
   assert.equal(state.supportRequests[0].releasedDay, 60);
 
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 75);
   assert.equal(state.day, 75);
   assert.throws(
     () =>
@@ -1201,7 +1345,7 @@ test("support proposals have a thirty-day cooldown and are guaranteed on the nex
       }),
     /30-day cooldown/,
   );
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 76);
   state = reduceGame(state, {
     type: "PROPOSE_SUPPORT",
     themeId: state.activeThemeIds[1],
@@ -1230,7 +1374,7 @@ test("support releases unlock exactly three prepared cards and stop after three 
       themeId: targetId,
       direction: "consistency",
     });
-    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 100 });
+    state = advanceToNextReleaseHandlingBusinessEvents(state);
     assert.equal(state.phase, "release-edit");
     assert.ok(state.releaseSlate);
     const requested = state.releaseSlate.options.find(
@@ -1262,7 +1406,10 @@ test("support releases unlock exactly three prepared cards and stop after three 
         /at most three times/,
       );
     }
-    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+    state = advanceUntilDayOrDecisionHandlingBusinessEvents(
+      state,
+      state.day + 1,
+    );
 
     const runtime: State["themes"][string] = state.themes[targetId];
     const expectedCount = 5 + wave * 3;
@@ -1278,11 +1425,17 @@ test("support releases unlock exactly three prepared cards and stop after three 
     assert.equal(runtime.supportReplacementPressure, 0.48);
 
     if (wave < 3) {
-      state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
+      state = advanceUntilDayOrDecisionHandlingBusinessEvents(
+        state,
+        state.day + 15,
+      );
       if (state.phase === "ban-edit") {
         assert.equal(state.day, 105);
         state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
-        state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+        state = advanceUntilDayOrDecisionHandlingBusinessEvents(
+          state,
+          state.day + 1,
+        );
       }
     }
   }
@@ -1306,7 +1459,7 @@ test("support releases unlock exactly three prepared cards and stop after three 
     /at most three times/,
   );
 
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 100 });
+  state = advanceToNextReleaseHandlingBusinessEvents(state);
   assert.equal(state.day, 150);
   assert.ok(
     state.releaseSlate?.options.every(
@@ -1468,7 +1621,9 @@ test("keeps shares finite and normalized through every release and restriction g
   let reviews = 0;
 
   while (state.phase !== "ended") {
-    if (state.phase === "release-edit") {
+    if (state.operations.pendingEvent) {
+      state = choosePendingBusinessEvent(state);
+    } else if (state.phase === "release-edit") {
       assert.equal(state.releaseSlate?.options.length, 6);
       state = submitFirstThree(state, [-1, 0, 1]);
       reviews += 1;
@@ -1494,7 +1649,9 @@ test("keeps six choices when a support-heavy strategy exhausts eligible themes",
   let releaseReviews = 0;
 
   while (state.phase !== "ended") {
-    if (state.phase === "release-edit") {
+    if (state.operations.pendingEvent) {
+      state = choosePendingBusinessEvent(state);
+    } else if (state.phase === "release-edit") {
       assert.ok(state.releaseSlate);
       assert.equal(state.releaseSlate.options.length, 6);
       const supportFirst = [
@@ -1548,7 +1705,7 @@ test("charges scaled operating costs every day after the DAY 46 handover", () =>
 
 test("decision gates charge operating costs once, after the decision is submitted", () => {
   let state = createInitialGame(21_000);
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 13 });
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 59);
   assert.equal(state.day, 59);
   assert.equal(state.phase, "running");
   const beforeGate = state.finance.cumulativeOperatingCosts;
@@ -1714,6 +1871,61 @@ test("marketing and store tours affect users and trust from the following day", 
   assert.ok(tourNext.purchaseTrust > lowTrustNext.purchaseTrust);
 });
 
+test("recurring business events generate revenue and grow their intended audience", () => {
+  const cases = [
+    { type: "beginner-camp", segment: "casual", cost: 0.4 },
+    { type: "local-league", segment: "tier", cost: 0.5 },
+    { type: "reprint-campaign", segment: "collector", cost: 0.55 },
+    { type: "collector-fair", segment: "collector", cost: 0.65 },
+  ] as const;
+
+  for (const [index, fixture] of cases.entries()) {
+    const control = createInitialGame(21_100 + index);
+    control.finance.cash = 100;
+    control.purchaseTrust = 50;
+    const launched = reduceGame(control, {
+      type: "RUN_BUSINESS_ACTION",
+      action: fixture.type,
+    });
+
+    assert.equal(
+      launched.finance.cash,
+      Math.round((control.finance.cash - fixture.cost + Number.EPSILON) * 10_000) /
+        10_000,
+      fixture.type,
+    );
+    assert.deepEqual(launched.operations.records.at(-1), {
+      id: "business-action-2",
+      type: fixture.type,
+      startedDay: 46,
+      endsDay:
+        46 +
+        (fixture.type === "local-league"
+          ? 21
+          : fixture.type === "reprint-campaign"
+            ? 30
+            : 14),
+      cost: fixture.cost,
+      outcome: "active",
+    });
+
+    const active = reduceGame(launched, { type: "ADVANCE_DAYS", days: 1 });
+    const baseline = reduceGame(control, { type: "ADVANCE_DAYS", days: 1 });
+    assert.ok(
+      active.users[fixture.segment] > baseline.users[fixture.segment],
+      `${fixture.type} should grow ${fixture.segment}`,
+    );
+    assert.ok(
+      active.finance.today > baseline.finance.today,
+      `${fixture.type} should add event revenue`,
+    );
+    assert.ok(
+      active.purchaseTrust > baseline.purchaseTrust,
+      `${fixture.type} should recover purchase trust`,
+    );
+  }
+});
+
 test("championships turn a healthy environment into growth and a hostile one into churn", () => {
   function prepare(seed: number, hostile: boolean): State {
     const state = createCampaignStart(seed);
@@ -1797,8 +2009,8 @@ test("pack odds boost a release, then detection deterministically ends the boost
     type: "RUN_BUSINESS_ACTION",
     action: "pack-odds",
   });
-  control = reduceGame(control, { type: "ADVANCE_DAYS", days: 100 });
-  adjusted = reduceGame(adjusted, { type: "ADVANCE_DAYS", days: 100 });
+  control = advanceUntilDayOrDecisionHandlingBusinessEvents(control, 60);
+  adjusted = advanceUntilDayOrDecisionHandlingBusinessEvents(adjusted, 60);
   control = submitFirstThree(control);
   adjusted = submitFirstThree(adjusted);
   assert.ok(adjusted.finance.today > control.finance.today);
@@ -1967,4 +2179,243 @@ test("first-print expansion unlocks only after a regular release is submitted", 
     getBusinessActionAvailability(state, "first-print-expansion").available,
     true,
   );
+});
+
+test("business dilemmas stop advancement without stealing scheduled decision gates", () => {
+  const seed = 31_001;
+  const initial = createInitialGame(seed);
+  assert.equal(initial.day, 46);
+  assert.equal(initial.operations.pendingEvent, null);
+  assert.deepEqual(initial.operations.eventRecords, []);
+
+  const offered = reduceGame(initial, { type: "ADVANCE_DAYS", days: 1_000 });
+  assert.equal(offered.day, getInitialBusinessEventDay(seed));
+  assert.ok(offered.day >= 52 && offered.day < 60);
+  assert.equal(offered.phase, "running");
+  assert.equal(offered.operations.pendingEvent?.appearedDay, offered.day);
+  assert.equal(offered.operations.nextEventDay, null);
+  assert.equal(offered.history.at(-1)?.day, offered.day);
+
+  assert.deepEqual(
+    reduceGame(offered, { type: "ADVANCE_DAYS", days: 100 }),
+    offered,
+    "a pending dilemma must halt multi-day advancement",
+  );
+  assert.throws(
+    () => reduceGame(offered, {
+      type: "RUN_BUSINESS_ACTION",
+      action: "beginner-camp",
+    }),
+    /event|이벤트|결정/i,
+  );
+  assert.throws(
+    () => reduceGame(offered, {
+      type: "CHOOSE_BUSINESS_EVENT",
+      eventId: "business-event-999",
+      choice: "a",
+    }),
+    /pending business event|돌발|event/i,
+  );
+
+  const paid = structuredClone(offered);
+  paid.finance.cash = 100;
+  const chosen = choosePendingBusinessEvent(paid, "a");
+  assert.equal(chosen.operations.pendingEvent, null);
+  const nextEventDay = chosen.operations.nextEventDay;
+  assert.ok(nextEventDay !== null);
+  assert.ok(nextEventDay - chosen.day >= 14 && nextEventDay - chosen.day <= 22);
+  assert.equal(isReleaseDay(nextEventDay), false);
+  assert.equal(isBanDay(nextEventDay), false);
+
+  const releaseGate = reduceGame(chosen, { type: "ADVANCE_DAYS", days: 100 });
+  assert.equal(releaseGate.day, 60);
+  assert.equal(releaseGate.phase, "release-edit");
+  assert.equal(releaseGate.operations.pendingEvent, null);
+});
+
+test("both dilemma choices snapshot cost and strategy, then resolve on schedule", () => {
+  const seed = Array.from({ length: 200 }, (_, index) => 31_100 + index).find(
+    (candidate) => getInitialBusinessEventDay(candidate) <= 58,
+  );
+  assert.ok(seed !== undefined);
+  const offered = advanceToPendingBusinessEvent(createInitialGame(seed));
+  offered.finance.cash = 100;
+  const pending = offered.operations.pendingEvent!;
+  const branches: Record<"a" | "b", State> = {} as Record<"a" | "b", State>;
+  const nextDays: number[] = [];
+
+  for (const choiceId of ["a", "b"] as const) {
+    const choice = getBusinessEventChoice(pending.type, choiceId);
+    const beforeExpense = offered.finance.cumulativeExpenses;
+    const chosen = choosePendingBusinessEvent(offered, choiceId);
+    branches[choiceId] = chosen;
+    nextDays.push(chosen.operations.nextEventDay!);
+
+    assert.equal(chosen.operations.pendingEvent, null);
+    assert.deepEqual(chosen.operations.strategy, applyBusinessStrategyDelta(
+      offered.operations.strategy,
+      choice.strategyDelta,
+    ));
+    assert.equal(
+      chosen.finance.cash,
+      Math.round((offered.finance.cash - choice.cost + Number.EPSILON) * 10_000) /
+        10_000,
+    );
+    assert.equal(
+      chosen.finance.cumulativeExpenses,
+      Math.round((beforeExpense + choice.cost + Number.EPSILON) * 10_000) /
+        10_000,
+    );
+    assert.deepEqual(chosen.operations.eventRecords.at(-1), {
+      id: pending.id,
+      type: pending.type,
+      appearedDay: pending.appearedDay,
+      choice: choiceId,
+      cost: choice.cost,
+      risk: choice.risk,
+      resolutionDay: pending.appearedDay + choice.resolutionDelay,
+      outcome: "pending",
+    });
+    assert.throws(
+      () => reduceGame(chosen, {
+        type: "CHOOSE_BUSINESS_EVENT",
+        eventId: pending.id,
+        choice: choiceId,
+      }),
+      /pending business event|돌발|event/i,
+    );
+
+    const oneDay = advanceBusinessEventResult(chosen, chosen.day + 1);
+    const modifiers = getBusinessStrategyModifiers(chosen.operations.strategy);
+    const expectedTrust = Math.round(
+      (Math.min(
+        90,
+        chosen.purchaseTrust + 0.015 + modifiers.trustPerDay,
+      ) + Number.EPSILON) * 10_000,
+    ) / 10_000;
+    assert.equal(oneDay.purchaseTrust, expectedTrust);
+
+    const resolutionDay = chosen.operations.eventRecords.at(-1)!.resolutionDay;
+    const beforeResult = advanceBusinessEventResult(chosen, resolutionDay - 1);
+    assert.equal(beforeResult.operations.eventRecords[0].outcome, "pending");
+    const resolved = advanceBusinessEventResult(beforeResult, resolutionDay);
+    const record = resolved.operations.eventRecords[0];
+    const expectedOutcome = getBusinessEventOutcome(
+      resolved.seed,
+      record.id,
+      choice.risk,
+    );
+    assert.equal(record.outcome, expectedOutcome);
+    assert.equal(record.resolvedDay, resolutionDay);
+    const impact = getBusinessEventResult(
+      record.type,
+      record.choice,
+      expectedOutcome,
+    );
+    const trustAfterImpact = Math.max(
+      0,
+      Math.min(100, beforeResult.purchaseTrust + impact.trustDelta),
+    );
+    const expectedResolvedTrust = isReleaseDay(resolutionDay) || isBanDay(resolutionDay)
+      ? trustAfterImpact
+      : Math.min(
+          90,
+          trustAfterImpact + 0.015 + modifiers.trustPerDay,
+        );
+    assert.equal(
+      resolved.purchaseTrust,
+      Math.round((expectedResolvedTrust + Number.EPSILON) * 10_000) / 10_000,
+    );
+    assert.equal(
+      resolved.finance.todayOperatingCash,
+      Math.round(
+        (resolved.finance.cash - beforeResult.finance.cash + Number.EPSILON) *
+          10_000,
+      ) / 10_000,
+      `${pending.type}/${choiceId} should report result cash in the daily KPI`,
+    );
+  }
+
+  assert.equal(nextDays[0], nextDays[1], "choice must not reroll the event calendar");
+  for (const segment of ["tier", "casual", "collector"] as const) {
+    const left = advanceBusinessEventResult(branches.a, branches.a.day + 1);
+    const right = advanceBusinessEventResult(branches.b, branches.b.day + 1);
+    const leftRate = getBusinessStrategyModifiers(
+      branches.a.operations.strategy,
+    ).userRates[segment];
+    const rightRate = getBusinessStrategyModifiers(
+      branches.b.operations.strategy,
+    ).userRates[segment];
+    assert.equal(
+      Math.sign(left.users[segment] - right.users[segment]),
+      Math.sign(leftRate - rightRate),
+      `${pending.type}/${segment}`,
+    );
+  }
+});
+
+test("business dilemma order is chunk-independent and uses all sixteen types first", () => {
+  assert.equal(BUSINESS_EVENTS.length, 16);
+  assert.equal(new Set(BUSINESS_EVENT_TYPES).size, 16);
+  for (const definition of BUSINESS_EVENTS) {
+    assert.equal(definition.choices.length, 2, definition.type);
+    assert.ok(
+      definition.choices.some((choice) => choice.cost === 0),
+      `${definition.type} needs a no-cash fallback`,
+    );
+  }
+  for (const seed of [1, 31_201, 0xffff_ffff]) {
+    const firstCycle = Array.from(
+      { length: 16 },
+      (_, index) => getBusinessEventType(seed, index + 1),
+    );
+    assert.equal(new Set(firstCycle).size, 16);
+    assert.deepEqual(new Set(firstCycle), new Set(BUSINESS_EVENT_TYPES));
+  }
+
+  const daily = playBusinessEvents(31_202, 16, 1);
+  const jumped = playBusinessEvents(31_202, 16, 1_000);
+  assert.deepEqual(jumped, daily);
+  assert.equal(
+    new Set(jumped.operations.eventRecords.map((record) => record.type)).size,
+    16,
+  );
+  for (let index = 0; index < jumped.operations.eventRecords.length; index += 1) {
+    const record = jumped.operations.eventRecords[index];
+    assert.equal(isReleaseDay(record.appearedDay), false);
+    assert.equal(isBanDay(record.appearedDay), false);
+    if (index > 0) {
+      const gap = record.appearedDay -
+        jumped.operations.eventRecords[index - 1].appearedDay;
+      assert.ok(gap >= 14 && gap <= 22, `${record.id} gap ${gap}`);
+    }
+  }
+});
+
+test("waiting on the rival TCG can deterministically succeed or backfire", () => {
+  const wait = BUSINESS_EVENT_BY_TYPE["rival-tcg-launch"].choices[1];
+  assert.equal(wait.id, "b");
+  const fixtures = new Map<"success" | "backlash", number>();
+  for (let seed = 1; seed <= 1_000 && fixtures.size < 2; seed += 1) {
+    if (getBusinessEventType(seed, 1) !== "rival-tcg-launch") continue;
+    const outcome = getBusinessEventOutcome(seed, "business-event-1", wait.risk);
+    if (!fixtures.has(outcome)) fixtures.set(outcome, seed);
+  }
+  assert.deepEqual(new Set(fixtures.keys()), new Set(["success", "backlash"]));
+
+  for (const [expectedOutcome, seed] of fixtures) {
+    let state = advanceToPendingBusinessEvent(createInitialGame(seed));
+    assert.equal(state.operations.pendingEvent?.id, "business-event-1");
+    assert.equal(state.operations.pendingEvent?.type, "rival-tcg-launch");
+    state.finance.cash = 100;
+    state = choosePendingBusinessEvent(state, "b");
+    const resolutionDay = state.operations.eventRecords[0].resolutionDay;
+    assert.equal(state.operations.eventRecords[0].outcome, "pending");
+    state = advanceBusinessEventResult(state, resolutionDay);
+    assert.equal(state.operations.eventRecords[0].outcome, expectedOutcome);
+    assert.equal(state.operations.eventRecords[0].resolvedDay, resolutionDay);
+  }
+
+  assert.equal(wait.results.success.headline, "경쟁작 자멸");
+  assert.equal(wait.results.backlash.headline, "경쟁작 안착");
 });

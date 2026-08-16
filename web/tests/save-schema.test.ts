@@ -6,6 +6,7 @@ import {
   CAMPAIGN_END_DAY,
   LAST_RELEASE_DAY,
 } from "../app/game/campaign.ts";
+import { getBusinessEventChoice } from "../app/game/business-events.ts";
 import {
   createCampaignStart,
   createInitialGame,
@@ -45,6 +46,7 @@ function asLegacyV3(state: GameState): Record<string, unknown> {
 function asLegacyV4(state: GameState): Record<string, unknown> {
   const legacy = jsonRoundTrip(state) as Record<string, unknown>;
   legacy.schemaVersion = 4;
+  stripBusinessEventState(legacy);
   const finance = legacy.finance as Record<string, unknown>;
   delete finance.todayOperatingCost;
   delete finance.cumulativeOperatingCosts;
@@ -54,11 +56,68 @@ function asLegacyV4(state: GameState): Record<string, unknown> {
 function asLegacyV5(state: GameState): Record<string, unknown> {
   const legacy = jsonRoundTrip(state) as Record<string, unknown>;
   legacy.schemaVersion = 5;
+  stripBusinessEventState(legacy);
   return legacy;
+}
+
+function asLegacyV6(state: GameState): Record<string, unknown> {
+  const legacy = jsonRoundTrip(state) as Record<string, unknown>;
+  legacy.schemaVersion = 6;
+  stripBusinessEventState(legacy);
+  return legacy;
+}
+
+function stripBusinessEventState(state: Record<string, unknown>): void {
+  const operations = state.operations as Record<string, unknown>;
+  const eventRecords = operations.eventRecords as
+    | Array<{ cost: number }>
+    | undefined;
+  const finance = state.finance as Record<string, number>;
+  if (eventRecords && typeof finance.cumulativeExpenses === "number") {
+    finance.cumulativeExpenses = round4(
+      finance.cumulativeExpenses -
+        eventRecords.reduce((total, record) => total + record.cost, 0),
+    );
+  }
+  delete operations.nextEventId;
+  delete operations.nextEventDay;
+  delete operations.pendingEvent;
+  delete operations.eventRecords;
+  delete operations.strategy;
 }
 
 function round4(value: number): number {
   return Math.round((value + Number.EPSILON) * 10_000) / 10_000;
+}
+
+function choosePendingBusinessEvent(state: GameState): GameState {
+  const pending = state.operations.pendingEvent;
+  if (!pending) return state;
+  const choice = getBusinessEventChoice(pending.type, "a").cost <=
+    getBusinessEventChoice(pending.type, "b").cost
+    ? "a"
+    : "b";
+  return reduceGame(state, {
+    type: "CHOOSE_BUSINESS_EVENT",
+    eventId: pending.id,
+    choice,
+  });
+}
+
+function advanceWhileRunning(state: GameState, days: number): GameState {
+  const targetDay = state.day + days;
+  let next = state;
+  while (next.phase === "running" && next.day < targetDay) {
+    if (next.operations.pendingEvent) {
+      next = choosePendingBusinessEvent(next);
+    } else {
+      next = reduceGame(next, {
+        type: "ADVANCE_DAYS",
+        days: targetDay - next.day,
+      });
+    }
+  }
+  return next;
 }
 
 function reachFirstRelease(seed: number, requestSupport = false): GameState {
@@ -70,7 +129,7 @@ function reachFirstRelease(seed: number, requestSupport = false): GameState {
       direction: "recovery",
     });
   }
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 100 });
+  state = advanceWhileRunning(state, 100);
   assert.equal(state.day, 60);
   assert.equal(state.phase, "release-edit");
   assert.ok(state.releaseSlate);
@@ -97,7 +156,9 @@ function submitThree(
 function advanceThroughDecisions(state: GameState, targetDay: number): GameState {
   let next = state;
   while (next.day < targetDay) {
-    if (next.phase === "release-edit") {
+    if (next.operations.pendingEvent) {
+      next = choosePendingBusinessEvent(next);
+    } else if (next.phase === "release-edit") {
       next = submitThree(next);
     } else if (next.phase === "ban-edit") {
       next = reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
@@ -108,6 +169,7 @@ function advanceThroughDecisions(state: GameState, targetDay: number): GameState
       });
     }
   }
+  if (next.operations.pendingEvent) return choosePendingBusinessEvent(next);
   if (next.phase === "release-edit") return submitThree(next);
   if (next.phase === "ban-edit") {
     return reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
@@ -118,7 +180,9 @@ function advanceThroughDecisions(state: GameState, targetDay: number): GameState
 function reachFormerCampaignEnd(seed: number): GameState {
   let state = createInitialGame(seed);
   while (state.day < 419) {
-    if (state.phase === "release-edit") {
+    if (state.operations.pendingEvent) {
+      state = choosePendingBusinessEvent(state);
+    } else if (state.phase === "release-edit") {
       state = submitThree(state);
     } else if (state.phase === "ban-edit") {
       state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
@@ -134,10 +198,10 @@ function reachFormerCampaignEnd(seed: number): GameState {
   return state;
 }
 
-test("accepts schema v6 saves and preserves deterministic continuation", () => {
+test("accepts schema v7 saves and preserves deterministic continuation", () => {
   const initial = createInitialGame(7301);
   const restored = parseGameState(jsonRoundTrip(initial));
-  assert.equal(restored.schemaVersion, 6);
+  assert.equal(restored.schemaVersion, 7);
   assert.deepEqual(restored, initial);
   assert.ok(Buffer.byteLength(JSON.stringify(restored), "utf8") < MAX_SAVE_BYTES);
 
@@ -165,7 +229,7 @@ test("accepts schema v6 saves and preserves deterministic continuation", () => {
   parseGameState(continued);
 });
 
-test("migrates strict schema v3 saves to v6 finance and empty operations", () => {
+test("migrates strict schema v3 saves to v7 finance and event state", () => {
   let source = createCampaignStart(7302);
   source = reduceGame(source, { type: "ADVANCE_DAYS", days: 9 });
   const legacy = asLegacyV3(source);
@@ -175,7 +239,7 @@ test("migrates strict schema v3 saves to v6 finance and empty operations", () =>
   const migrated = parseGameState(legacy);
   assert.equal(isGameState(legacy), false);
   assert.equal(isGameState(migrated), true);
-  assert.equal(migrated.schemaVersion, 6);
+  assert.equal(migrated.schemaVersion, 7);
   assert.equal(
     migrated.finance.cash,
     round4(2.5 + legacyFinance.cumulative * 0.32),
@@ -187,12 +251,22 @@ test("migrates strict schema v3 saves to v6 finance and empty operations", () =>
   assert.equal(migrated.finance.todayOperatingCost, 0);
   assert.equal(migrated.finance.cumulativeOperatingCosts, 0);
   assert.equal(migrated.finance.cumulativeExpenses, 0);
-  assert.deepEqual(migrated.operations, { nextActionId: 1, records: [] });
+  assert.equal(migrated.operations.nextActionId, 1);
+  assert.deepEqual(migrated.operations.records, []);
+  assert.equal(migrated.operations.nextEventId, 1);
+  assert.ok(migrated.operations.nextEventDay! > migrated.day);
+  assert.equal(migrated.operations.pendingEvent, null);
+  assert.deepEqual(migrated.operations.eventRecords, []);
+  assert.deepEqual(migrated.operations.strategy, {
+    audience: 0,
+    product: 0,
+    posture: 0,
+  });
   assert.deepEqual(legacy, untouched, "migration must not mutate its input");
   assert.deepEqual(
     parseGameState(jsonRoundTrip(migrated)),
     migrated,
-    "a migrated save must round-trip as schema v6",
+    "a migrated save must round-trip as schema v7",
   );
 
   const extraLegacyField = structuredClone(legacy);
@@ -210,12 +284,122 @@ test("migrates schema v4 saves without retroactively charging operating costs", 
   const migrated = parseGameState(legacy);
 
   assert.equal(isGameState(legacy), false);
-  assert.equal(migrated.schemaVersion, 6);
+  assert.equal(migrated.schemaVersion, 7);
   assert.equal(migrated.finance.cash, legacyCash);
   assert.equal(migrated.finance.todayOperatingCost, 0);
   assert.equal(migrated.finance.cumulativeOperatingCosts, 0);
   assert.deepEqual(legacy, untouched, "migration must not mutate its input");
   assert.deepEqual(parseGameState(jsonRoundTrip(migrated)), migrated);
+});
+
+test("migrates strict schema v6 saves to neutral business-event state", () => {
+  const source = createInitialGame(7305);
+  const legacy = asLegacyV6(source);
+  const untouched = structuredClone(legacy);
+
+  const migrated = parseGameState(legacy);
+
+  assert.equal(isGameState(legacy), false);
+  assert.equal(migrated.schemaVersion, 7);
+  assert.equal(migrated.operations.nextActionId, source.operations.nextActionId);
+  assert.deepEqual(migrated.operations.records, source.operations.records);
+  assert.equal(migrated.operations.nextEventId, 1);
+  assert.ok(migrated.operations.nextEventDay! > migrated.day);
+  assert.equal(migrated.operations.pendingEvent, null);
+  assert.deepEqual(migrated.operations.eventRecords, []);
+  assert.deepEqual(migrated.operations.strategy, {
+    audience: 0,
+    product: 0,
+    posture: 0,
+  });
+  assert.deepEqual(legacy, untouched, "migration must not mutate its input");
+  assert.deepEqual(parseGameState(jsonRoundTrip(migrated)), migrated);
+});
+
+test("round-trips pending, chosen, and resolved business events", () => {
+  let pending = createInitialGame(7310);
+  pending = reduceGame(pending, { type: "ADVANCE_DAYS", days: 100 });
+  assert.equal(pending.phase, "running");
+  assert.ok(pending.operations.pendingEvent);
+  assert.equal(pending.operations.nextEventDay, null);
+  assert.deepEqual(parseGameState(jsonRoundTrip(pending)), pending);
+
+  const offer = pending.operations.pendingEvent;
+  const chosen = reduceGame(pending, {
+    type: "CHOOSE_BUSINESS_EVENT",
+    eventId: offer.id,
+    choice: "a",
+  });
+  const chosenRecord = chosen.operations.eventRecords[0];
+  assert.equal(chosen.operations.pendingEvent, null);
+  assert.equal(chosen.operations.nextEventId, 2);
+  assert.ok(chosen.operations.nextEventDay! > chosen.day);
+  assert.equal(chosenRecord.id, offer.id);
+  assert.equal(chosenRecord.outcome, "pending");
+  assert.equal(chosenRecord.resolvedDay, undefined);
+  assert.deepEqual(parseGameState(jsonRoundTrip(chosen)), chosen);
+
+  const resolved = advanceThroughDecisions(chosen, chosenRecord.resolutionDay);
+  const resolvedRecord = resolved.operations.eventRecords[0];
+  assert.ok(["success", "backlash"].includes(resolvedRecord.outcome));
+  assert.equal(resolvedRecord.resolvedDay, chosenRecord.resolutionDay);
+  assert.deepEqual(parseGameState(jsonRoundTrip(resolved)), resolved);
+});
+
+test("rejects forged business-event definitions, outcomes, and strategy", () => {
+  type MutableEventSnapshot = {
+    finance: Record<string, number>;
+    operations: {
+      pendingEvent: Record<string, unknown> | null;
+      eventRecords: Array<Record<string, unknown>>;
+      strategy: Record<string, unknown>;
+    };
+  };
+
+  let pending = createInitialGame(7311);
+  pending = reduceGame(pending, { type: "ADVANCE_DAYS", days: 100 });
+  assert.ok(pending.operations.pendingEvent);
+
+  const badType = jsonRoundTrip(pending) as MutableEventSnapshot;
+  badType.operations.pendingEvent!.type = "invented-event";
+  assert.throws(() => parseGameState(badType), SaveSchemaError);
+
+  const chosen = reduceGame(pending, {
+    type: "CHOOSE_BUSINESS_EVENT",
+    eventId: pending.operations.pendingEvent.id,
+    choice: "a",
+  });
+
+  const badChoice = jsonRoundTrip(chosen) as MutableEventSnapshot;
+  badChoice.operations.eventRecords[0].choice = "c";
+  assert.throws(() => parseGameState(badChoice), SaveSchemaError);
+
+  const badCost = jsonRoundTrip(chosen) as MutableEventSnapshot;
+  badCost.operations.eventRecords[0].cost =
+    (badCost.operations.eventRecords[0].cost as number) + 0.01;
+  badCost.finance.cash = round4(badCost.finance.cash - 0.01);
+  badCost.finance.todayOperatingCash = round4(
+    badCost.finance.todayOperatingCash - 0.01,
+  );
+  badCost.finance.cumulativeExpenses = round4(
+    badCost.finance.cumulativeExpenses + 0.01,
+  );
+  assert.throws(() => parseGameState(badCost), SaveSchemaError);
+
+  const badRisk = jsonRoundTrip(chosen) as MutableEventSnapshot;
+  badRisk.operations.eventRecords[0].risk =
+    (badRisk.operations.eventRecords[0].risk as number) + 0.01;
+  assert.throws(() => parseGameState(badRisk), SaveSchemaError);
+
+  const badResolution = jsonRoundTrip(chosen) as MutableEventSnapshot;
+  badResolution.operations.eventRecords[0].resolutionDay =
+    (badResolution.operations.eventRecords[0].resolutionDay as number) + 1;
+  assert.throws(() => parseGameState(badResolution), SaveSchemaError);
+
+  const badStrategy = jsonRoundTrip(chosen) as MutableEventSnapshot;
+  badStrategy.operations.strategy.audience =
+    (badStrategy.operations.strategy.audience as number) + 1;
+  assert.throws(() => parseGameState(badStrategy), SaveSchemaError);
 });
 
 test("migrates schema v5 and reopens former DAY 419 endings for v3-v5", () => {
@@ -228,7 +412,7 @@ test("migrates schema v5 and reopens former DAY 419 endings for v3-v5", () => {
     const untouched = structuredClone(legacy);
 
     const migrated = parseGameState(legacy);
-    assert.equal(migrated.schemaVersion, 6);
+    assert.equal(migrated.schemaVersion, 7);
     assert.equal(migrated.day, 419);
     assert.equal(migrated.phase, "running");
     assert.deepEqual(legacy, untouched, "migration must not mutate its input");
@@ -248,7 +432,7 @@ test("migrates schema v5 and reopens former DAY 419 endings for v3-v5", () => {
       collapsedFinance.todayOperatingCost = 0;
     }
     const collapsed = parseGameState(collapsedLegacy);
-    assert.equal(collapsed.schemaVersion, 6, `legacy index ${index}`);
+    assert.equal(collapsed.schemaVersion, 7, `legacy index ${index}`);
     assert.equal(collapsed.day, 419);
     assert.equal(collapsed.phase, "ended");
   }
@@ -347,7 +531,7 @@ test("cross-validates applied support waves and rejects a forged fourth product"
       themeId: targetId,
       direction: "consistency",
     });
-    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 100 });
+    state = advanceWhileRunning(state, 100);
     const requested = state.releaseSlate?.options.find(
       (option) => option.requested && option.themeId === targetId,
     );
@@ -363,13 +547,13 @@ test("cross-validates applied support waves and rejects a forged fourth product"
         powerAdjustment: 3,
       })),
     });
-    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+    state = advanceWhileRunning(state, 1);
     if (wave < 3) {
-      state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
+      state = advanceWhileRunning(state, 15);
       if (state.phase === "ban-edit") {
         assert.equal(state.day, 105);
         state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
-        state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+        state = advanceWhileRunning(state, 1);
       }
     }
   }
@@ -387,7 +571,7 @@ test("cross-validates applied support waves and rejects a forged fourth product"
   }
   assert.throws(() => parseGameState(mismatchedRuntime), SaveSchemaError);
 
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 100 });
+  state = advanceWhileRunning(state, 100);
   assert.equal(state.day, 150);
   const forgedFourth = structuredClone(state);
   const otherThemeIds = state.activeThemeIds.filter((id) => id !== targetId).slice(0, 2);
@@ -411,8 +595,10 @@ test("accepts every decision gate through campaign termination", () => {
   let checkedLatePackOdds = false;
   while (game.phase !== "ended") {
     decisions += 1;
-    assert.ok(decisions < 100, "campaign should terminate within its fixed gates");
-    if (game.phase === "release-edit") {
+    assert.ok(decisions < 200, "campaign should terminate within its fixed gates");
+    if (game.operations.pendingEvent) {
+      game = choosePendingBusinessEvent(game);
+    } else if (game.phase === "release-edit") {
       game = submitThree(game);
     } else if (game.phase === "ban-edit") {
       game = reduceGame(game, { type: "SUBMIT_BAN", changes: {} });
@@ -594,10 +780,7 @@ test("rejects malformed business-action records and finance totals", () => {
     type: "RUN_BUSINESS_ACTION",
     action: "pack-odds",
   });
-  appliedPackOdds = reduceGame(appliedPackOdds, {
-    type: "ADVANCE_DAYS",
-    days: 100,
-  });
+  appliedPackOdds = advanceWhileRunning(appliedPackOdds, 100);
   appliedPackOdds = submitThree(appliedPackOdds);
   const forgedOverduePending = structuredClone(appliedPackOdds);
   const forgedPackRecord = forgedOverduePending.operations.records.at(-1)!;

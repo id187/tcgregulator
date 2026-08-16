@@ -53,6 +53,12 @@ import {
   type StrategicBusinessActionType,
 } from "./game/business-actions";
 import {
+  BUSINESS_EVENT_BY_TYPE,
+  BUSINESS_STRATEGY_AXES,
+  BUSINESS_STRATEGY_AXIS_LABELS,
+  getBusinessEventResult,
+} from "./game/business-events";
+import {
   canProposeSupport,
   createCampaignStart,
   createInitialGame,
@@ -79,6 +85,8 @@ import {
 import type {
   BusinessActionRecord,
   BusinessActionType,
+  BusinessEventChoice,
+  BusinessEventRecord,
   CommunityEvent,
   GameCommand,
   GameState,
@@ -234,6 +242,31 @@ function getBusinessTransitionToast(previous: GameState, next: GameState) {
         ? `${BUSINESS_ACTION_BY_TYPE[record.type].title}이 성공했습니다. ₩${formatRevenue(record.cashReturn ?? 0)}을 회수했습니다.`
         : "챔피언십이 흥행했습니다. 대회 유입 효과가 시작됩니다.";
     }
+  }
+  return null;
+}
+
+function getBusinessEventTransitionToast(
+  previous: GameState,
+  next: GameState,
+) {
+  for (const record of [...next.operations.eventRecords].reverse()) {
+    const previousRecord = previous.operations.eventRecords.find(
+      (candidate) => candidate.id === record.id,
+    );
+    if (
+      !previousRecord ||
+      previousRecord.outcome === record.outcome ||
+      record.outcome === "pending"
+    ) {
+      continue;
+    }
+    const result = getBusinessEventResult(
+      record.type,
+      record.choice,
+      record.outcome,
+    );
+    return `${result.headline} — ${result.body}`;
   }
   return null;
 }
@@ -1506,6 +1539,8 @@ function GameSession({
   );
   const initialTab: TabId = guided
     ? getGuidedInitialTab(initialGame)
+    : initialGame.operations.pendingEvent
+      ? "operations"
     : initialGame.phase === "ban-edit"
       ? "restrictions"
       : initialGame.phase === "release-edit"
@@ -1544,6 +1579,8 @@ function GameSession({
   const dialogRef = useRef<HTMLDivElement>(null);
   const packOddsDialogRef = useRef<HTMLDivElement>(null);
   const packOddsCancelRef = useRef<HTMLButtonElement>(null);
+  const businessEventDialogRef = useRef<HTMLDivElement>(null);
+  const businessEventChoiceRef = useRef<HTMLButtonElement>(null);
   const detailHeadingRef = useRef<HTMLHeadingElement>(null);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const saveFailureReportedRef = useRef(false);
@@ -1655,6 +1692,44 @@ function GameSession({
     };
   }, [packOddsConfirmOpen, strategicConfirmAction]);
 
+  useEffect(() => {
+    if (!game.operations.pendingEvent) return;
+    const previousBodyOverflow = document.body.style.overflow;
+    const frame = window.requestAnimationFrame(() => {
+      const firstAvailable = businessEventDialogRef.current?.querySelector<HTMLElement>(
+        "button:not(:disabled)",
+      );
+      (firstAvailable ?? businessEventChoiceRef.current)?.focus({
+        preventScroll: true,
+      });
+    });
+    const keepFocusInside = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const focusables = Array.from(
+        businessEventDialogRef.current?.querySelectorAll<HTMLElement>(
+          "button:not(:disabled)",
+        ) ?? [],
+      );
+      if (focusables.length === 0) return;
+      const currentIndex = focusables.indexOf(
+        document.activeElement as HTMLElement,
+      );
+      const direction = event.shiftKey ? -1 : 1;
+      const nextIndex = currentIndex < 0
+        ? 0
+        : (currentIndex + direction + focusables.length) % focusables.length;
+      event.preventDefault();
+      focusables[nextIndex].focus({ preventScroll: true });
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", keepFocusInside);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", keepFocusInside);
+      document.body.style.overflow = previousBodyOverflow;
+    };
+  }, [game.operations.pendingEvent]);
+
   const rankedThemes = useMemo(
     () =>
       game.activeThemeIds.map((themeId) => THEME_BY_ID[themeId]).sort(
@@ -1714,7 +1789,12 @@ function GameSession({
     ? game.day
     : decisionsComplete
       ? CAMPAIGN_END_DAY
-      : Math.min(nextReleaseDay, nextBanDay, CAMPAIGN_END_DAY);
+      : Math.min(
+          nextReleaseDay,
+          nextBanDay,
+          game.operations.nextEventDay ?? Number.POSITIVE_INFINITY,
+          CAMPAIGN_END_DAY,
+        );
   const total = totalUsers(game);
   const gameOver = total <= 0;
   const campaignComplete = game.phase === "ended" && !gameOver;
@@ -1843,6 +1923,11 @@ function GameSession({
 
   function advance(days: number) {
     if (game.phase === "ended") return null;
+    if (game.operations.pendingEvent) {
+      setToast("도착한 돌발 경영 이벤트의 사업 방향을 먼저 선택해야 합니다.");
+      activateTab("operations", true);
+      return null;
+    }
     if (game.phase !== "running") {
       setToast(
         game.phase === "release-edit"
@@ -1853,11 +1938,30 @@ function GameSession({
     }
     const next = dispatch({ type: "ADVANCE_DAYS", days });
     const businessToast = getBusinessTransitionToast(game, next);
+    const eventResultToast = getBusinessEventTransitionToast(game, next);
+    const eventArrived =
+      !game.operations.pendingEvent && next.operations.pendingEvent;
     showImpact(next);
-    if (next.phase === "ban-edit") {
+    if (eventArrived) {
+      const definition = BUSINESS_EVENT_BY_TYPE[eventArrived.type];
+      setToast(
+        [
+          `DAY ${next.day} 돌발 경영 이벤트: ${definition.title}`,
+          eventResultToast,
+          businessToast,
+        ]
+          .filter(Boolean)
+          .join(" "),
+      );
+      activateTab("operations", true);
+    } else if (next.phase === "ban-edit") {
       setBanDraft(makeRestrictionDraft(next));
       setToast(
-        [`DAY ${next.day} 금제위원회가 열렸습니다.`, businessToast]
+        [
+          `DAY ${next.day} 금제위원회가 열렸습니다.`,
+          eventResultToast,
+          businessToast,
+        ]
           .filter(Boolean)
           .join(" "),
       );
@@ -1865,14 +1969,22 @@ function GameSession({
     } else if (next.phase === "release-edit") {
       setReleaseDraft({});
       setToast(
-        [`DAY ${next.day} 발매 시안 6개가 도착했습니다.`, businessToast]
+        [
+          `DAY ${next.day} 발매 시안 6개가 도착했습니다.`,
+          eventResultToast,
+          businessToast,
+        ]
           .filter(Boolean)
           .join(" "),
       );
       activateTab("releases", true);
     } else {
       setToast(
-        [`DAY ${next.day}까지 진행했습니다.`, businessToast]
+        [
+          `DAY ${next.day}까지 진행했습니다.`,
+          eventResultToast,
+          businessToast,
+        ]
           .filter(Boolean)
           .join(" "),
       );
@@ -1882,6 +1994,30 @@ function GameSession({
 
   function advanceToNextEvent() {
     advance(Math.max(1, nearestEventDay - game.day));
+  }
+
+  function chooseBusinessEvent(choice: BusinessEventChoice) {
+    const pending = game.operations.pendingEvent;
+    if (!pending) return;
+    const definition = BUSINESS_EVENT_BY_TYPE[pending.type];
+    const selected = definition.choices.find(
+      (candidate) => candidate.id === choice,
+    );
+    if (!selected) return;
+    if (game.finance.cash + 1e-9 < selected.cost) {
+      setToast("이 선택을 실행할 운영자금이 부족합니다.");
+      return;
+    }
+    const next = dispatch({
+      type: "CHOOSE_BUSINESS_EVENT",
+      eventId: pending.id,
+      choice,
+    });
+    const record = next.operations.eventRecords.at(-1);
+    setToast(
+      `${selected.title} 방향을 선택했습니다. 결과는 DAY ${record?.resolutionDay ?? next.day + selected.resolutionDelay}에 발표됩니다.`,
+    );
+    activateTab("operations", true);
   }
 
   function selectTheme(themeId: ThemeId, partId?: string) {
@@ -2365,6 +2501,9 @@ function GameSession({
               {item.id === "releases" && game.phase === "release-edit" ? (
                 <span className="nav-count nav-alert">!</span>
               ) : null}
+              {item.id === "operations" && game.operations.pendingEvent ? (
+                <span className="nav-count nav-alert">!</span>
+              ) : null}
             </button>
           ))}
         </div>
@@ -2589,14 +2728,22 @@ function GameSession({
         </div>
         <div className="time-actions">
           <button
-            disabled={guided || game.phase !== "running"}
+            disabled={
+              guided ||
+              game.phase !== "running" ||
+              Boolean(game.operations.pendingEvent)
+            }
             onClick={() => advance(1)}
             type="button"
           >
             +1일
           </button>
           <button
-            disabled={guided || game.phase !== "running"}
+            disabled={
+              guided ||
+              game.phase !== "running" ||
+              Boolean(game.operations.pendingEvent)
+            }
             onClick={() => advance(7)}
             type="button"
           >
@@ -2612,6 +2759,7 @@ function GameSession({
             }
             disabled={
               game.phase !== "running" ||
+              Boolean(game.operations.pendingEvent) ||
               (guided &&
                 !guidedStep.endsWith("advance") &&
                 guidedStep !== "day46-start") ||
@@ -2629,6 +2777,16 @@ function GameSession({
           </button>
         </div>
       </footer>
+
+      {game.operations.pendingEvent ? (
+        <BusinessEventDialog
+          cash={game.finance.cash}
+          choiceButtonRef={businessEventChoiceRef}
+          dialogRef={businessEventDialogRef}
+          event={game.operations.pendingEvent}
+          onChoose={chooseBusinessEvent}
+        />
+      ) : null}
 
       {supportTarget ? (
         <SupportDialog
@@ -2710,6 +2868,102 @@ function GameSession({
           targetKey={guidedTargetKey}
         />
       ) : null}
+    </div>
+  );
+}
+
+function BusinessEventDialog({
+  cash,
+  choiceButtonRef,
+  dialogRef,
+  event,
+  onChoose,
+}: {
+  cash: number;
+  choiceButtonRef: React.RefObject<HTMLButtonElement | null>;
+  dialogRef: React.RefObject<HTMLDivElement | null>;
+  event: NonNullable<GameState["operations"]["pendingEvent"]>;
+  onChoose: (choice: BusinessEventChoice) => void;
+}) {
+  const definition = BUSINESS_EVENT_BY_TYPE[event.type];
+  return (
+    <div className="business-event-layer">
+      <div
+        aria-describedby="business-event-description"
+        aria-labelledby="business-event-title"
+        aria-modal="true"
+        className="business-event-dialog"
+        ref={dialogRef}
+        role="alertdialog"
+      >
+        <header className="business-event-heading">
+          <div aria-hidden="true" className="business-event-signal">!</div>
+          <div>
+            <span>{definition.kicker} · DAY {event.appearedDay}</span>
+            <h2 id="business-event-title">{definition.title}</h2>
+            <p id="business-event-description">{definition.situation}</p>
+          </div>
+        </header>
+
+        <div className="business-event-choice-grid">
+          {definition.choices.map((choice, index) => {
+            const affordable = cash + 1e-9 >= choice.cost;
+            return (
+              <article className="business-event-choice" key={choice.id}>
+                <div className="business-event-choice-title">
+                  <span>OPTION {choice.id.toUpperCase()}</span>
+                  <strong>{choice.title}</strong>
+                  <p>{choice.summary}</p>
+                </div>
+                <dl className="business-event-choice-facts">
+                  <div>
+                    <dt>즉시 비용</dt>
+                    <dd>{choice.cost > 0 ? `₩${formatRevenue(choice.cost)}` : "없음"}</dd>
+                  </div>
+                  <div>
+                    <dt>역풍 가능성</dt>
+                    <dd>{Math.round(choice.risk * 100)}%</dd>
+                  </div>
+                  <div>
+                    <dt>결과 발표</dt>
+                    <dd>DAY {event.appearedDay + choice.resolutionDelay}</dd>
+                  </div>
+                </dl>
+                <div className="business-event-strategy-deltas" aria-label="장기 사업 노선 변화">
+                  {BUSINESS_STRATEGY_AXES.map((axis) => {
+                    const delta = choice.strategyDelta[axis];
+                    const labels = BUSINESS_STRATEGY_AXIS_LABELS[axis];
+                    return (
+                      <span className={delta >= 0 ? "positive" : "negative"} key={axis}>
+                        {delta === 0
+                          ? "노선 유지"
+                          : `${delta > 0 ? labels.positive : labels.negative} ${delta > 0 ? "+" : ""}${delta}`}
+                      </span>
+                    );
+                  })}
+                </div>
+                <div className="business-event-outcomes">
+                  <p><b>성공</b> {choice.results.success.headline}</p>
+                  <p><b>역풍</b> {choice.results.backlash.headline}</p>
+                </div>
+                <button
+                  className="business-event-choose"
+                  disabled={!affordable}
+                  onClick={() => onChoose(choice.id)}
+                  ref={index === 0 ? choiceButtonRef : undefined}
+                  type="button"
+                >
+                  {affordable ? `${choice.title} 선택` : "운영자금 부족"}
+                </button>
+              </article>
+            );
+          })}
+        </div>
+        <footer className="business-event-footnote">
+          <span>선택 전에는 시간이 진행되지 않습니다.</span>
+          <strong>보유 운영자금 · ₩{formatRevenue(cash)}</strong>
+        </footer>
+      </div>
     </div>
   );
 }
@@ -4726,6 +4980,7 @@ function OperationsView({
       ? "주의"
       : "위험";
   const records = [...game.operations.records].reverse();
+  const eventRecords = [...game.operations.eventRecords].reverse();
   const activeRecords = records.filter(
     (record) =>
       record.outcome === "pending" ||
@@ -4735,6 +4990,23 @@ function OperationsView({
           record.outcome === "success" ||
           record.outcome === "backlash")),
   );
+  const pendingEventResults = eventRecords.filter(
+    (record) => record.outcome === "pending",
+  );
+  const recentDecisions = [
+    ...records.map((record) => ({
+      kind: "action" as const,
+      day: record.startedDay,
+      record,
+    })),
+    ...eventRecords.map((record) => ({
+      kind: "event" as const,
+      day: record.appearedDay,
+      record,
+    })),
+  ]
+    .sort((left, right) => right.day - left.day)
+    .slice(0, 8);
 
   return (
     <section className="subpage operations-page">
@@ -4782,6 +5054,39 @@ function OperationsView({
           value={`${Math.round(environmentHealth)} · ${environmentLabel}`}
         />
       </div>
+
+      <section className="operations-strategy-strip" aria-labelledby="business-strategy-title">
+        <div className="operations-strategy-heading">
+          <div>
+            <span>LONG-TERM DIRECTION</span>
+            <strong id="business-strategy-title">누적 사업 노선</strong>
+          </div>
+          <small>
+            다음 돌발 이벤트 · {game.operations.pendingEvent
+              ? "선택 대기"
+              : game.operations.nextEventDay === null
+                ? "일정 종료"
+                : "예고 없음"}
+          </small>
+        </div>
+        <div className="operations-strategy-axes">
+          {BUSINESS_STRATEGY_AXES.map((axis) => {
+            const value = game.operations.strategy[axis];
+            const labels = BUSINESS_STRATEGY_AXIS_LABELS[axis];
+            return (
+              <div className="operations-strategy-axis" key={axis}>
+                <span>{labels.negative}</span>
+                <div aria-hidden="true">
+                  <i />
+                  <b style={{ left: `${(value + 100) / 2}%` }} />
+                </div>
+                <span>{labels.positive}</span>
+                <strong>{value === 0 ? "중립" : `${value > 0 ? "+" : ""}${value}`}</strong>
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
       <div className="operations-workspace">
         <section className="operations-action-panel" aria-labelledby="business-actions-title">
@@ -4894,9 +5199,9 @@ function OperationsView({
                 <span className="eyebrow">IN PROGRESS</span>
                 <h2>진행 중</h2>
               </div>
-              <span>{activeRecords.length}건</span>
+              <span>{activeRecords.length + pendingEventResults.length}건</span>
             </div>
-            {activeRecords.length > 0 ? (
+            {activeRecords.length + pendingEventResults.length > 0 ? (
               <div className="operations-record-list active">
                 {activeRecords.map((record) => {
                   const definition = BUSINESS_ACTION_BY_TYPE[record.type];
@@ -4918,6 +5223,32 @@ function OperationsView({
                     </article>
                   );
                 })}
+                {pendingEventResults.map((record) => {
+                  const definition = BUSINESS_EVENT_BY_TYPE[record.type];
+                  const choice = definition.choices.find(
+                    (candidate) => candidate.id === record.choice,
+                  );
+                  const remaining = Math.max(0, record.resolutionDay - game.day);
+                  return (
+                    <article className="operations-record event-result-pending" key={`event-active-${record.id}`}>
+                      <div>
+                        <strong>{definition.title}</strong>
+                        <span>결과 심사 · D-{remaining}</span>
+                      </div>
+                      <div
+                        aria-label={`${Math.round((1 - remaining / Math.max(1, record.resolutionDay - record.appearedDay)) * 100)}% 진행`}
+                        aria-valuemax={100}
+                        aria-valuemin={0}
+                        aria-valuenow={Math.round((1 - remaining / Math.max(1, record.resolutionDay - record.appearedDay)) * 100)}
+                        className="operations-record-progress"
+                        role="progressbar"
+                      >
+                        <span style={{ width: `${Math.max(0, Math.min(100, (1 - remaining / Math.max(1, record.resolutionDay - record.appearedDay)) * 100))}%` }} />
+                      </div>
+                      <small>{choice?.title ?? record.choice} · DAY {record.resolutionDay} 결과 발표</small>
+                    </article>
+                  );
+                })}
               </div>
             ) : (
               <p className="operations-empty">진행 중인 사업 액션이 없습니다.</p>
@@ -4932,21 +5263,45 @@ function OperationsView({
               </div>
               <span>최근 8건</span>
             </div>
-            {records.length > 0 ? (
+            {recentDecisions.length > 0 ? (
               <div className="operations-record-list history">
-                {records.slice(0, 8).map((record) => (
-                  <article className={`operations-record outcome-${record.outcome}`} key={`history-${record.id}`}>
-                    <div>
-                      <strong>{BUSINESS_ACTION_BY_TYPE[record.type].title}</strong>
-                      <span>{getBusinessRecordStatus(record, game.day)}</span>
-                    </div>
-                    <small>
-                      DAY {record.startedDay} · ₩{formatRevenue(record.cost)}
-                      {record.risk !== undefined ? ` · 위험 ${Math.round(record.risk * 100)}%` : ""}
-                      {record.cashReturn !== undefined ? ` · 회수 ₩${formatRevenue(record.cashReturn)}` : ""}
-                    </small>
-                  </article>
-                ))}
+                {recentDecisions.map((entry) => {
+                  if (entry.kind === "action") {
+                    const record = entry.record;
+                    return (
+                      <article className={`operations-record outcome-${record.outcome}`} key={`history-${record.id}`}>
+                        <div>
+                          <strong>{BUSINESS_ACTION_BY_TYPE[record.type].title}</strong>
+                          <span>{getBusinessRecordStatus(record, game.day)}</span>
+                        </div>
+                        <small>
+                          DAY {record.startedDay} · ₩{formatRevenue(record.cost)}
+                          {record.risk !== undefined ? ` · 위험 ${Math.round(record.risk * 100)}%` : ""}
+                          {record.cashReturn !== undefined ? ` · 회수 ₩${formatRevenue(record.cashReturn)}` : ""}
+                        </small>
+                      </article>
+                    );
+                  }
+                  const record: BusinessEventRecord = entry.record;
+                  const definition = BUSINESS_EVENT_BY_TYPE[record.type];
+                  const choice = definition.choices.find(
+                    (candidate) => candidate.id === record.choice,
+                  );
+                  const result = record.outcome === "pending"
+                    ? null
+                    : getBusinessEventResult(record.type, record.choice, record.outcome);
+                  return (
+                    <article className={`operations-record event-record outcome-${record.outcome}`} key={`event-history-${record.id}`}>
+                      <div>
+                        <strong>{definition.title}</strong>
+                        <span>{result?.headline ?? `DAY ${record.resolutionDay} 결과 대기`}</span>
+                      </div>
+                      <small>
+                        DAY {record.appearedDay} · {choice?.title ?? record.choice} · 비용 {record.cost > 0 ? `₩${formatRevenue(record.cost)}` : "없음"} · 역풍 {Math.round(record.risk * 100)}%
+                      </small>
+                    </article>
+                  );
+                })}
               </div>
             ) : (
               <p className="operations-empty">아직 집행 기록이 없습니다.</p>

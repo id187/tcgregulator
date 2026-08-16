@@ -5,9 +5,13 @@ import {
   THEME_BY_ID,
 } from "./content.ts";
 import {
+  BEGINNER_CAMP_COPY,
+  COLLECTOR_FAIR_COPY,
   getAnimationPromotionCopy,
+  LOCAL_LEAGUE_COPY,
   PACK_ODDS_DETECTED_COPY,
   PACK_ODDS_RUMOR_COPY,
+  REPRINT_CAMPAIGN_COPY,
   STORE_TOUR_COPY,
   TOURNAMENT_BACKLASH_COPY,
   TOURNAMENT_SUCCESS_COPY,
@@ -57,6 +61,10 @@ const BUSINESS_CONTEXT_QUOTA = {
   animation: [10, 8, 6, 4, 2],
   "tv-cm": [8, 6, 4, 2],
   "store-tour": [8, 6, 4, 2],
+  "beginner-camp": [8, 6, 4, 2],
+  "local-league": [8, 6, 4, 2],
+  "reprint-campaign": [8, 6, 4, 2],
+  "collector-fair": [8, 6, 4, 2],
 } as const;
 
 function fillCommunityCopy(
@@ -3878,6 +3886,14 @@ export function getCommunityHeat(state: GameState, day: number): number {
           return 64;
         case "store-tour":
           return 58;
+        case "beginner-camp":
+          return 62;
+        case "local-league":
+          return 68;
+        case "reprint-campaign":
+          return 64;
+        case "collector-fair":
+          return 66;
       }
     }),
   );
@@ -4029,7 +4045,11 @@ function businessCommunityContexts(
     if (
       record.type === "animation-promotion" ||
       record.type === "tv-cm" ||
-      record.type === "store-tour"
+      record.type === "store-tour" ||
+      record.type === "beginner-camp" ||
+      record.type === "local-league" ||
+      record.type === "reprint-campaign" ||
+      record.type === "collector-fair"
     ) {
       const age = day - record.startedDay - 1;
       const kind = record.type === "animation-promotion"
@@ -4055,6 +4075,10 @@ function businessCommunityContexts(
     animation: 7,
     "tv-cm": 8,
     "store-tour": 9,
+    "beginner-camp": 10,
+    "local-league": 11,
+    "reprint-campaign": 12,
+    "collector-fair": 13,
   };
   return contexts.sort(
     (left, right) =>
@@ -4102,6 +4126,14 @@ function businessCommunityPool(
       return TV_CM_COPY;
     case "store-tour":
       return STORE_TOUR_COPY;
+    case "beginner-camp":
+      return BEGINNER_CAMP_COPY;
+    case "local-league":
+      return LOCAL_LEAGUE_COPY;
+    case "reprint-campaign":
+      return REPRINT_CAMPAIGN_COPY;
+    case "collector-fair":
+      return COLLECTOR_FAIR_COPY;
   }
 }
 
@@ -4155,7 +4187,9 @@ function makeBusinessCommunityPosts(
         context.kind === "venture-backlash" ||
         context.kind === "pack-detected" ||
         context.kind === "tournament-backlash";
-      const category: CommunityCategory = context.kind.startsWith("venture")
+      const category: CommunityCategory = context.kind === "local-league"
+        ? "meta"
+        : context.kind.startsWith("venture")
         ? context.ventureAction === "season-overhaul" ? "meta" : "finance"
         : context.kind.startsWith("pack")
           ? "finance"

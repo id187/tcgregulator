@@ -7,6 +7,20 @@ import {
 } from "./content.ts";
 import { BUSINESS_ACTION_BY_TYPE } from "./business-actions.ts";
 import {
+  BUSINESS_EVENT_START_DAY,
+  BUSINESS_EVENT_TYPES,
+  BUSINESS_STRATEGY_MAX,
+  BUSINESS_STRATEGY_MIN,
+  BUSINESS_STRATEGY_AXES,
+  EMPTY_BUSINESS_STRATEGY,
+  applyBusinessStrategyDelta,
+  getBusinessEventChoice,
+  getBusinessEventOutcome,
+  getBusinessEventType,
+  getInitialBusinessEventDay,
+  getNextBusinessEventDay,
+} from "./business-events.ts";
+import {
   BAN_INTERVAL,
   CAMPAIGN_END_DAY,
   FIRST_BAN_DAY,
@@ -19,6 +33,9 @@ import {
   OPERATING_COST_START_DAY,
 } from "./finance.ts";
 import type {
+  BusinessEventChoice,
+  BusinessEventOutcome,
+  BusinessEventType,
   BusinessActionOutcome,
   BusinessActionType,
   BusinessRiskFactor,
@@ -163,6 +180,10 @@ const BUSINESS_ACTION_TYPES = new Set<BusinessActionType>([
   "animation-promotion",
   "championship",
   "store-tour",
+  "beginner-camp",
+  "local-league",
+  "reprint-campaign",
+  "collector-fair",
   "pack-odds",
   "season-overhaul",
   "global-launch",
@@ -200,6 +221,30 @@ const BUSINESS_ACTION_OUTCOMES = new Set<BusinessActionOutcome>([
   "clean",
   "detected",
 ]);
+
+const BUSINESS_EVENT_TYPE_SET = new Set<BusinessEventType>(
+  BUSINESS_EVENT_TYPES,
+);
+
+const BUSINESS_EVENT_CHOICES = new Set<BusinessEventChoice>(["a", "b"]);
+
+const BUSINESS_EVENT_OUTCOMES = new Set<BusinessEventOutcome>([
+  "pending",
+  "success",
+  "backlash",
+]);
+
+const LEGACY_OPERATIONS_KEYS = ["nextActionId", "records"] as const;
+
+const OPERATIONS_KEYS = [
+  "nextActionId",
+  "records",
+  "nextEventId",
+  "nextEventDay",
+  "pendingEvent",
+  "eventRecords",
+  "strategy",
+] as const;
 
 const SUPPORT_DIRECTIONS = new Set<SupportDirection>([
   "consistency",
@@ -379,10 +424,48 @@ function expectNullableDay(
   return day;
 }
 
+function createMigratedBusinessEventState(
+  seed: number,
+  currentDay: number,
+  campaignEnded: boolean,
+): UnknownRecord {
+  const initialEventDay = getInitialBusinessEventDay(seed);
+  return {
+    nextEventId: 1,
+    nextEventDay: campaignEnded
+      ? null
+      : currentDay < initialEventDay
+        ? initialEventDay
+        : getNextBusinessEventDay(seed, currentDay, 1),
+    pendingEvent: null,
+    eventRecords: [],
+    strategy: { ...EMPTY_BUSINESS_STRATEGY },
+  };
+}
+
+function migrateLegacyOperations(
+  value: unknown,
+  seed: number,
+  currentDay: number,
+  campaignEnded: boolean,
+): UnknownRecord {
+  const legacy = expectRecord(
+    value,
+    "$.operations",
+    LEGACY_OPERATIONS_KEYS,
+  );
+  return {
+    ...legacy,
+    ...createMigratedBusinessEventState(seed, currentDay, campaignEnded),
+  };
+}
+
 function migrateLegacyV3(value: UnknownRecord): UnknownRecord {
   const legacy = expectRecord(value, "$", LEGACY_V3_TOP_LEVEL_KEYS);
-  expectNumber(legacy.day, "$.day", 1, 419, true);
+  const seed = expectNumber(legacy.seed, "$.seed", 0, 0xffffffff, true);
+  const day = expectNumber(legacy.day, "$.day", 1, 419, true);
   expectString(legacy.phase, "$.phase", 20);
+  const phase = reopenFormerCampaignEnd(legacy);
   const finance = expectRecord(legacy.finance, "$.finance", [
     "today",
     "rolling30",
@@ -403,8 +486,8 @@ function migrateLegacyV3(value: UnknownRecord): UnknownRecord {
 
   return {
     ...legacy,
-    schemaVersion: 6,
-    phase: reopenFormerCampaignEnd(legacy),
+    schemaVersion: 7,
+    phase,
     finance: {
       ...finance,
       cash: round(INITIAL_OPERATING_CASH + cumulative * OPERATING_CASH_MARGIN),
@@ -416,6 +499,7 @@ function migrateLegacyV3(value: UnknownRecord): UnknownRecord {
     operations: {
       nextActionId: 1,
       records: [],
+      ...createMigratedBusinessEventState(seed, day, phase === "ended"),
     },
   };
 }
@@ -436,8 +520,10 @@ function reopenFormerCampaignEnd(legacy: UnknownRecord): unknown {
 
 function migrateLegacyV4(value: UnknownRecord): UnknownRecord {
   const legacy = expectRecord(value, "$", TOP_LEVEL_KEYS);
-  expectNumber(legacy.day, "$.day", 1, 419, true);
+  const seed = expectNumber(legacy.seed, "$.seed", 0, 0xffffffff, true);
+  const day = expectNumber(legacy.day, "$.day", 1, 419, true);
   expectString(legacy.phase, "$.phase", 20);
+  const phase = reopenFormerCampaignEnd(legacy);
   const finance = expectRecord(
     legacy.finance,
     "$.finance",
@@ -445,25 +531,57 @@ function migrateLegacyV4(value: UnknownRecord): UnknownRecord {
   );
   return {
     ...legacy,
-    schemaVersion: 6,
-    phase: reopenFormerCampaignEnd(legacy),
+    schemaVersion: 7,
+    phase,
     finance: {
       ...finance,
       todayOperatingCost: 0,
       cumulativeOperatingCosts: 0,
     },
+    operations: migrateLegacyOperations(
+      legacy.operations,
+      seed,
+      day,
+      phase === "ended",
+    ),
   };
 }
 
 function migrateLegacyV5(value: UnknownRecord): UnknownRecord {
   const legacy = expectRecord(value, "$", TOP_LEVEL_KEYS);
-  expectNumber(legacy.day, "$.day", 1, 419, true);
+  const seed = expectNumber(legacy.seed, "$.seed", 0, 0xffffffff, true);
+  const day = expectNumber(legacy.day, "$.day", 1, 419, true);
   expectString(legacy.phase, "$.phase", 20);
+  const phase = reopenFormerCampaignEnd(legacy);
 
   return {
     ...legacy,
-    schemaVersion: 6,
-    phase: reopenFormerCampaignEnd(legacy),
+    schemaVersion: 7,
+    phase,
+    operations: migrateLegacyOperations(
+      legacy.operations,
+      seed,
+      day,
+      phase === "ended",
+    ),
+  };
+}
+
+function migrateLegacyV6(value: UnknownRecord): UnknownRecord {
+  const legacy = expectRecord(value, "$", TOP_LEVEL_KEYS);
+  const seed = expectNumber(legacy.seed, "$.seed", 0, 0xffffffff, true);
+  const day = expectNumber(legacy.day, "$.day", 1, MAX_DAY, true);
+  const phase = expectString(legacy.phase, "$.phase", 20);
+
+  return {
+    ...legacy,
+    schemaVersion: 7,
+    operations: migrateLegacyOperations(
+      legacy.operations,
+      seed,
+      day,
+      phase === "ended",
+    ),
   };
 }
 
@@ -472,18 +590,27 @@ function normalizeSaveVersion(value: unknown): UnknownRecord {
     fail("$", "must be an object");
   }
   const record = value as UnknownRecord;
-  if (record.schemaVersion === 6) return record;
+  if (record.schemaVersion === 7) return record;
+  if (record.schemaVersion === 6) return migrateLegacyV6(record);
   if (record.schemaVersion === 5) return migrateLegacyV5(record);
   if (record.schemaVersion === 4) return migrateLegacyV4(record);
   if (record.schemaVersion === 3) return migrateLegacyV3(record);
   fail(
     "$.schemaVersion",
-    "must equal 6 or be a migratable schema v3/v4/v5 save",
+    "must equal 7 or be a migratable schema v3/v4/v5/v6 save",
   );
 }
 
 function isReleaseDay(day: number): boolean {
   return day > 0 && day <= LAST_RELEASE_DAY && day % RELEASE_INTERVAL === 0;
+}
+
+function isRestrictionDay(day: number): boolean {
+  return (
+    day >= FIRST_BAN_DAY &&
+    day <= LAST_DECISION_DAY &&
+    (day - FIRST_BAN_DAY) % BAN_INTERVAL === 0
+  );
 }
 
 function expectedTierForPower(power: number): ExpectedTier {
@@ -636,15 +763,316 @@ function validateThemeRuntime(
   }
 }
 
+function validateBusinessEvents(
+  operations: UnknownRecord,
+  currentDay: number,
+  currentPhase: GameState["phase"],
+  historyLastDay: number,
+  seed: number,
+): number {
+  const eventRecords = expectArray(
+    operations.eventRecords,
+    "$.operations.eventRecords",
+    MAX_DAY,
+  );
+  let expectedStrategy = { ...EMPTY_BUSINESS_STRATEGY };
+  let previousAppearedDay = -1;
+  let expectedAppearedDay: number | null = null;
+  let eventExpenses = 0;
+
+  eventRecords.forEach((recordValue, index) => {
+    const path = `$.operations.eventRecords[${index}]`;
+    const record = expectRecord(
+      recordValue,
+      path,
+      [
+        "id",
+        "type",
+        "appearedDay",
+        "choice",
+        "cost",
+        "risk",
+        "resolutionDay",
+        "outcome",
+      ],
+      ["resolvedDay"],
+    );
+    const eventNumber = index + 1;
+    const id = expectString(record.id, `${path}.id`, 128);
+    const expectedId = `business-event-${eventNumber}`;
+    if (id !== expectedId) {
+      fail(`${path}.id`, `must equal ${expectedId}`);
+    }
+
+    const type = expectEnum(
+      record.type,
+      `${path}.type`,
+      BUSINESS_EVENT_TYPE_SET,
+    );
+    if (type !== getBusinessEventType(seed, eventNumber)) {
+      fail(`${path}.type`, "does not match the deterministic event sequence");
+    }
+    const appearedDay = expectNumber(
+      record.appearedDay,
+      `${path}.appearedDay`,
+      BUSINESS_EVENT_START_DAY,
+      Math.min(currentDay, LAST_DECISION_DAY - 1),
+      true,
+    );
+    if (appearedDay <= previousAppearedDay) {
+      fail(`${path}.appearedDay`, "must be strictly increasing");
+    }
+    if (isReleaseDay(appearedDay) || isRestrictionDay(appearedDay)) {
+      fail(`${path}.appearedDay`, "cannot be a release or restriction day");
+    }
+    if (expectedAppearedDay !== null && appearedDay !== expectedAppearedDay) {
+      fail(
+        `${path}.appearedDay`,
+        "does not match the deterministic event schedule",
+      );
+    }
+    previousAppearedDay = appearedDay;
+
+    const choice = expectEnum(
+      record.choice,
+      `${path}.choice`,
+      BUSINESS_EVENT_CHOICES,
+    );
+    const choiceDefinition = getBusinessEventChoice(type, choice);
+    const cost = expectNumber(
+      record.cost,
+      `${path}.cost`,
+      0,
+      MAX_FINANCE_VALUE,
+    );
+    if (Math.abs(cost - choiceDefinition.cost) > 1e-9) {
+      fail(`${path}.cost`, "must equal the configured event-choice cost");
+    }
+    eventExpenses += cost;
+
+    const risk = expectNumber(record.risk, `${path}.risk`, 0, 1);
+    if (Math.abs(risk - choiceDefinition.risk) > 1e-9) {
+      fail(`${path}.risk`, "must equal the configured event-choice risk");
+    }
+    const resolutionDay = expectNumber(
+      record.resolutionDay,
+      `${path}.resolutionDay`,
+      appearedDay,
+      MAX_DAY,
+      true,
+    );
+    if (resolutionDay !== appearedDay + choiceDefinition.resolutionDelay) {
+      fail(
+        `${path}.resolutionDay`,
+        "must match the configured event-choice resolution delay",
+      );
+    }
+    const outcome = expectEnum(
+      record.outcome,
+      `${path}.outcome`,
+      BUSINESS_EVENT_OUTCOMES,
+    );
+    const resolvedDay = record.resolvedDay === undefined
+      ? undefined
+      : expectNumber(
+          record.resolvedDay,
+          `${path}.resolvedDay`,
+          appearedDay,
+          currentDay,
+          true,
+        );
+    if (outcome === "pending") {
+      if (resolvedDay !== undefined) {
+        fail(`${path}.resolvedDay`, "is not valid while the event is pending");
+      }
+      if (currentDay >= resolutionDay) {
+        fail(`${path}.outcome`, "cannot remain pending on or after resolutionDay");
+      }
+    } else {
+      if (resolvedDay !== resolutionDay) {
+        fail(`${path}.resolvedDay`, "must equal resolutionDay");
+      }
+      if (outcome !== getBusinessEventOutcome(seed, id, risk)) {
+        fail(`${path}.outcome`, "does not match the deterministic event outcome");
+      }
+    }
+
+    expectedStrategy = applyBusinessStrategyDelta(
+      expectedStrategy,
+      choiceDefinition.strategyDelta,
+    );
+    expectedAppearedDay = getNextBusinessEventDay(
+      seed,
+      appearedDay,
+      eventNumber + 1,
+    );
+  });
+
+  const pending = operations.pendingEvent === null
+    ? null
+    : expectRecord(operations.pendingEvent, "$.operations.pendingEvent", [
+        "id",
+        "type",
+        "appearedDay",
+      ]);
+  if (pending) {
+    const eventNumber = eventRecords.length + 1;
+    const expectedId = `business-event-${eventNumber}`;
+    const id = expectString(pending.id, "$.operations.pendingEvent.id", 128);
+    if (id !== expectedId) {
+      fail("$.operations.pendingEvent.id", `must equal ${expectedId}`);
+    }
+    const type = expectEnum(
+      pending.type,
+      "$.operations.pendingEvent.type",
+      BUSINESS_EVENT_TYPE_SET,
+    );
+    if (type !== getBusinessEventType(seed, eventNumber)) {
+      fail(
+        "$.operations.pendingEvent.type",
+        "does not match the deterministic event sequence",
+      );
+    }
+    const appearedDay = expectNumber(
+      pending.appearedDay,
+      "$.operations.pendingEvent.appearedDay",
+      BUSINESS_EVENT_START_DAY,
+      Math.min(currentDay, LAST_DECISION_DAY - 1),
+      true,
+    );
+    if (appearedDay !== currentDay) {
+      fail("$.operations.pendingEvent.appearedDay", "must equal the current day");
+    }
+    if (appearedDay <= previousAppearedDay) {
+      fail(
+        "$.operations.pendingEvent.appearedDay",
+        "must be later than every retained event record",
+      );
+    }
+    if (expectedAppearedDay !== null && appearedDay !== expectedAppearedDay) {
+      fail(
+        "$.operations.pendingEvent.appearedDay",
+        "does not match the deterministic event schedule",
+      );
+    }
+    if (isReleaseDay(appearedDay) || isRestrictionDay(appearedDay)) {
+      fail(
+        "$.operations.pendingEvent.appearedDay",
+        "cannot be a release or restriction day",
+      );
+    }
+    if (currentPhase !== "running") {
+      fail("$.operations.pendingEvent", "is only valid during normal operations");
+    }
+    if (historyLastDay !== currentDay) {
+      fail(
+        "$.operations.pendingEvent",
+        "requires the current ordinary day to be fully settled",
+      );
+    }
+  }
+
+  const nextEventId = expectNumber(
+    operations.nextEventId,
+    "$.operations.nextEventId",
+    1,
+    MAX_SAFE_COUNTER,
+    true,
+  );
+  const expectedNextEventId = eventRecords.length + 1;
+  if (nextEventId !== expectedNextEventId) {
+    fail(
+      "$.operations.nextEventId",
+      `must equal ${expectedNextEventId} for the retained event sequence`,
+    );
+  }
+
+  const nextEventDay = operations.nextEventDay === null
+    ? null
+    : expectNumber(
+        operations.nextEventDay,
+        "$.operations.nextEventDay",
+        BUSINESS_EVENT_START_DAY,
+        LAST_DECISION_DAY - 1,
+        true,
+      );
+  if (pending) {
+    if (nextEventDay !== null) {
+      fail("$.operations.nextEventDay", "must be null while an offer is pending");
+    }
+  } else if (currentPhase === "ended") {
+    if (nextEventDay !== null) {
+      fail("$.operations.nextEventDay", "must be null after the campaign ends");
+    }
+  } else {
+    if (nextEventDay !== null) {
+      if (nextEventDay <= currentDay) {
+        fail("$.operations.nextEventDay", "must be later than the current day");
+      }
+      if (isReleaseDay(nextEventDay) || isRestrictionDay(nextEventDay)) {
+        fail(
+          "$.operations.nextEventDay",
+          "cannot be a release or restriction day",
+        );
+      }
+    }
+
+    if (eventRecords.length > 0) {
+      const expectedNextEventDay = getNextBusinessEventDay(
+        seed,
+        previousAppearedDay,
+        nextEventId,
+      );
+      if (nextEventDay !== expectedNextEventDay) {
+        fail(
+          "$.operations.nextEventDay",
+          "does not match the deterministic event schedule",
+        );
+      }
+    } else {
+      if (
+        nextEventDay === null &&
+        getNextBusinessEventDay(seed, currentDay, nextEventId) !== null
+      ) {
+        fail(
+          "$.operations.nextEventDay",
+          "cannot be null while another event fits in the campaign",
+        );
+      }
+    }
+  }
+
+  const strategy = expectRecord(
+    operations.strategy,
+    "$.operations.strategy",
+    BUSINESS_STRATEGY_AXES,
+  );
+  for (const axis of BUSINESS_STRATEGY_AXES) {
+    const value = expectNumber(
+      strategy[axis],
+      `$.operations.strategy.${axis}`,
+      BUSINESS_STRATEGY_MIN,
+      BUSINESS_STRATEGY_MAX,
+    );
+    if (Math.abs(value - expectedStrategy[axis]) > 1e-9) {
+      fail(
+        `$.operations.strategy.${axis}`,
+        "must match the retained event-choice history",
+      );
+    }
+  }
+
+  return round(eventExpenses);
+}
+
 function validateOperations(
   value: unknown,
   currentDay: number,
   currentPhase: GameState["phase"],
+  historyLastDay: number,
+  seed: number,
 ): number {
-  const operations = expectRecord(value, "$.operations", [
-    "nextActionId",
-    "records",
-  ]);
+  const operations = expectRecord(value, "$.operations", OPERATIONS_KEYS);
   const records = expectArray(
     operations.records,
     "$.operations.records",
@@ -1013,7 +1441,14 @@ function validateOperations(
     }
   });
 
-  return round(totalExpenses);
+  const eventExpenses = validateBusinessEvents(
+    operations,
+    currentDay,
+    currentPhase,
+    historyLastDay,
+    seed,
+  );
+  return round(totalExpenses + eventExpenses);
 }
 
 function validateSupportRequests(
@@ -1494,10 +1929,10 @@ function validateHistory(
 export function parseGameState(value: unknown): GameState {
   const normalized = normalizeSaveVersion(value);
   const state = expectRecord(normalized, "$", TOP_LEVEL_KEYS);
-  if (state.schemaVersion !== 6) {
-    fail("$.schemaVersion", "must equal 6 after migration");
+  if (state.schemaVersion !== 7) {
+    fail("$.schemaVersion", "must equal 7 after migration");
   }
-  expectNumber(state.seed, "$.seed", 0, 0xffffffff, true);
+  const seed = expectNumber(state.seed, "$.seed", 0, 0xffffffff, true);
   const day = expectNumber(state.day, "$.day", 0, MAX_DAY, true);
   const phase = expectEnum(state.phase, "$.phase", PHASES);
 
@@ -1593,11 +2028,17 @@ export function parseGameState(value: unknown): GameState {
     0,
     MAX_FINANCE_VALUE,
   );
-  const operationExpenses = validateOperations(state.operations, day, phase);
+  const operationExpenses = validateOperations(
+    state.operations,
+    day,
+    phase,
+    settledHistory.lastDay,
+    seed,
+  );
   if (Math.abs(cumulativeExpenses - operationExpenses) > 0.0001) {
     fail(
       "$.finance.cumulativeExpenses",
-      "must equal the total cost of all retained business-action records",
+      "must equal the total cost of retained business actions and event choices",
     );
   }
 
@@ -1829,7 +2270,7 @@ export function isGameState(value: unknown): value is GameState {
     typeof value !== "object" ||
     value === null ||
     Array.isArray(value) ||
-    (value as UnknownRecord).schemaVersion !== 6
+    (value as UnknownRecord).schemaVersion !== 7
   ) {
     return false;
   }

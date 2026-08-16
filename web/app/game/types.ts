@@ -198,6 +198,10 @@ export type BusinessActionType =
   | "animation-promotion"
   | "championship"
   | "store-tour"
+  | "beginner-camp"
+  | "local-league"
+  | "reprint-campaign"
+  | "collector-fair"
   | "pack-odds"
   | "season-overhaul"
   | "global-launch"
@@ -251,9 +255,66 @@ export interface BusinessActionRecord {
   resolvedDay?: number;
 }
 
+export type BusinessEventType =
+  | "starter-shortage"
+  | "secondary-market-spike"
+  | "store-margin-dispute"
+  | "creator-controversy"
+  | "set-list-leak"
+  | "regional-prize-fund"
+  | "accessibility-reprint"
+  | "localization-delay"
+  | "print-defect"
+  | "artist-contract"
+  | "rules-complexity"
+  | "data-transparency"
+  | "subscription-offer"
+  | "warehouse-overstock"
+  | "fan-content-policy"
+  | "rival-tcg-launch";
+
+export type BusinessEventChoice = "a" | "b";
+
+export type BusinessEventOutcome = "pending" | "success" | "backlash";
+
+/**
+ * Persistent operating posture accumulated by surprise business decisions.
+ * Values are clamped to -100..100. Positive values mean mass-market reach,
+ * premium/scarcity products, and aggressive execution respectively; negative
+ * values mean core-audience focus, accessibility, and caution.
+ */
+export interface BusinessStrategy {
+  audience: number;
+  product: number;
+  posture: number;
+}
+
+export interface PendingBusinessEvent {
+  id: string;
+  type: BusinessEventType;
+  appearedDay: number;
+}
+
+export interface BusinessEventRecord {
+  id: string;
+  type: BusinessEventType;
+  appearedDay: number;
+  choice: BusinessEventChoice;
+  cost: number;
+  risk: number;
+  resolutionDay: number;
+  outcome: BusinessEventOutcome;
+  resolvedDay?: number;
+}
+
 export interface OperationsState {
   nextActionId: number;
   records: BusinessActionRecord[];
+  nextEventId: number;
+  nextEventDay: number | null;
+  pendingEvent: PendingBusinessEvent | null;
+  eventRecords: BusinessEventRecord[];
+  strategy: BusinessStrategy;
 }
 
 export interface DailyHistory {
@@ -265,7 +326,7 @@ export interface DailyHistory {
 }
 
 export interface GameState {
-  schemaVersion: 6;
+  schemaVersion: 7;
   seed: number;
   day: number;
   phase: "running" | "release-edit" | "ban-edit" | "ended";
@@ -306,4 +367,9 @@ export type GameCommand =
       selections: ReleaseSelection[];
     }
   | { type: "RUN_BUSINESS_ACTION"; action: BusinessActionType }
+  | {
+      type: "CHOOSE_BUSINESS_EVENT";
+      eventId: string;
+      choice: BusinessEventChoice;
+    }
   | { type: "COMPLETE_HANDOVER" };

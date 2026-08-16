@@ -12,9 +12,13 @@ import {
   ANIMATION_PROMOTION_FINALE_COPY,
   ANIMATION_PROMOTION_MIDDLE_COPY,
   ANIMATION_PROMOTION_OPENING_COPY,
+  BEGINNER_CAMP_COPY,
+  COLLECTOR_FAIR_COPY,
   getAnimationPromotionCopy,
+  LOCAL_LEAGUE_COPY,
   PACK_ODDS_DETECTED_COPY,
   PACK_ODDS_RUMOR_COPY,
+  REPRINT_CAMPAIGN_COPY,
   STORE_TOUR_COPY,
   TOURNAMENT_BACKLASH_COPY,
   TOURNAMENT_SUCCESS_COPY,
@@ -146,7 +150,7 @@ function makeState(seed = 7301): GameState {
   );
 
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     seed,
     day: 60,
     phase: "running",
@@ -163,7 +167,15 @@ function makeState(seed = 7301): GameState {
       cumulativeOperatingCosts: 0.42,
       cumulativeExpenses: 0,
     },
-    operations: { nextActionId: 1, records: [] },
+    operations: {
+      nextActionId: 1,
+      records: [],
+      nextEventId: 1,
+      nextEventDay: null,
+      pendingEvent: null,
+      eventRecords: [],
+      strategy: { audience: 0, product: 0, posture: 0 },
+    },
     community: [],
     supportRequests: [],
     releaseSlate: null,
@@ -320,6 +332,7 @@ function setRestrictionFollowupSnapshot(
 
 function releaseWithMixedReactions(seed = 9191): GameState {
   let state = createInitialGame(seed);
+  state.operations.nextEventDay = null;
   const restriction = state.community.find(
     (event) =>
       event.day === 45 &&
@@ -2036,6 +2049,7 @@ test("never names prepared-but-unreleased cards in historical community snapshot
 
 test("keeps a first support wave's D+1 board identical after a later wave", () => {
   let state = createInitialGame(99551);
+  state.operations.nextEventDay = null;
   state = reduceGame(state, {
     type: "PROPOSE_SUPPORT",
     themeId: "white-night",
@@ -2319,6 +2333,68 @@ test("business campaigns fill their opening-day community quotas", () => {
     assert.equal(campaignPosts.length, campaign.expected, campaign.type);
     assert.equal(new Set(campaignPosts.map((post) => post.body)).size, campaign.expected);
     assert.ok(campaignPosts.every((post) => !/[{}]/.test(post.body)));
+  }
+});
+
+test("new recurring business campaigns decay through eight-six-four-two reactions", () => {
+  const cases = [
+    {
+      type: "beginner-camp",
+      cost: 0.4,
+      duration: 14,
+      copy: BEGINNER_CAMP_COPY,
+    },
+    {
+      type: "local-league",
+      cost: 0.5,
+      duration: 21,
+      copy: LOCAL_LEAGUE_COPY,
+    },
+    {
+      type: "reprint-campaign",
+      cost: 0.55,
+      duration: 30,
+      copy: REPRINT_CAMPAIGN_COPY,
+    },
+    {
+      type: "collector-fair",
+      cost: 0.65,
+      duration: 14,
+      copy: COLLECTOR_FAIR_COPY,
+    },
+  ] as const;
+  const expectedQuotas = [8, 6, 4, 2] as const;
+
+  for (const [index, campaign] of cases.entries()) {
+    const state = makeState(81_200 + index);
+    state.day = 70;
+    addBusinessRecord(state, {
+      type: campaign.type,
+      startedDay: 59,
+      endsDay: 59 + campaign.duration,
+      cost: campaign.cost,
+      outcome: "active",
+    });
+    const record = state.operations.records[state.operations.records.length - 1];
+    assert.ok(record);
+    const allowed = new Set<string>(campaign.copy);
+
+    for (const [age, expected] of expectedQuotas.entries()) {
+      const posts = getDailyCommunityPosts(state, 60 + age);
+      const reactions = posts.filter((post) =>
+        post.id.startsWith(`daily-business-${record.id}-`),
+      );
+      assert.equal(posts.length, 20);
+      assert.equal(reactions.length, expected, `${campaign.type} D+${age}`);
+      assert.equal(new Set(reactions.map((post) => post.body)).size, expected);
+      assert.ok(reactions.every((post) => post.type === "business-reaction"));
+      assert.ok(reactions.every((post) => allowed.has(post.body)));
+    }
+
+    const afterReactionWindow = getDailyCommunityPosts(state, 64).filter((post) =>
+      post.id.startsWith(`daily-business-${record.id}-`),
+    );
+    assert.equal(afterReactionWindow.length, 0, campaign.type);
   }
 });
 

@@ -94,6 +94,12 @@ export type CampaignEndingEvaluation = {
   totalUsers: number;
 };
 
+export type CampaignEndingHint = {
+  id: "cash" | "environment" | "support" | "policy" | "business" | "events";
+  title: string;
+  body: string;
+};
+
 type EndingCopy = Pick<CampaignEndingEvaluation, "title" | "body">;
 
 const ENDING_COPY = {
@@ -146,7 +152,7 @@ const ENDING_COPY = {
 
 const INCOMPLETE_STEWARDSHIP_COPY: EndingCopy = {
   title: "성장 뒤의 숙제",
-  body: "운영자금과 환경은 안정권이지만 지원 육성·금제 운영·사업 포트폴리오·돌발 대응의 최종 감사가 미완료다. 다음 시즌을 맡기기에는 운영 체계가 한쪽에 치우쳤다.",
+  body: "운영자금과 환경은 안정권이지만 다음 시즌까지 이어질 운영 체계에 빈틈이 남았다. 결산 기록에 남은 단서를 바탕으로 한쪽에 치우친 운영을 보완해야 한다.",
 };
 
 function isRestrictionDecisionType(type: string): boolean {
@@ -365,4 +371,79 @@ export function evaluateCampaignEnding(
     body: copy.body,
     totalUsers: state.users.tier + state.users.casual + state.users.collector,
   };
+}
+
+/**
+ * Post-campaign guidance intentionally describes direction, not thresholds.
+ * The hidden qualification rules stay in the evaluator while the ending only
+ * reveals which parts of this particular mandate need another approach.
+ */
+export function getCampaignEndingHints(
+  ending: CampaignEndingEvaluation,
+): CampaignEndingHint[] {
+  const hints: CampaignEndingHint[] = [];
+  if (ending.bands.cash !== "reserve") {
+    hints.push({
+      id: "cash",
+      title: "회사의 완충력",
+      body: ending.bands.cash === "crisis"
+        ? "성장 지출보다 반복 수익과 생존 여력을 먼저 확보해보세요."
+        : "결산 뒤 다음 시즌을 버틸 운영자금을 조금 더 남겨보세요.",
+    });
+  }
+  if (ending.bands.environment !== "stable") {
+    hints.push({
+      id: "environment",
+      title: "판의 체력",
+      body: ending.bands.environment === "danger"
+        ? "상위 테마의 압박과 누적 피로, 구매 신뢰를 함께 회복해야 합니다."
+        : "마지막 결정까지 환경 피로와 구매 신뢰를 조금 더 안정시켜보세요.",
+    });
+  }
+
+  const { support, policy, business, events } = ending.stewardship.pillars;
+  if (!support.passed) {
+    const leanedOnPower =
+      support.positivePowerPressure > CAMPAIGN_RELEASE_POSITIVE_PRESSURE_MAX ||
+      support.tierZeroProducts > CAMPAIGN_RELEASE_TIER_ZERO_MAX;
+    hints.push({
+      id: "support",
+      title: "지원의 폭",
+      body: leanedOnPower
+        ? "강한 파워 상향에 기대지 말고, 지원 제안을 여러 테마와 방향의 실제 발매로 연결해보세요."
+        : "지원 제안을 실제 발매로 이어가고, 대상 테마와 보강 방향을 넓혀보세요.",
+    });
+  }
+  if (!policy.passed) {
+    hints.push({
+      id: "policy",
+      title: "규제의 균형",
+      body: policy.balancedReviews < CAMPAIGN_BALANCED_REVIEW_MIN
+        ? "상위권과 추격권을 함께 다루는 균형 잡힌 금제 기록을 더 쌓아보세요."
+        : "오래 묶인 파츠는 환경이 허락할 때 완전 해제까지 검토해보세요.",
+    });
+  }
+  if (!business.passed) {
+    const diversified =
+      business.qualifyingActions >= CAMPAIGN_BUSINESS_ACTION_MIN &&
+      business.distinctTypes >= CAMPAIGN_BUSINESS_TYPE_MIN &&
+      business.distinctTones >= CAMPAIGN_BUSINESS_TONE_MIN;
+    hints.push({
+      id: "business",
+      title: "사업의 폭",
+      body: diversified
+        ? "대형 프로젝트의 성과를 만들거나, 실패했다면 더 넓은 사업 포트폴리오로 만회해보세요."
+        : "같은 액션 반복을 피하고 서로 다른 노선의 사업 성과를 쌓아보세요.",
+    });
+  }
+  if (!events.passed) {
+    hints.push({
+      id: "events",
+      title: "위기 대응",
+      body: events.resolved < CAMPAIGN_EVENT_RESOLUTION_MIN
+        ? "돌발 이슈를 미루지 말고 끝까지 해결해 운영 기록을 남겨보세요."
+        : "선택의 성공뿐 아니라 누적 사업 노선과 구매 신뢰까지 고려해 대응해보세요.",
+    });
+  }
+  return hints;
 }

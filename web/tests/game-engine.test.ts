@@ -34,6 +34,7 @@ import {
   getDailyOperatingCost,
   getMonthlyOperatingCost,
   getOperatingRunwayMonths,
+  getRevenueChangeSignal,
 } from "../app/game/finance.ts";
 import {
   getPublishedRestrictionPolicyProfile,
@@ -416,7 +417,13 @@ test("exposes deterministic guided choices that replay through the ordinary redu
   );
 
   guided = reduceGame(guided, { type: "SUBMIT_RELEASE", selections });
-  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 15 });
+  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 8 });
+  assert.equal(guided.day, 38);
+  assert.equal(guided.phase, "running");
+  assert.equal(guided.operations.pendingEvent, null);
+  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 7 });
+  assert.equal(guided.day, 45);
+  assert.equal(guided.phase, "ban-edit");
   const changes = getPrologueRestrictionChanges(guided);
   const restrictionEntries = Object.entries(changes);
   assert.equal(restrictionEntries.length, 4);
@@ -1706,6 +1713,24 @@ test("charges scaled operating costs every day after the DAY 46 handover", () =>
   assert.equal(getDailyOperatingCost(46, 10_000), 0);
   assert.equal(getDailyOperatingCost(47, 10_000), 0.0433);
   assert.equal(getOperatingRunwayMonths(10, 10_000), 7.7);
+});
+
+test("revenue shock alerts discount the normal post-release sales tail", () => {
+  const expectedReleaseDrop = (Math.exp(-1 / 6) - 1) * 100;
+  const justInsideResidual =
+    (Math.exp(-1 / 6) * (1 - 0.0799) - 1) * 100;
+  const residualBoundary =
+    (Math.exp(-1 / 6) * (1 - 0.08) - 1) * 100;
+
+  assert.equal(getRevenueChangeSignal(12), "surge");
+  assert.equal(getRevenueChangeSignal(-11.99), null);
+  assert.equal(getRevenueChangeSignal(-12), "drop");
+  assert.equal(getRevenueChangeSignal(expectedReleaseDrop, 1), null);
+  assert.equal(getRevenueChangeSignal(-19, 15), null);
+  assert.equal(getRevenueChangeSignal(justInsideResidual, 8), null);
+  assert.equal(getRevenueChangeSignal(residualBoundary, 8), "drop");
+  assert.equal(getRevenueChangeSignal(expectedReleaseDrop, 8, 2), "drop");
+  assert.equal(getRevenueChangeSignal(-12, 30), "drop");
 });
 
 test("decision gates charge operating costs once, after the decision is submitted", () => {

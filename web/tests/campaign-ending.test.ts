@@ -6,6 +6,7 @@ import {
   getCampaignCashBand,
   getCampaignEnvironmentBand,
   getCampaignEnvironmentStability,
+  getCampaignEndingHints,
   getCampaignStewardshipEvaluation,
 } from "../app/game/campaign-ending.ts";
 import { THEME_BY_ID } from "../app/game/content.ts";
@@ -275,7 +276,34 @@ test("the best ending requires all four stewardship pillars", () => {
   assert.equal(incomplete.stewardship.pillars.support.passed, false);
   assert.equal(incomplete.qualifiedForBestEnding, false);
   assert.equal(incomplete.title, "성장 뒤의 숙제");
-  assert.match(incomplete.body, /최종 감사가 미완료/);
+  assert.match(incomplete.body, /운영 체계에 빈틈/);
+});
+
+test("ending hints expose missed directions without revealing thresholds", () => {
+  const complete = evaluateCampaignEnding(createCompleteStewardshipState());
+  assert.equal(complete.qualifiedForBestEnding, true);
+  assert.deepEqual(getCampaignEndingHints(complete), []);
+
+  const mixedState = createCompleteStewardshipState();
+  mixedState.finance.cash = 10;
+  mixedState.purchaseTrust = 0;
+  mixedState.supportRequests.pop();
+  const mixedHints = getCampaignEndingHints(evaluateCampaignEnding(mixedState));
+  assert.deepEqual(
+    mixedHints.map((hint) => hint.id),
+    ["cash", "environment", "support"],
+  );
+
+  const unpreparedHints = getCampaignEndingHints(
+    evaluateCampaignEnding(createInitialGame(202)),
+  );
+  assert.deepEqual(
+    new Set(unpreparedHints.map((hint) => hint.id)),
+    new Set(["cash", "environment", "support", "policy", "business", "events"]),
+  );
+  for (const hint of [...mixedHints, ...unpreparedHints]) {
+    assert.doesNotMatch(`${hint.title} ${hint.body}`, /\d/);
+  }
 });
 
 test("stewardship pillars reject shallow policy, action, and event play", () => {

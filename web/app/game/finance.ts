@@ -7,6 +7,50 @@ export const OPERATING_COST_MONTH_DAYS = 30;
 export const OPERATING_COST_START_DAY = PLAYER_START_DAY + 1;
 export const OPERATING_CASH_MARGIN = 0.32;
 
+/**
+ * Release revenue follows the same thirty-day exponential tail in both the
+ * engine and the market-shock detector. Keeping the constants here prevents
+ * chart alerts from drifting when the sales model is tuned.
+ */
+export const RELEASE_SALES_WINDOW_DAYS = 30;
+export const RELEASE_SALES_DECAY_DAYS = 6;
+export const RELEASE_SALES_DAILY_DECAY_MULTIPLIER = Math.exp(
+  -1 / RELEASE_SALES_DECAY_DAYS,
+);
+
+export const REVENUE_SURGE_ALERT_RATE = 12;
+export const REVENUE_DROP_ALERT_RATE = -12;
+export const POST_RELEASE_DROP_RESIDUAL_ALERT_RATE = -8;
+
+export type RevenueChangeSignal = "surge" | "drop" | null;
+
+export function getRevenueChangeSignal(
+  changeRate: number,
+  releaseAge: number | null = null,
+  daySpan = 1,
+): RevenueChangeSignal {
+  if (!Number.isFinite(changeRate)) return null;
+  if (changeRate >= REVENUE_SURGE_ALERT_RATE) return "surge";
+  if (changeRate >= 0) return null;
+
+  if (
+    releaseAge !== null &&
+    releaseAge >= 1 &&
+    releaseAge < RELEASE_SALES_WINDOW_DAYS &&
+    daySpan === 1
+  ) {
+    const actualMultiplier = Math.max(0, 1 + changeRate / 100);
+    const decayAdjustedRate =
+      (actualMultiplier / RELEASE_SALES_DAILY_DECAY_MULTIPLIER - 1) * 100;
+    return decayAdjustedRate <= POST_RELEASE_DROP_RESIDUAL_ALERT_RATE + 1e-9
+      ? "drop"
+      : null;
+  }
+
+  if (changeRate <= REVENUE_DROP_ALERT_RATE) return "drop";
+  return null;
+}
+
 const KRW_PER_EOK = 100_000_000;
 
 function round(value: number, digits = 4): number {

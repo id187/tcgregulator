@@ -44,6 +44,8 @@ import {
   getDailyOperatingCost,
   OPERATING_CASH_MARGIN,
   OPERATING_COST_START_DAY,
+  RELEASE_SALES_DECAY_DAYS,
+  RELEASE_SALES_WINDOW_DAYS,
 } from "./finance.ts";
 import { withKoreanParticle } from "./korean-particles.ts";
 import {
@@ -1635,10 +1637,12 @@ function updateUsers(state: GameState): void {
 }
 
 function salesCurve(age: number): number {
-  if (age < 0 || age >= 30) return 0;
+  if (age < 0 || age >= RELEASE_SALES_WINDOW_DAYS) return 0;
   let denominator = 0;
-  for (let day = 0; day < 30; day += 1) denominator += Math.exp(-day / 6);
-  return Math.exp(-age / 6) / denominator;
+  for (let day = 0; day < RELEASE_SALES_WINDOW_DAYS; day += 1) {
+    denominator += Math.exp(-day / RELEASE_SALES_DECAY_DAYS);
+  }
+  return Math.exp(-age / RELEASE_SALES_DECAY_DAYS) / denominator;
 }
 
 function releaseTargetShare(

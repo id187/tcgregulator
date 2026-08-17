@@ -25,32 +25,18 @@ import {
   SETTLEMENT_DAYS,
 } from "./game/campaign";
 import {
-  CAMPAIGN_CASH_RESERVE_MIN,
-  CAMPAIGN_CASH_TIGHT_MIN,
-  CAMPAIGN_BALANCED_REVIEW_MIN,
-  CAMPAIGN_BUSINESS_ACTION_MIN,
-  CAMPAIGN_BUSINESS_TONE_MIN,
-  CAMPAIGN_BUSINESS_TYPE_MIN,
-  CAMPAIGN_ENVIRONMENT_CAUTION_MIN,
-  CAMPAIGN_ENVIRONMENT_STABLE_MIN,
-  CAMPAIGN_EVENT_RESOLUTION_MIN,
-  CAMPAIGN_EVENT_SUCCESS_RATE_MIN,
-  CAMPAIGN_RELEASE_POSITIVE_PRESSURE_MAX,
-  CAMPAIGN_RELEASE_TIER_ZERO_MAX,
-  CAMPAIGN_STALE_RELEASE_MIN,
-  CAMPAIGN_SUPPORT_DIRECTION_MIN,
-  CAMPAIGN_SUPPORT_RELEASE_MIN,
-  CAMPAIGN_SUPPORT_THEME_MIN,
   evaluateCampaignEnding,
-  getCampaignStewardshipEvaluation,
+  getCampaignEndingHints,
   type CampaignCashBand,
+  type CampaignEndingEvaluation,
   type CampaignEnvironmentBand,
-  type CampaignStewardshipEvaluation,
 } from "./game/campaign-ending";
 import {
+  getRevenueChangeSignal,
   getMonthlyOperatingCost,
   getOperatingRunwayMonths,
   OPERATING_COST_START_DAY,
+  RELEASE_SALES_WINDOW_DAYS,
 } from "./game/finance";
 import {
   getCommunityHeat,
@@ -324,6 +310,15 @@ type FatigueSignal = {
   label: string;
 };
 
+function getReleaseAge(game: GameState, day: number): number | null {
+  const latestRelease = [...game.releaseHistory]
+    .reverse()
+    .find((batch) => batch.day <= day);
+  if (!latestRelease) return null;
+  const age = day - latestRelease.day;
+  return age < RELEASE_SALES_WINDOW_DAYS ? age : null;
+}
+
 function getFatigueSignal(runtime: ThemeRuntime): FatigueSignal {
   if (runtime.fatigue >= 75) {
     return { level: "breaking", label: "반감 폭발" };
@@ -378,7 +373,12 @@ function buildImpactNotice(game: GameState): ImpactNotice | null {
     null,
   );
   const fatigue = mostFatiguedTheme ? game.themes[mostFatiguedTheme].fatigue : 0;
-  const revenueShock = Math.abs(revenueRate) >= 12;
+  const revenueSignal = getRevenueChangeSignal(
+    revenueRate,
+    getReleaseAge(game, game.day),
+    current && previous ? current.day - previous.day : 1,
+  );
+  const revenueShock = revenueSignal !== null;
   const userShock = Math.abs(userDelta) >= Math.max(150, currentTotal * 0.0015);
   const heatShock = heat >= 75;
 
@@ -416,12 +416,12 @@ function buildImpactNotice(game: GameState): ImpactNotice | null {
         : "메타와 시장의 일일 급변";
   const headline = heatShock
     ? "반응 폭발"
-    : revenueRate >= 12
+    : revenueSignal === "surge"
       ? `매출 급등 +${revenueRate.toFixed(1)}%`
       : userDelta < 0
         ? `활성 유저 급락 ${formatUsers(userDelta)}명`
         : "시장 급변 감지";
-  const tone = userDelta < 0 || revenueRate < -12
+  const tone = userDelta < 0 || revenueSignal === "drop"
     ? "negative"
     : heatShock
       ? "alert"
@@ -934,6 +934,7 @@ type GuidedBrief = {
   placement?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
   inspection?: boolean;
   confirmLabel?: string;
+  actionLabel?: string;
 };
 
 function getGuidedStep(game: GameState): GuidedStep {
@@ -1171,7 +1172,8 @@ function getGuidedBrief(
     return {
       kicker: "LOTUS · REACTION DECAY",
       title: "초기 폭발 이후의 환경을 확인했습니다",
-      message: "첫 금제위원회가 열리는 DAY 45까지 진행해주세요.",
+      message: "아래 버튼으로 DAY 45까지 진행해 첫 금제위원회를 여세요.",
+      actionLabel: "DAY 45 금제위원회 열기",
     };
   }
   if (step === "day45-restriction" && restrictionTarget) {
@@ -1254,6 +1256,7 @@ function GuidedTutorialOverlay({
   brief,
   busy,
   day,
+  onActivate,
   onConfirm,
   onPause,
   targetKey,
@@ -1262,6 +1265,7 @@ function GuidedTutorialOverlay({
   brief: GuidedBrief;
   busy: boolean;
   day: number;
+  onActivate?: () => void;
   onConfirm: () => void;
   onPause: () => void;
   targetKey: string;
@@ -1442,6 +1446,10 @@ function GuidedTutorialOverlay({
               aria-label={`안내 대상 실행: ${brief.title}`}
               className="guided-spotlight-ring"
               onClick={() => {
+                if (onActivate) {
+                  onActivate();
+                  return;
+                }
                 const target = document.querySelector<HTMLElement>(
                   '[data-tutorial-target="active"]',
                 );
@@ -1471,6 +1479,16 @@ function GuidedTutorialOverlay({
         <div className="guided-coach-footer">
           <span>DAY {day} / 46 · 인수인계</span>
           <div>
+            {brief.actionLabel && onActivate ? (
+              <button
+                className="guided-coach-confirm"
+                disabled={busy}
+                onClick={onActivate}
+                type="button"
+              >
+                {brief.actionLabel}
+              </button>
+            ) : null}
             {brief.inspection && brief.confirmLabel ? (
               <button
                 className="guided-coach-confirm"
@@ -2335,6 +2353,25 @@ function GameSession({
     }
   }
 
+  function openGuidedRestrictionBoard(next: GameState) {
+    if (next.day !== 45 || next.phase !== "ban-edit") return false;
+    const changes = getPrologueRestrictionChanges(next);
+    const firstPartId = Object.keys(changes)[0];
+    const targetTheme = next.activeThemeIds.find((themeId) =>
+      THEME_BY_ID[themeId].parts.some((part) => part.id === firstPartId),
+    );
+    setBanDraft((current) =>
+      Object.keys(current).length > 0 ? current : makeRestrictionDraft(next),
+    );
+    setGuidedStep("day45-restriction");
+    activateTab("restrictions", true);
+    if (targetTheme) {
+      setSelectedThemeId(targetTheme);
+      setMobileDetail(true);
+    }
+    return true;
+  }
+
   function advanceGuidedTutorial() {
     if (!guided || guidedBusy) return;
     if (guidedStep === "day46-start") {
@@ -2342,6 +2379,21 @@ function GameSession({
         ? game
         : dispatch({ type: "COMPLETE_HANDOVER" });
       void finishGuidedTutorial(finalGame);
+      return;
+    }
+    if (
+      guidedStep === "day38-advance" &&
+      openGuidedRestrictionBoard(game)
+    ) {
+      return;
+    }
+    if (
+      guidedStep === "day38-advance" &&
+      game.day === 45 &&
+      game.phase === "running"
+    ) {
+      setGuidedStep("day45-advance");
+      activateTab("restrictions", true);
       return;
     }
     let targetDay: number | null = null;
@@ -2387,19 +2439,12 @@ function GameSession({
     if (targetDay === null || targetDay <= game.day) return;
     const next = advance(targetDay - game.day);
     if (!next) return;
+    if (targetDay === 45) {
+      openGuidedRestrictionBoard(next);
+      return;
+    }
     if (nextStep) setGuidedStep(nextStep);
     activateTab(nextTab, true);
-    if (targetDay === 45) {
-      const changes = getPrologueRestrictionChanges(next);
-      const firstPartId = Object.keys(changes)[0];
-      const targetTheme = next.activeThemeIds.find((themeId) =>
-        THEME_BY_ID[themeId].parts.some((part) => part.id === firstPartId),
-      );
-      if (targetTheme) {
-        setSelectedThemeId(targetTheme);
-        setMobileDetail(true);
-      }
-    }
   }
 
   function submitGuidedRelease() {
@@ -2897,6 +2942,11 @@ function GameSession({
           busy={guidedBusy}
           day={game.day}
           key={guidedTargetKey}
+          onActivate={
+            guidedStep.endsWith("advance") || guidedStep === "day46-start"
+              ? advanceGuidedTutorial
+              : undefined
+          }
           onConfirm={confirmGuidedInspection}
           onPause={() => void pauseGuidedTutorial()}
           onSkip={skipGuidedTutorial}
@@ -3050,78 +3100,46 @@ const CAMPAIGN_ENVIRONMENT_LABEL: Record<CampaignEnvironmentBand, string> = {
   stable: "환경 안정",
 };
 
-function CampaignStewardshipAudit({
-  evaluation,
+function CampaignEndingHints({
+  ending,
 }: {
-  evaluation: CampaignStewardshipEvaluation;
+  ending: CampaignEndingEvaluation;
 }) {
-  const { support, policy, business, events } = evaluation.pillars;
-  const items = [
-    {
-      id: "support",
-      title: "발매 · 지원",
-      passed: support.passed,
-      detail: `요청 지원 ${support.releasedRequests}/${CAMPAIGN_SUPPORT_RELEASE_MIN} · 테마 ${support.distinctThemes}/${CAMPAIGN_SUPPORT_THEME_MIN} · 방향 ${support.distinctDirections}/${CAMPAIGN_SUPPORT_DIRECTION_MIN}`,
-      note: `양수 조정 ${support.positivePowerPressure}/${CAMPAIGN_RELEASE_POSITIVE_PRESSURE_MAX} 이하 · Tier 0 ${support.tierZeroProducts}/${CAMPAIGN_RELEASE_TIER_ZERO_MAX} 이하`,
-    },
-    {
-      id: "policy",
-      title: "금제 운영",
-      passed: policy.passed,
-      detail: `균형 판정 ${policy.balancedReviews}/${CAMPAIGN_BALANCED_REVIEW_MIN} · 검토 완료 ${policy.reviewed}회`,
-      note: `90일 장기 금제 완전 해제 ${policy.staleFullyReleased}/${CAMPAIGN_STALE_RELEASE_MIN}`,
-    },
-    {
-      id: "business",
-      title: "사업 포트폴리오",
-      passed: business.passed,
-      detail: `성과 액션 ${business.qualifyingActions}/${CAMPAIGN_BUSINESS_ACTION_MIN} · 유형 ${business.distinctTypes}/${CAMPAIGN_BUSINESS_TYPE_MIN} · 노선 ${business.distinctTones}/${CAMPAIGN_BUSINESS_TONE_MIN}`,
-      note: business.strategicSuccesses > 0
-        ? `대형 프로젝트 성공 ${business.strategicSuccesses}회`
-        : business.usedRecoveryPath
-          ? "대형 프로젝트 실패를 다각화 운영으로 만회"
-          : `대형 프로젝트 도전 ${business.strategicAttempts}회 · 성공 또는 만회 운영 필요`,
-    },
-    {
-      id: "events",
-      title: "돌발 대응",
-      passed: events.passed,
-      detail: `해결 ${events.resolved}/${CAMPAIGN_EVENT_RESOLUTION_MIN} · 성공 ${events.successes}회 (${Math.round(events.successRate * 100)}%)`,
-      note: events.usedTrustRecoveryPath &&
-        events.successes < events.requiredSuccesses
-        ? "구매 신뢰로 불운한 결과를 만회"
-        : `성공률 ${Math.round(CAMPAIGN_EVENT_SUCCESS_RATE_MIN * 100)}% 목표`,
-    },
-  ];
-
+  const hints = getCampaignEndingHints(ending);
+  const complete = ending.qualifiedForBestEnding;
   return (
-    <section className="stewardship-audit" aria-label="최고 결산 운영 감사">
-      <div className="stewardship-audit-heading">
+    <section
+      aria-labelledby="campaign-ending-hints-title"
+      className={`campaign-ending-hints${complete ? " is-complete" : ""}`}
+    >
+      <div className="campaign-ending-hints-heading">
         <div>
-          <span>FINAL AUDIT QUALIFICATION</span>
-          <strong>최고 결산 운영 감사</strong>
+          <span>LOTUS · POST-MANDATE REVIEW</span>
+          <strong id="campaign-ending-hints-title">
+            {complete ? "지속 가능성 확인" : "다음 임기를 위한 단서"}
+          </strong>
           <small>
-            네 항목과 최종 자금 {CAMPAIGN_CASH_RESERVE_MIN}억 · 환경{" "}
-            {CAMPAIGN_ENVIRONMENT_STABLE_MIN}%를 모두 충족해야 합니다.
+            {complete
+              ? "운영·재정·환경의 인계 기준을 모두 통과했습니다."
+              : "이번 결산에서 보완할 방향만 요약했습니다."}
           </small>
         </div>
-        <b>{evaluation.passedPillars} / {items.length}</b>
       </div>
-      <div className="stewardship-audit-grid">
-        {items.map((item) => (
-          <article
-            className={item.passed ? "is-complete" : "is-pending"}
-            key={item.id}
-          >
-            <div>
-              <i aria-hidden="true">{item.passed ? "✓" : "·"}</i>
-              <strong>{item.title}</strong>
-            </div>
-            <span>{item.detail}</span>
-            <small>{item.note}</small>
-          </article>
-        ))}
-      </div>
+      {complete ? (
+        <p className="campaign-ending-hints-complete">
+          자금과 환경, 장기 운영 기록이 한쪽에 치우치지 않은 채 다음 시즌으로 인계됐습니다.
+        </p>
+      ) : (
+        <ul>
+          {hints.map((hint) => (
+            <li key={hint.id}>
+              <span>다음 임기 힌트</span>
+              <strong>{hint.title}</strong>
+              <p>{hint.body}</p>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
@@ -3175,8 +3193,7 @@ function CampaignEndPanel({
       <h1 id="campaign-end-title">{ending.title}</h1>
       <strong>
         {CAMPAIGN_CASH_LABEL[ending.bands.cash]} ·{" "}
-        {CAMPAIGN_ENVIRONMENT_LABEL[ending.bands.environment]} · 운영 감사{" "}
-        {ending.stewardship.passedPillars}/4
+        {CAMPAIGN_ENVIRONMENT_LABEL[ending.bands.environment]}
       </strong>
       <p>{ending.body} {strategicEndingCopy}</p>
       <dl className="campaign-end-metrics">
@@ -3201,7 +3218,7 @@ function CampaignEndPanel({
           <dd>{Math.round(game.purchaseTrust)} / 100</dd>
         </div>
       </dl>
-      <CampaignStewardshipAudit evaluation={ending.stewardship} />
+      <CampaignEndingHints ending={ending} />
       <small className="campaign-end-note">
         DAY {LAST_DECISION_DAY} 최종 금제 이후 {SETTLEMENT_DAYS}일의 관측
         결과로 확정된 공식 기록입니다.
@@ -4351,9 +4368,9 @@ function DistributionView({
           </strong>
         </span>
         <span>
-          <TrendIcon size={16} /> 결산 분기선
+          <TrendIcon size={16} /> 결산 평가
           <strong>
-            자금 {CAMPAIGN_CASH_TIGHT_MIN}·{CAMPAIGN_CASH_RESERVE_MIN}억 · 환경 {CAMPAIGN_ENVIRONMENT_CAUTION_MIN}·{CAMPAIGN_ENVIRONMENT_STABLE_MIN}
+            자금 여력 · 환경 안정 · 장기 운영 기록을 종합 반영
           </strong>
         </span>
       </div>
@@ -4818,6 +4835,7 @@ type FinanceChartDatum = {
   heat: number;
   release: boolean;
   ban: boolean;
+  releaseAge: number | null;
 };
 
 function getFinanceChartData(game: GameState): FinanceChartDatum[] {
@@ -4834,6 +4852,7 @@ function getFinanceChartData(game: GameState): FinanceChartDatum[] {
       heat: getCommunityHeat(game, entry.day),
       release: game.releaseHistory.some((batch) => batch.day === entry.day),
       ban: isBanDay(entry.day),
+      releaseAge: getReleaseAge(game, entry.day),
     }));
 
   return rows.map((row, index) => ({
@@ -4876,6 +4895,7 @@ function FinanceMarketChart({ game }: { game: GameState }) {
       index === 0 || data[index - 1].revenue <= 0
         ? 0
         : ((point.revenue - data[index - 1].revenue) / data[index - 1].revenue) * 100,
+    daySpan: index === 0 ? 0 : point.day - data[index - 1].day,
   }));
   const areaPath = points.length
     ? `M ${points.map((point) => `${point.x} ${point.y}`).join(" L ")} L ${points.at(-1)?.x} ${revenueBottom} L ${points[0].x} ${revenueBottom} Z`
@@ -4891,7 +4911,15 @@ function FinanceMarketChart({ game }: { game: GameState }) {
   const eventCandidates = points
     .map((point) => ({
       ...point,
-      priority: point.release || point.ban ? 3 : Math.abs(point.changeRate) >= 12 ? 2 : 0,
+      priority: point.release || point.ban
+        ? 3
+        : getRevenueChangeSignal(
+              point.changeRate,
+              point.releaseAge,
+              point.daySpan,
+            ) !== null
+          ? 2
+          : 0,
     }))
     .filter((point) => point.priority > 0)
     .sort((a, b) => b.priority - a.priority || Math.abs(b.changeRate) - Math.abs(a.changeRate));
@@ -5083,7 +5111,6 @@ function OperationsView({
   onRunAction: (action: BusinessActionType) => void;
 }) {
   const environmentHealth = getBusinessEnvironmentHealth(game);
-  const stewardship = getCampaignStewardshipEvaluation(game);
   const monthlyOperatingCost = getMonthlyOperatingCost(totalUsers(game));
   const isTodayRecorded = game.history.at(-1)?.day === game.day;
   const operatingDayLabel = isTodayRecorded
@@ -5169,8 +5196,6 @@ function OperationsView({
           value={`${Math.round(environmentHealth)} · ${environmentLabel}`}
         />
       </div>
-
-      <CampaignStewardshipAudit evaluation={stewardship} />
 
       <section className="operations-strategy-strip" aria-labelledby="business-strategy-title">
         <div className="operations-strategy-heading">

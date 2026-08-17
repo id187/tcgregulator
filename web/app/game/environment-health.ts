@@ -15,6 +15,13 @@ const GENERATION_WINDOW_DAYS = 90;
 const TURNOVER_WINDOW_DAYS = 30;
 const TOP_COHORT_SIZE = 5;
 
+/**
+ * Environment health intentionally measures a slower field than the public
+ * placement tier. Keep this explicit so shortening the public report window
+ * does not silently change the persisted health model.
+ */
+export const ENVIRONMENT_HEALTH_PLACEMENT_WINDOW_DAYS = 30;
+
 export const ENVIRONMENT_HEALTH_MODEL =
   "placement-v1" satisfies EnvironmentHealthModel;
 
@@ -220,11 +227,13 @@ export function getEnvironmentHealthBreakdown(
     state.history,
     state.seed,
     endDay,
+    ENVIRONMENT_HEALTH_PLACEMENT_WINDOW_DAYS,
   );
   const previousReport = getRecentPlacementReport(
     state.history,
     state.seed,
     endDay - TURNOVER_WINDOW_DAYS,
+    ENVIRONMENT_HEALTH_PLACEMENT_WINDOW_DAYS,
   );
   const gameplayQuality = getGameplayQuality(state);
   const placementDiversity = getPlacementDiversity(currentReport);

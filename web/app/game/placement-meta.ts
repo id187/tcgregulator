@@ -3,7 +3,7 @@ import type { MetaTier } from "./meta-tiers.ts";
 
 export const DAILY_TOP_CUT_SLOTS = 32;
 export const ESTIMATED_DAILY_TOURNAMENT_ENTRANTS = 400;
-export const PLACEMENT_WINDOW_DAYS = 30;
+export const PLACEMENT_WINDOW_DAYS = 14;
 export const PROVISIONAL_THEME_DAYS = 7;
 
 type PlacementMap = Record<ThemeId, number>;
@@ -25,6 +25,7 @@ export interface PlacementTierResult {
 }
 
 export interface ThemePlacementReport {
+  observedDays: number;
   placements: number;
   placementShare: number;
   estimatedEntrants: number;
@@ -222,10 +223,12 @@ export function getRecentPlacementReport(
     .sort((left, right) => left.day - right.day);
   const placementTotals = new Map<ThemeId, number>();
   const estimatedEntrants = new Map<ThemeId, number>();
+  const observedDays = new Map<ThemeId, number>();
 
   for (const entry of rows) {
     const placements = getDailyTopCutPlacements(entry, seed);
     for (const themeId of Object.keys(entry.shares) as ThemeId[]) {
+      observedDays.set(themeId, (observedDays.get(themeId) ?? 0) + 1);
       placementTotals.set(
         themeId,
         (placementTotals.get(themeId) ?? 0) + (placements[themeId] ?? 0),
@@ -241,6 +244,7 @@ export function getRecentPlacementReport(
   const themeIds = [...new Set([
     ...placementTotals.keys(),
     ...estimatedEntrants.keys(),
+    ...observedDays.keys(),
   ])].sort((left, right) => left.localeCompare(right));
   const totalPlacements = themeIds.reduce(
     (sum, themeId) => sum + (placementTotals.get(themeId) ?? 0),
@@ -253,6 +257,7 @@ export function getRecentPlacementReport(
       return [
         themeId,
         {
+          observedDays: observedDays.get(themeId) ?? 0,
           placements,
           placementShare:
             totalPlacements > 0 ? placements / totalPlacements : 0,
@@ -271,6 +276,11 @@ export function getRecentPlacementReport(
     totalPlacements,
     themes,
   };
+}
+
+export function hasCompletePlacementSample(observedDays: number): boolean {
+  return Number.isFinite(observedDays) &&
+    observedDays >= PLACEMENT_WINDOW_DAYS;
 }
 
 /** The first day on which a newly released theme can enter tournament data. */

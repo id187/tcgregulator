@@ -33,7 +33,10 @@ import {
 import { getCommunityHeat } from "../app/game/daily-community.ts";
 import { ENVIRONMENT_HEALTH_MODEL } from "../app/game/environment-health.ts";
 import { META_ADOPTION_SHARE_FLOOR } from "../app/game/meta-tiers.ts";
-import { DAILY_TOP_CUT_SLOTS } from "../app/game/placement-meta.ts";
+import {
+  DAILY_TOP_CUT_SLOTS,
+  PLACEMENT_WINDOW_DAYS,
+} from "../app/game/placement-meta.ts";
 import {
   getDailyOperatingCost,
   getMarketDivergenceLag,
@@ -1714,6 +1717,46 @@ test("packs for themes with stronger recent placements sell harder", () => {
     { type: "SUBMIT_RELEASE", selections },
   );
   assert.ok(highTier.finance.today > tierOut.finance.today);
+
+  const withConflictingPlacementWindows = (
+    latestFourteenDaysStrong: boolean,
+  ): State => {
+    assert.equal(PLACEMENT_WINDOW_DAYS, 14);
+    const state = structuredClone(atRelease);
+    const endDay = state.history.at(-1)?.day;
+    assert.ok(endDay);
+    const recentStartDay = endDay - PLACEMENT_WINDOW_DAYS + 1;
+    const formerThirtyDayStart = endDay - 30 + 1;
+    for (const entry of state.history) {
+      if (entry.day < formerThirtyDayStart) continue;
+      assert.ok(entry.topCutPlacements);
+      for (const themeId of Object.keys(entry.topCutPlacements)) {
+        entry.topCutPlacements[themeId] = 0;
+      }
+      const isLatestWindow = entry.day >= recentStartDay;
+      const targetIsStrong = isLatestWindow === latestFourteenDaysStrong;
+      entry.topCutPlacements[supportOption.themeId] = targetIsStrong
+        ? DAILY_TOP_CUT_SLOTS
+        : 0;
+      entry.topCutPlacements[donorId] = targetIsStrong
+        ? 0
+        : DAILY_TOP_CUT_SLOTS;
+    }
+    return state;
+  };
+
+  const latestWindowStrong = reduceGame(
+    withConflictingPlacementWindows(true),
+    { type: "SUBMIT_RELEASE", selections },
+  );
+  const staleWindowStrong = reduceGame(
+    withConflictingPlacementWindows(false),
+    { type: "SUBMIT_RELEASE", selections },
+  );
+  assert.ok(
+    latestWindowStrong.finance.today > staleWindowStrong.finance.today,
+    "pack demand must follow the latest fourteen days, not the older sixteen",
+  );
 });
 
 test("new-theme launch power and same-day sales ignore stale slate forecasts", () => {

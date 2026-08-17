@@ -9,6 +9,8 @@ import {
   getRecentPlacementReport,
   getThemeDebutDay,
   getTopCutPropensity,
+  hasCompletePlacementSample,
+  PLACEMENT_WINDOW_DAYS,
   type PlacementHistoryEntry,
 } from "../app/game/placement-meta.ts";
 import type { ThemeId } from "../app/game/types.ts";
@@ -95,7 +97,7 @@ test("uses saved placement counts and reconstructs legacy history deterministica
   assert.equal(saved.topCutPlacements?.[cycle], reconstructed[cycle]);
 });
 
-test("aggregates an inclusive recent-30-day report with observed conversion", () => {
+test("aggregates an inclusive recent-14-day report with observed conversion", () => {
   const history = Array.from({ length: 31 }, (_, index) => {
     const day = index + 1;
     return {
@@ -116,15 +118,21 @@ test("aggregates an inclusive recent-30-day report with observed conversion", ()
   });
   const report = getRecentPlacementReport(history, 202, 31);
 
-  assert.equal(report.startDay, 2);
-  assert.equal(report.recordedDays, 30);
-  assert.equal(report.totalPlacements, 30 * DAILY_TOP_CUT_SLOTS);
+  assert.equal(report.startDay, 18);
+  assert.equal(report.recordedDays, PLACEMENT_WINDOW_DAYS);
+  assert.equal(report.totalPlacements, PLACEMENT_WINDOW_DAYS * DAILY_TOP_CUT_SLOTS);
   assert.equal(report.themes[cycle].placementShare, 0.75);
   assert.equal(report.themes[whiteNight].placementShare, 0.25);
-  assert.equal(report.themes[cycle].estimatedEntrants, 30 * 400 * 0.75);
+  assert.equal(report.themes[cycle].observedDays, PLACEMENT_WINDOW_DAYS);
+  assert.equal(report.themes[whiteNight].observedDays, PLACEMENT_WINDOW_DAYS);
+  assert.equal(
+    report.themes[cycle].estimatedEntrants,
+    PLACEMENT_WINDOW_DAYS * 400 * 0.75,
+  );
   assert.equal(
     report.themes[cycle].observedConversion,
-    (30 * 24) / (30 * 400 * 0.75),
+    (PLACEMENT_WINDOW_DAYS * 24) /
+      (PLACEMENT_WINDOW_DAYS * 400 * 0.75),
   );
   assert.equal(
     Object.values(report.themes).reduce(
@@ -133,6 +141,39 @@ test("aggregates an inclusive recent-30-day report with observed conversion", ()
     ),
     1,
   );
+});
+
+test("reports each theme's actual observed days without filling the window", () => {
+  const history = Array.from({ length: PLACEMENT_WINDOW_DAYS }, (_, index) => {
+    const day = index + 1;
+    const released = day >= 9;
+    return {
+      day,
+      shares: released
+        ? { [cycle]: 0.9, [whiteNight]: 0.1 }
+        : { [cycle]: 1 },
+      winRates: released
+        ? { [cycle]: 0.5, [whiteNight]: 0.5 }
+        : { [cycle]: 0.5 },
+      topCutPlacements: released
+        ? { [cycle]: 29, [whiteNight]: 3 }
+        : { [cycle]: DAILY_TOP_CUT_SLOTS },
+    } as PlacementHistoryEntry;
+  });
+
+  const report = getRecentPlacementReport(
+    history,
+    303,
+    PLACEMENT_WINDOW_DAYS,
+  );
+
+  assert.equal(report.themes[cycle].observedDays, PLACEMENT_WINDOW_DAYS);
+  assert.equal(report.themes[whiteNight].observedDays, 6);
+  assert.equal(report.themes[whiteNight].placements, 18);
+  assert.equal(report.themes[whiteNight].estimatedEntrants, 6 * 400 * 0.1);
+  assert.equal(report.themes[whiteNight].observedConversion, 18 / 240);
+  assert.equal(hasCompletePlacementSample(13), false);
+  assert.equal(hasCompletePlacementSample(14), true);
 });
 
 test("applies absolute placement tiers and a seven-day provisional floor", () => {

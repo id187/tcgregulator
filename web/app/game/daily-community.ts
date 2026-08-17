@@ -30,7 +30,10 @@ import {
 } from "./campaign.ts";
 import { interpolateKorean } from "./korean-particles.ts";
 import { getStableThemeRandomIdentifier } from "./future-theme-id-migration.ts";
-import { getRecentPlacementReport } from "./placement-meta.ts";
+import {
+  getRecentPlacementReport,
+  PLACEMENT_WINDOW_DAYS,
+} from "./placement-meta.ts";
 import type {
   RecentPlacementReport,
   ThemePlacementReport,
@@ -841,6 +844,52 @@ const BALANCED_RELEASE_COPY = [
   "미러전도 운영 싸움이라 발매 초반치고 보는 맛 있네",
   "강하다는 쪽도 약하다는 쪽도 근거가 있어서 결과 나오기 전엔 모르겠다",
   "기존 환경을 밀어내진 않고 새 선택지 하나 들어온 느낌이라 좋음",
+] as const;
+
+const EMERGING_THEME_OFFICIAL_SAMPLE_DAYS = PLACEMENT_WINDOW_DAYS;
+const EMERGING_THEME_PERFORMANCE_SAMPLE_DAYS = 7;
+
+const EMERGING_THEME_CAUTION_COPY = [
+  "{theme} 나온 지 {elapsed}밖에 안 됐는데 벌써 결론 내리는 건 너무 빠르다",
+  "고작 {elapsed} 본 덱이다. 강하든 약하든 조금 더 기다려 보자",
+  "{elapsed}치 성적만 보고 {theme}를 다 파악했다고 하긴 이르지",
+  "{theme} 나온 지 아직 {elapsed}인데 벌써 확정적으로 말하는 쪽이 제일 성급함",
+] as const;
+
+const EMERGING_THEME_EARLY_POSITIVE_COPY = [
+  "{elapsed} 봤는데 채용률 {adoption}, 승률 {winRate}면 {theme} 첫인상은 벌써 기대된다",
+  "나온 지 {elapsed}인데 {theme} 탑컷 점유율 {placementShare}, 본선 진출률 {conversion}면 시작은 좋네",
+  "표본 더 쌓여야 하는 건 맞아도 {theme}가 벌써 승률 {winRate} 찍는 건 기대할 만함",
+] as const;
+
+const EMERGING_THEME_POSITIVE_COPY = [
+  "{elapsed} 봤으면 첫 성적표는 나왔다. {theme} 본선 진출률 {conversion}면 앞으로가 더 기대됨",
+  "{theme} 채용률 {adoption}에 탑컷 점유율 {placementShare}면 아직 더 봐도 강할 가능성이 높아 보임",
+  "일단 {elapsed} 동안 승률 {winRate}, 본선 진출률 {conversion}다. {theme} 기대하는 쪽 근거도 충분함",
+] as const;
+
+const EMERGING_THEME_EARLY_BUBBLE_COPY = [
+  "{elapsed}밖에 안 됐어도 {theme} 채용률 {adoption}에 본선 진출률 {conversion}면 거품 첫인상은 온다",
+  "벌써 이렇게 많이 들고 왔는데 탑컷 점유율 {placementShare}뿐이면 {theme} 시작부터 불안한데",
+  "더 기다리자는 말은 맞지만 승률 {winRate}면 {theme}가 채용만 높은 건 아닌지 의심할 만함",
+] as const;
+
+const EMERGING_THEME_BUBBLE_COPY = [
+  "{elapsed} 봤으면 충분하다. {theme} 채용률 {adoption}인데 본선 진출률 {conversion}면 거품 쪽임",
+  "{theme}를 많이 들고 왔는데 탑컷 점유율은 {placementShare}다. 벌써 흥행만 하고 성적은 망한 느낌",
+  "채용률 {adoption}에 승률 {winRate}, 본선 진출률 {conversion}면 {theme}는 인기와 성능이 따로 노는 중",
+] as const;
+
+const EMERGING_THEME_WEAK_TO_STRONG_COPY = [
+  "내가 {theme}는 좀 더 기다려 보랬지. 지금은 탑컷 점유율 {placementShare}, 본선 진출률 {conversion}까지 반등했다",
+  "처음엔 약해 보여도 더 지켜보자던 쪽이 맞았네. {theme} 승률 {winRate}에 본선 진출률 {conversion}다",
+  "{theme} 첫 주 성적만으로 접은 사람은 아쉽겠다. 기다려 보니 탑컷 점유율 {placementShare}까지 올라왔네",
+] as const;
+
+const EMERGING_THEME_STRONG_TO_WEAK_COPY = [
+  "{theme}는 첫 주 반짝이었다. 더 기다려 보니 채용률 {adoption}에 본선 진출률 {conversion}라 거품 쪽으로 기우네",
+  "초반엔 {theme}가 다 잡을 것 같더니 지금 승률 {winRate}, 탑컷 점유율 {placementShare}다. 기다려 보길 잘했네",
+  "첫 며칠 수치만 보면 강해 보였는데 {theme} 본선 진출률 {conversion}까지 내려온 걸 보니 결론이 바뀐다",
 ] as const;
 
 const STRONG_THEME_STRONG_SUPPORT_COPY = [
@@ -1760,67 +1809,67 @@ const MISSED_SLEEPER_GENERAL_COPY = [
 ] as const;
 
 const HIGH_PLACEMENT_HIGH_CONVERSION_CUT_COPY = [
-  "{theme}는 최근 {placementDays}일 탑컷 {placements}회에 입상 전환 {conversion}다. 픽률만 높은 덱과는 근거가 다르네",
-  "채용도 많고 입상 지분 {placementShare}도 크다면 {theme} 대상 선정 자체는 성적표를 읽은 셈임",
+  "{theme}는 최근 {placementDays}일 탑컷 {placements}회에 본선 진출률 {conversion}다. 픽률만 높은 덱과는 근거가 다르네",
+  "채용도 많고 탑컷 점유율 {placementShare}도 크다면 {theme} 대상 선정 자체는 성적표를 읽은 셈임",
   "{theme} 유저 수만 많은 게 아니라 탑컷 생존율도 높았다. 이번은 인기세만 잡은 건 아님",
-  "최근 집계에서 {theme}가 {placements}자리를 먹고 전환율 {conversion}를 냈으면 실전 위협은 확인됐다",
-  "점유율과 입상 지분이 같이 튀었다. {theme}를 본 건 티어 이름보다 실적 때문이어야 함",
-  "{placementShare} 입상 파이와 {conversion} 전환율이면 {theme}는 표본도 결과도 경고였다. 이제 강도를 따져야지",
+  "최근 집계에서 {theme}가 {placements}자리를 먹고 본선 진출률 {conversion}를 냈으면 실전 위협은 확인됐다",
+  "채용률과 탑컷 점유율이 같이 튀었다. {theme}를 본 건 티어 이름보다 실적 때문이어야 함",
+  "탑컷 점유율 {placementShare}와 본선 진출률 {conversion}면 {theme}는 표본도 결과도 경고였다. 이제 강도를 따져야지",
   "{theme} 채용률만 높은 게 아니라 {placementDays}일 입상표에서도 {placementShare}를 차지했다. 결과 근거는 있음",
   "탑컷 {placements}회를 상위권 표본으로 보면 {theme}는 단순 유행 덱이었다고 하기 어렵다",
-  "전환율 {conversion}와 입상 지분 {placementShare}가 같이 높았다. {theme}를 검토한 이유는 픽률 외에도 분명함",
+  "본선 진출률 {conversion}와 탑컷 점유율 {placementShare}가 같이 높았다. {theme}를 검토한 이유는 픽률 외에도 분명함",
   "최근 {placementDays}일에 {theme}가 만든 탑컷이 {placements}회면 표본 크기와 성적을 동시에 충족했다",
 ] as const;
 
 const HIGH_PICK_WEAK_PLACEMENT_CUT_COPY = [
-  "{theme}는 픽은 많았는데 최근 {placementDays}일 입상 전환이 {conversion}에 그쳤다. 인기를 성능으로 잘못 읽은 거 아님?",
+  "{theme}는 픽은 많았는데 최근 {placementDays}일 본선 진출률이 {conversion}에 그쳤다. 인기를 성능으로 잘못 읽은 거 아님?",
   "대회장에 {theme}가 많았던 건 맞지만 탑컷 지분은 {placementShare}뿐이다. 입상까지 간 덱을 보자",
   "{theme} 채용률에 비해 탑컷 {placements}회는 약하다. 유행 표본을 강덱 표본으로 세지 마",
-  "전환율 {conversion}인 고픽 덱을 자르고 적정 금제라고 하면 성적 해석이 뒤집힌다",
+  "본선 진출률 {conversion}인 고픽 덱을 자르고 적정 금제라고 하면 성적 해석이 뒤집힌다",
   "픽률표에서는 {theme}가 위였지만 입상표에서는 그렇지 않았다. 왜 제재 우선이었나",
-  "{theme} 탑컷 전환이 평균보다 낮았다면 체감 빈도와 실전 위협을 분리해야 한다",
-  "{placementDays}일 동안 {theme} 입상 지분은 {placementShare}였다. 픽이 많았다는 사실만으로 우선 제재하긴 약함",
+  "{theme} 본선 진출률이 평균보다 낮았다면 체감 빈도와 실전 위협을 분리해야 한다",
+  "{placementDays}일 동안 {theme} 탑컷 점유율은 {placementShare}였다. 픽이 많았다는 사실만으로 우선 제재하긴 약함",
   "상위권에 올라간 {theme}가 {placements}개라면 대회장 모수보다 탑컷 효율을 먼저 물어야지",
-  "{theme} 전환율 {conversion}는 전체 기준보다 낮았다. 고픽이라는 이유만으로 성능 금제하면 안 됨",
+  "{theme} 본선 진출률 {conversion}는 전체 기준보다 낮았다. 고픽이라는 이유만으로 성능 금제하면 안 됨",
   "입상 자료가 붙었는데도 {theme} 픽 숫자만 보었다면 데이터를 반만 읽은 판단이다",
 ] as const;
 
 const MIXED_WIN_PLACEMENT_CUT_COPY = [
-  "{theme} 매치 승률은 {decisionWinRate}인데 최근 {placementDays}일 탑컷 전환은 {conversion}다. 서로 반대라 하나만 보고 칭찬하거나 비판할 수 없음",
-  "채용률·승률 조합만 보면 우선순위가 낮아 보이지만 {theme} 입상 지분은 {placementShare}였다. 대상 선정 근거를 더 공개해야 함",
+  "{theme} 매치 승률은 {decisionWinRate}인데 최근 {placementDays}일 본선 진출률은 {conversion}다. 서로 반대라 하나만 보고 칭찬하거나 비판할 수 없음",
+  "채용률·승률 조합만 보면 우선순위가 낮아 보이지만 {theme} 탑컷 점유율은 {placementShare}였다. 대상 선정 근거를 더 공개해야 함",
   "{theme} 승률 {decisionWinRate}와 탑컷 {placements}회가 다른 방향을 가리킨다. 표본·대회 구조부터 분리해서 보자",
   "일반 매치에서는 {theme}가 지고 탑컷에서는 {conversion}로 남았다. 순위만으로도 금제표만으로도 단정 못 함",
   "{theme}는 승률만 보면 거품인데 입상 자료만 보면 실적이 있다. 이런 충돌 신호에서는 보류한 평가가 맞지",
   "{placementDays}일 입상 표본은 {theme}를 위협으로 보고 매치 승률은 그렇지 않다. 두 지표 가중치를 먼저 설명해 줘",
-  "{theme} 입상 지분 {placementShare}가 높아도 승률 {decisionWinRate}를 없던 숫자로 취급할 수는 없다",
-  "승률은 약하고 전환율은 강한 {theme}라면 숙련도·대회 편향·매치업을 보지 않고서는 대상 선정을 평가하기 어렵다",
+  "{theme} 탑컷 점유율 {placementShare}가 높아도 승률 {decisionWinRate}를 없던 숫자로 취급할 수는 없다",
+  "승률은 약하고 본선 진출률은 강한 {theme}라면 숙련도·대회 편향·매치업을 보지 않고서는 대상 선정을 평가하기 어렵다",
   "{theme} 탑컷 {placements}회는 무시할 수 없고 {decisionWinRate} 승률도 무시할 수 없다. 이번은 평가 보류 분기임",
   "채용률·승률·입상이 한 방향이 아닌 {theme}를 단순 1티어 컷으로 포장하면 판단 과정을 숨기는 거다",
 ] as const;
 
 const LOW_PICK_STRONG_CONVERSION_CUT_COPY = [
-  "{theme}는 점유율은 낮아도 최근 {placementDays}일 입상 전환 {conversion}를 냈다. 숨은 강덱 근거는 있네",
+  "{theme}는 채용률은 낮아도 최근 {placementDays}일 본선 진출률 {conversion}를 냈다. 숨은 강덱 근거는 있네",
   "{theme} 픽 표본은 적은데 탑컷에 {placements}회 올랐다. 단순 하위 순위 덱으로 보기는 어렵지",
-  "저픽 {theme}가 전환율은 평균보다 훨씬 높았다. 티어표 줄보다 입상 자료를 본 판단이라면 이해됨",
-  "채용률만 보면 과잉인데 {conversion} 탑컷 전환을 보면 {theme}는 선제 검토 대상이었다",
+  "저픽 {theme}가 본선 진출률은 평균보다 훨씬 높았다. 티어표 줄보다 입상 자료를 본 판단이라면 이해됨",
+  "채용률만 보면 과잉인데 본선 진출률 {conversion}를 보면 {theme}는 선제 검토 대상이었다",
   "{theme}가 적게 잡힌 건 맞지만 잡은 사람의 입상 비율이 높았다. 표본 크기와 실질 위협을 같이 봐야 함",
-  "입상 지분 {placementShare}보다 주목할 건 {conversion} 전환이다. {theme}는 퍼지기 전 강덱일 수 있었음",
+  "탑컷 점유율 {placementShare}보다 주목할 건 본선 진출률 {conversion}다. {theme}는 퍼지기 전 강덱일 수 있었음",
   "{placementDays}일 표본에서 {theme} 전환이 {conversion}라면 낮은 채용률을 안전 신호로 볼 수는 없다",
   "사용자는 적어도 {theme}로 탑컷한 횟수가 {placements}회다. 소수 숙련자 편향인지 덱 체급인지 검토할 만함",
-  "점유율 순위는 낮았지만 {placementShare} 입상 지분을 낸 {theme}라면 티어표 밖의 강덱으로 볼 근거가 생긴다",
+  "채용률 순위는 낮았지만 탑컷 점유율 {placementShare}를 낸 {theme}라면 티어표 밖의 강덱으로 볼 근거가 생긴다",
   "{theme} 채용률과 {conversion} 전환의 격차가 크다. 이런 덱을 찾아내는 게 단순 상위 픽 순위보다 어려운 판단임",
 ] as const;
 
 const MISSED_STRONG_CONVERSION_SLEEPER_COPY = [
   "안 자른 {other}는 최근 {otherPlacementDays}일 탑컷 {otherPlacements}회, 전환 {otherConversion}다. 다음 승계 위협을 놓쳤네",
-  "{other}는 저픽이어도 입상 전환이 {otherConversion}였다. 현재 순위만 보고 통과시킨 거지",
+  "{other}는 저픽이어도 본선 진출률이 {otherConversion}였다. 현재 순위만 보고 통과시킨 거지",
   "픽률표 밖의 {other}가 탑컷에는 {otherPlacements}번 남았다. 이게 풍선효과 후보 아님?",
-  "{other}의 {otherConversion} 입상 전환 신호를 놓쳤다. 자른 표만 넓어도 대상 선정을 잘한 게 아님",
-  "숨은 강덱은 픽률보다 전환율에서 먼저 보인다. {other} {otherConversion}를 넘긴 건 명백한 빈칸임",
+  "{other}의 본선 진출률 {otherConversion} 신호를 놓쳤다. 자른 표만 넓어도 대상 선정을 잘한 게 아님",
+  "숨은 강덱은 픽률보다 본선 진출률에서 먼저 보인다. {other} {otherConversion}를 넘긴 건 명백한 빈칸임",
   "{otherShare} 픽만 보면 작아 보여도 {otherPlacements}회 입상은 그렇지 않다. 입상 자료를 왜 붙인 거야",
   "{other}는 {otherPlacementDays}일 입상표에서 {otherPlacements}자리를 남겼다. 저픽이라 빼는 게 아니라 승계 위협으로 봤어야 함",
-  "전환율 {otherConversion}인 {other}를 통과시키고 현재 픽 순위만 조정했다. 다음 메타를 본 표라고 하기 어렵다",
-  "{otherShare} 채용률을 이유로 {other}를 제외했지만 입상 전환은 {otherConversion}였다. 선정 기준이 뒤집힘",
+  "본선 진출률 {otherConversion}인 {other}를 통과시키고 현재 픽 순위만 조정했다. 다음 메타를 본 표라고 하기 어렵다",
+  "{otherShare} 채용률을 이유로 {other}를 제외했지만 본선 진출률은 {otherConversion}였다. 선정 기준이 뒤집힘",
   "빈자리를 받을 {other}의 탑컷이 이미 {otherPlacements}회다. 이렇게 보이는 복병을 빼고 금제표를 평가할 수는 없음",
 ] as const;
 
@@ -1828,7 +1877,7 @@ const PERFORMANCE_BLIND_TIER_COVERAGE_COPY = [
   "1·2티어를 둘 다 건드렸어도 승률과 입상 근거가 약한 대상이 끼었다면 균형 금제가 아님",
   "1티어·2티어 칸을 채운 것과 실제 위협을 자른 것은 다르다. 이번은 후자 검증이 빈다",
   "상위 두 구간을 커버했다는 숫자만으로는 부족하다. 1·2티어 대상의 실전 성적부터 다시 봐야 함",
-  "1티어와 2티어에서 두 장씩 골랐다고 대상 선정까지 적정해지진 않는다. 입상 전환을 빼먹었네",
+  "1티어와 2티어에서 두 장씩 골랐다고 대상 선정까지 적정해지진 않는다. 본선 진출률을 빼먹었네",
   "현역 두 구간을 모두 놓은 형식은 맞아도 1·2티어 안에서 약체를 자른 선정은 따로 비판받아야 한다",
   "1·2티어 범위는 넓었지만 픽률·승률·입상을 함께 보지 않으면 범위 자체가 칭찬거리는 아님",
 ] as const;
@@ -2842,7 +2891,6 @@ type RecentRestrictionDecision = {
   age: 1 | 2 | 3;
   anchors: RestrictionAnchor[];
   placementReport: RecentPlacementReport;
-  placementObservedDays: Partial<Record<ThemeId, number>>;
 };
 
 function partAvailability(
@@ -2956,20 +3004,6 @@ function recentRestrictionDecision(
       state.seed,
       decisionDay,
     );
-    const placementObservedDays: Partial<Record<ThemeId, number>> = {};
-    for (const entry of state.history) {
-      if (
-        entry.day < placementReport.startDay ||
-        entry.day > placementReport.endDay
-      ) {
-        continue;
-      }
-      for (const [themeId, share] of Object.entries(entry.shares)) {
-        if (!Number.isFinite(share) || share <= 0) continue;
-        placementObservedDays[themeId] =
-          (placementObservedDays[themeId] ?? 0) + 1;
-      }
-    }
     const anchors: RestrictionAnchor[] = provisional.map((anchor) => {
       const totalImpact = totalImpactByTheme.get(anchor.content.id) ?? 0;
       const cutCount = cutsByTheme.get(anchor.content.id) ?? 0;
@@ -3032,7 +3066,6 @@ function recentRestrictionDecision(
       age,
       anchors,
       placementReport,
-      placementObservedDays,
     };
   }
   return undefined;
@@ -3706,7 +3739,6 @@ type PlacementPerformanceProfile =
 type PlacementEvidence = ThemePlacementReport & {
   adoptionShare: number;
   baselineConversion: number;
-  observedDays: number;
 };
 
 type RestrictionPerformanceAssessment = {
@@ -3774,7 +3806,6 @@ function placementEvidence(
     ...theme,
     adoptionShare: theme.estimatedEntrants / totalEntrants,
     baselineConversion: report.totalPlacements / totalEntrants,
-    observedDays: context.placementObservedDays[themeId] ?? 0,
   };
 }
 
@@ -4812,6 +4843,305 @@ function historyAtOrBefore(state: GameState, day: number) {
   return undefined;
 }
 
+type EmergingThemeEvidence = {
+  content: ThemeContent;
+  debutDay: number;
+  elapsedDays: number;
+  observedDays: number;
+  adoptionShare: number;
+  winRate: number;
+  placement: ThemePlacementReport;
+  relativePlacement: number;
+  relativeConversion: number;
+  highAdoption: boolean;
+};
+
+type EmergingPerformanceTone = "strong" | "weak" | "ordinary";
+
+function naturalElapsedDays(days: number): string {
+  const words = [
+    "하루",
+    "이틀",
+    "사흘",
+    "나흘",
+    "닷새",
+    "엿새",
+    "일주일",
+    "여드레",
+    "아흐레",
+    "열흘",
+    "열하루",
+    "열이틀",
+    "열사흘",
+    "두 주",
+  ] as const;
+  return words[Math.max(1, Math.min(words.length, days)) - 1];
+}
+
+function containsOfficialTierNumberClaim(copy: string): boolean {
+  return /(?:[0-3]티어|Tier\s*[0-3])/.test(copy);
+}
+
+function isCollectingNewThemeAtDay(
+  state: GameState,
+  themeId: ThemeId,
+  day: number,
+): boolean {
+  let debutDay: number | null = null;
+  for (const batch of state.releaseHistory) {
+    if (
+      batch.products.some(
+        (product) =>
+          product.kind === "new-theme" && product.themeId === themeId,
+      )
+    ) {
+      const candidate = batch.day + 1;
+      debutDay = debutDay === null ? candidate : Math.min(debutDay, candidate);
+    }
+  }
+  if (debutDay === null) return false;
+  const elapsedDays = day - debutDay + 1;
+  return elapsedDays >= 1 && elapsedDays < PLACEMENT_WINDOW_DAYS;
+}
+
+function emergingThemeEvidenceAt(
+  state: GameState,
+  themeId: ThemeId,
+  debutDay: number,
+  endDay: number,
+  windowDays: number,
+): EmergingThemeEvidence | null {
+  const snapshot = historyAtOrBefore(state, endDay);
+  const content = THEME_BY_ID[themeId];
+  const adoptionShare = snapshot?.shares[themeId];
+  if (
+    !content ||
+    !snapshot ||
+    typeof adoptionShare !== "number" ||
+    !Number.isFinite(adoptionShare) ||
+    adoptionShare <= 0
+  ) {
+    return null;
+  }
+  const report = getRecentPlacementReport(
+    state.history,
+    state.seed,
+    endDay,
+    windowDays,
+  );
+  const placement = report.themes[themeId];
+  if (!placement || report.recordedDays === 0 || report.totalPlacements === 0) {
+    return null;
+  }
+  const totalEntrants = Object.values(report.themes).reduce(
+    (sum, candidate) => sum + candidate.estimatedEntrants,
+    0,
+  );
+  const windowAdoption = totalEntrants > 0
+    ? placement.estimatedEntrants / totalEntrants
+    : adoptionShare;
+  const baselineConversion = totalEntrants > 0
+    ? report.totalPlacements / totalEntrants
+    : 0;
+  const leaderShare = Math.max(
+    adoptionShare,
+    ...Object.values(snapshot.shares).filter(
+      (share) => Number.isFinite(share) && share > 0,
+    ),
+  );
+  return {
+    content,
+    debutDay,
+    elapsedDays: Math.max(1, endDay - debutDay + 1),
+    observedDays: placement.observedDays,
+    adoptionShare,
+    winRate: snapshot.winRates?.[themeId] ?? 0.5,
+    placement,
+    relativePlacement:
+      placement.placementShare / Math.max(0.001, windowAdoption),
+    relativeConversion:
+      baselineConversion > 0
+        ? placement.observedConversion / baselineConversion
+        : 1,
+    highAdoption: isHighAdoption(adoptionShare, leaderShare),
+  };
+}
+
+function emergingPerformanceTone(
+  evidence: EmergingThemeEvidence,
+): EmergingPerformanceTone {
+  const weakResults =
+    evidence.winRate <= 0.495 ||
+    evidence.relativePlacement <= 0.8 ||
+    evidence.relativeConversion <= 0.8;
+  if (evidence.highAdoption && weakResults) return "weak";
+  if (
+    evidence.winRate >= 0.525 ||
+    (
+      evidence.relativePlacement >= 1.15 &&
+      evidence.relativeConversion >= 1.15
+    )
+  ) {
+    return "strong";
+  }
+  return "ordinary";
+}
+
+function emergingThemeCandidates(
+  state: GameState,
+  day: number,
+): EmergingThemeEvidence[] {
+  const byTheme = new Map<ThemeId, EmergingThemeEvidence>();
+  for (const batch of state.releaseHistory) {
+    const debutDay = batch.day + 1;
+    if (debutDay > day) continue;
+    for (const product of batch.products) {
+      if (product.kind !== "new-theme") continue;
+      const evidence = emergingThemeEvidenceAt(
+        state,
+        product.themeId,
+        debutDay,
+        day,
+        EMERGING_THEME_OFFICIAL_SAMPLE_DAYS,
+      );
+      if (evidence) byTheme.set(product.themeId, evidence);
+    }
+  }
+  return [...byTheme.values()].sort(
+    (left, right) =>
+      right.adoptionShare - left.adoptionShare ||
+      left.content.id.localeCompare(right.content.id),
+  );
+}
+
+function emergingCopyValues(
+  evidence: EmergingThemeEvidence,
+): Record<string, string> {
+  return {
+    theme: evidence.content.shortName,
+    elapsed: naturalElapsedDays(evidence.elapsedDays),
+    adoption: `${(evidence.adoptionShare * 100).toFixed(1)}%`,
+    winRate: `${(evidence.winRate * 100).toFixed(1)}%`,
+    placementShare: `${(evidence.placement.placementShare * 100).toFixed(1)}%`,
+    conversion: `${(evidence.placement.observedConversion * 100).toFixed(1)}%`,
+  };
+}
+
+function makeEmergingThemeContextPosts(
+  state: GameState,
+  day: number,
+): CommunityEvent[] {
+  const candidates = emergingThemeCandidates(state, day);
+  const collecting = candidates.find(
+    (candidate) =>
+      candidate.observedDays >= 1 &&
+      candidate.observedDays < EMERGING_THEME_OFFICIAL_SAMPLE_DAYS &&
+      candidate.elapsedDays < EMERGING_THEME_OFFICIAL_SAMPLE_DAYS,
+  );
+  if (collecting) {
+    const values = emergingCopyValues(collecting);
+    const cautiousCopy = EMERGING_THEME_CAUTION_COPY[
+      keyedIndex(
+        EMERGING_THEME_CAUTION_COPY.length,
+        state.seed,
+        "emerging-theme-caution",
+        day,
+        collecting.content.id,
+      )
+    ];
+    const earlyTone = emergingPerformanceTone(collecting);
+    const bubble = earlyTone === "weak" || (
+      earlyTone === "ordinary" &&
+      collecting.highAdoption &&
+      collecting.winRate < 0.5
+    );
+    const evaluationPool = bubble
+      ? collecting.observedDays < EMERGING_THEME_PERFORMANCE_SAMPLE_DAYS
+        ? EMERGING_THEME_EARLY_BUBBLE_COPY
+        : EMERGING_THEME_BUBBLE_COPY
+      : collecting.observedDays < EMERGING_THEME_PERFORMANCE_SAMPLE_DAYS
+        ? EMERGING_THEME_EARLY_POSITIVE_COPY
+        : EMERGING_THEME_POSITIVE_COPY;
+    const evaluationCopy = evaluationPool[
+      keyedIndex(
+        evaluationPool.length,
+        state.seed,
+        "emerging-theme-evaluation",
+        day,
+        collecting.content.id,
+        bubble ? "bubble" : "positive",
+      )
+    ];
+    return [
+      {
+        id: `daily-emerging-${collecting.debutDay}-${collecting.content.id}-${day}-caution`,
+        day,
+        category: "meta",
+        type: "meta-analysis",
+        themeId: collecting.content.id,
+        body: fillCommunityCopy(cautiousCopy, values),
+      },
+      {
+        id: `daily-emerging-${collecting.debutDay}-${collecting.content.id}-${day}-evaluation`,
+        day,
+        category: "meta",
+        type: "meta-analysis",
+        themeId: collecting.content.id,
+        body: fillCommunityCopy(evaluationCopy, values),
+      },
+    ];
+  }
+
+  const reversals = candidates.flatMap((current) => {
+    if (
+      current.observedDays !== EMERGING_THEME_OFFICIAL_SAMPLE_DAYS ||
+      current.elapsedDays !== EMERGING_THEME_OFFICIAL_SAMPLE_DAYS
+    ) return [];
+    const earlyEndDay = current.debutDay +
+      EMERGING_THEME_PERFORMANCE_SAMPLE_DAYS - 1;
+    const early = emergingThemeEvidenceAt(
+      state,
+      current.content.id,
+      current.debutDay,
+      earlyEndDay,
+      EMERGING_THEME_PERFORMANCE_SAMPLE_DAYS,
+    );
+    if (!early) return [];
+    const earlyTone = emergingPerformanceTone(early);
+    const currentTone = emergingPerformanceTone(current);
+    if (
+      (earlyTone !== "weak" || currentTone !== "strong") &&
+      (earlyTone !== "strong" || currentTone !== "weak")
+    ) {
+      return [];
+    }
+    return [{ current, earlyTone, currentTone }];
+  });
+  const reversal = reversals[0];
+  if (!reversal) return [];
+  const pool = reversal.currentTone === "strong"
+    ? EMERGING_THEME_WEAK_TO_STRONG_COPY
+    : EMERGING_THEME_STRONG_TO_WEAK_COPY;
+  const copy = pool[
+    keyedIndex(
+      pool.length,
+      state.seed,
+      "emerging-theme-reversal",
+      day,
+      reversal.current.content.id,
+      reversal.currentTone,
+    )
+  ];
+  return [{
+    id: `daily-emerging-${reversal.current.debutDay}-${reversal.current.content.id}-${day}-reversal`,
+    day,
+    category: "meta",
+    type: "meta-analysis",
+    themeId: reversal.current.content.id,
+    body: fillCommunityCopy(copy, emergingCopyValues(reversal.current)),
+  }];
+}
+
 function fatigueStage(state: GameState, day: number): 0 | 1 | 2 | 3 {
   if (day !== state.day) return 0;
   let stage: 0 | 1 | 2 | 3 = 0;
@@ -5354,21 +5684,35 @@ function reactionCopyPool(
   supportContext: SupportReactionContext | null,
 ): readonly string[] {
   const lifecycleIndex = age - 1;
-  if (preferArt) return RELEASE_ART_COPY[lifecycleIndex];
-  if (daysSinceRestriction !== null) return BACKLASH_RELEASE_COPY;
-  if (supportContext) return supportReactionCopyPool(supportContext);
-  if (!forceProductTone && index % 4 === 1) return CASUAL_RELEASE_COPY;
-  if (!forceProductTone && index % 4 === 3) return SPECTATOR_RELEASE_COPY;
-  if (!forceProductTone && age > 0 && index % 3 === 0) {
-    return RELEASE_LIFECYCLE_COPY[lifecycleIndex];
+  let selected: readonly string[];
+  if (preferArt) selected = RELEASE_ART_COPY[lifecycleIndex];
+  else if (daysSinceRestriction !== null) selected = BACKLASH_RELEASE_COPY;
+  else if (supportContext) selected = supportReactionCopyPool(supportContext);
+  else if (!forceProductTone && index % 4 === 1) selected = CASUAL_RELEASE_COPY;
+  else if (!forceProductTone && index % 4 === 3) selected = SPECTATOR_RELEASE_COPY;
+  else if (!forceProductTone && age > 0 && index % 3 === 0) {
+    selected = RELEASE_LIFECYCLE_COPY[lifecycleIndex];
+  } else {
+    const greed = isGreedRelease(product);
+    const weak = isWeakRelease(product);
+    selected = greed && weak
+      ? index % 2 === 0
+        ? STRONG_RELEASE_COPY
+        : WEAK_RELEASE_COPY
+      : greed
+        ? STRONG_RELEASE_COPY
+        : weak
+          ? WEAK_RELEASE_COPY
+          : lifecycleIndex > 0
+            ? RELEASE_LIFECYCLE_COPY[lifecycleIndex]
+            : BALANCED_RELEASE_COPY;
   }
-  const greed = isGreedRelease(product);
-  const weak = isWeakRelease(product);
-  if (greed && weak) return index % 2 === 0 ? STRONG_RELEASE_COPY : WEAK_RELEASE_COPY;
-  if (greed) return STRONG_RELEASE_COPY;
-  if (weak) return WEAK_RELEASE_COPY;
-  return lifecycleIndex > 0
-    ? RELEASE_LIFECYCLE_COPY[lifecycleIndex]
+  if (product.kind !== "new-theme") return selected;
+  const withoutOfficialTierClaim = selected.filter(
+    (copy) => !containsOfficialTierNumberClaim(copy),
+  );
+  return withoutOfficialTierClaim.length > 0
+    ? withoutOfficialTierClaim
     : BALANCED_RELEASE_COPY;
 }
 
@@ -5559,8 +5903,20 @@ export function getDailyCommunityPosts(
   const restrictionFollowup = restrictionContext
     ? undefined
     : narrowRestrictionFollowup(state, day);
+  const emergingThemePosts = makeEmergingThemeContextPosts(state, day);
   const output: CommunityEvent[] = [];
   const usedBodies = new Set<string>();
+  const finalize = (): CommunityEvent[] => {
+    if (emergingThemePosts.length === 0) return output;
+    const regularLimit = Math.max(
+      0,
+      POSTS_PER_DAY - emergingThemePosts.length,
+    );
+    return [
+      ...output.slice(0, regularLimit),
+      ...emergingThemePosts,
+    ];
+  };
   for (const post of makeBusinessCommunityPosts(
     state,
     day,
@@ -5570,7 +5926,7 @@ export function getDailyCommunityPosts(
     output.push(post);
     usedBodies.add(post.body);
   }
-  if (output.length === POSTS_PER_DAY) return output;
+  if (output.length === POSTS_PER_DAY) return finalize();
   const businessPostCount = output.length;
   if (restrictionContext) {
     const restrictionSignals = getPublishedRestrictionDecisionSignals(
@@ -5671,7 +6027,7 @@ export function getDailyCommunityPosts(
       usedBodies.add(post.body);
     }
   }
-  if (output.length === POSTS_PER_DAY) return output;
+  if (output.length === POSTS_PER_DAY) return finalize();
 
   const recentRelease = releaseBatchNearDay(state, day);
   if (recentRelease && !restrictionContext) {
@@ -5769,7 +6125,7 @@ export function getDailyCommunityPosts(
 
   for (let index = 0; index < missing; index += 1) {
     const outputIndex = output.length;
-    const template = templateFor(state.seed, day, outputIndex);
+    let template = templateFor(state.seed, day, outputIndex);
     const chosen = chooseTheme(
       pool,
       state.seed,
@@ -5805,6 +6161,24 @@ export function getDailyCommunityPosts(
           )
         : chosen;
     const relatedContent = THEME_BY_ID[related.id];
+    if (
+      containsOfficialTierNumberClaim(template.text) &&
+      (
+        isCollectingNewThemeAtDay(state, chosen.id, day) ||
+        isCollectingNewThemeAtDay(state, related.id, day)
+      )
+    ) {
+      const templateIndex = DAILY_TEMPLATES.indexOf(template);
+      for (let offset = 1; offset < DAILY_TEMPLATES.length; offset += 1) {
+        const candidate = DAILY_TEMPLATES[
+          (templateIndex + offset) % DAILY_TEMPLATES.length
+        ];
+        if (!containsOfficialTierNumberClaim(candidate.text)) {
+          template = candidate;
+          break;
+        }
+      }
+    }
     const share = `${((chosen.weight / poolTotal) * 100).toFixed(1)}%`;
 
     output.push({
@@ -5829,5 +6203,5 @@ export function getDailyCommunityPosts(
     });
   }
 
-  return output;
+  return finalize();
 }

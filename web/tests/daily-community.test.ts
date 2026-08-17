@@ -37,6 +37,7 @@ import {
   getDailyCommunityPosts,
   getReleaseReactionProfile,
 } from "../app/game/daily-community.ts";
+import { PLACEMENT_WINDOW_DAYS } from "../app/game/placement-meta.ts";
 import {
   getPublishedRestrictionPolicyProfile,
   getRestrictionHistoricalOutcome,
@@ -394,8 +395,8 @@ function setRestrictionPlacementWindow(
   winRates: Readonly<Record<ThemeId, number>>,
   dailyPlacements: Readonly<Record<ThemeId, number>>,
 ): void {
-  state.history = Array.from({ length: 30 }, (_, index) => ({
-    day: decisionDay - 29 + index,
+  state.history = Array.from({ length: PLACEMENT_WINDOW_DAYS }, (_, index) => ({
+    day: decisionDay - PLACEMENT_WINDOW_DAYS + 1 + index,
     totalUsers: 100_000,
     revenue: 0.5,
     topThemeId: Object.entries(shares).sort(
@@ -447,6 +448,56 @@ function releaseWithMixedReactions(seed = 9191): GameState {
       powerAdjustment: ([0, 3, -3] as const)[index],
     })),
   });
+}
+
+function emergingThemeTrajectoryState(
+  trajectory: "weak-to-strong" | "strong-to-weak",
+  seed: number,
+): { state: GameState; themeId: ThemeId } {
+  let state = releaseWithMixedReactions(seed);
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
+  const release = state.releaseHistory.find((batch) => batch.day === 60);
+  const themeId = release?.products.find(
+    (product) => product.kind === "new-theme",
+  )?.themeId;
+  assert.ok(themeId);
+  const otherIds = state.activeThemeIds.filter(
+    (candidate) => candidate !== themeId,
+  );
+  const otherPlacementId = otherIds[0];
+  assert.ok(otherPlacementId);
+
+  for (const entry of state.history) {
+    if (entry.day < 61 || entry.day > 74) continue;
+    const early = entry.day <= 67;
+    const targetStrong = trajectory === "weak-to-strong" ? !early : early;
+    const targetShare = 0.35;
+    const otherShare = (1 - targetShare) / otherIds.length;
+    entry.shares = Object.fromEntries(
+      state.activeThemeIds.map((candidate) => [
+        candidate,
+        candidate === themeId ? targetShare : otherShare,
+      ]),
+    );
+    entry.winRates = Object.fromEntries(
+      state.activeThemeIds.map((candidate) => [
+        candidate,
+        candidate === themeId ? (targetStrong ? 0.58 : 0.46) : 0.5,
+      ]),
+    );
+    entry.topCutPlacements = Object.fromEntries(
+      state.activeThemeIds.map((candidate) => [
+        candidate,
+        candidate === themeId
+          ? targetStrong ? 20 : 0
+          : candidate === otherPlacementId
+            ? targetStrong ? 12 : 32
+            : 0,
+      ]),
+    );
+    entry.topThemeId = themeId;
+  }
+  return { state, themeId };
 }
 
 function supportReactionState(
@@ -945,6 +996,91 @@ test("bursts for four release days with strong, weak, art, and ban-support react
     ).length >= 4,
   );
   assert.equal(JSON.stringify(state), before);
+});
+
+test("emerging themes keep cautious and data-led voices together without reading the UI badge aloud", () => {
+  const { state, themeId } = emergingThemeTrajectoryState(
+    "weak-to-strong",
+    9_291,
+  );
+  for (const day of [66, 67, 73]) {
+    const emerging = getDailyCommunityPosts(state, day).filter((post) =>
+      post.id.startsWith("daily-emerging-") && !post.id.endsWith("-reversal")
+    );
+    assert.equal(emerging.length, 2, `DAY ${day}`);
+    assert.ok(emerging.some((post) => post.id.endsWith("-caution")));
+    assert.ok(emerging.some((post) => post.id.endsWith("-evaluation")));
+    assert.ok(emerging.every((post) => post.themeId === themeId));
+    assert.ok(
+      emerging.some((post) =>
+        /나온 지|고작|치 성적|두 주도 안 본/.test(post.body)
+      ),
+    );
+    assert.ok(
+      emerging.some((post) =>
+        /채용률|승률|탑컷 점유율|본선 진출률/.test(post.body)
+      ),
+    );
+    assert.ok(emerging.every((post) => !/\d+\/14|집계/.test(post.body)));
+    assert.ok(
+      emerging.every((post) => !/(?:[0-3]티어|Tier\s*[0-3])/.test(post.body)),
+    );
+  }
+
+  const earlyEvaluation = getDailyCommunityPosts(state, 66).find((post) =>
+    post.id.endsWith("-evaluation")
+  );
+  const laterEvaluation = getDailyCommunityPosts(state, 73).find((post) =>
+    post.id.endsWith("-evaluation")
+  );
+  assert.ok(earlyEvaluation);
+  assert.ok(laterEvaluation);
+  assert.match(earlyEvaluation.body, /거품|불안|채용만 높은/);
+  assert.match(laterEvaluation.body, /기대|시작은 좋|강할 가능성|성적표/);
+  for (let day = 61; day <= 73; day += 1) {
+    const aboutEmergingTheme = getDailyCommunityPosts(state, day).filter(
+      (post) => post.themeId === themeId || post.relatedThemeId === themeId,
+    );
+    assert.ok(aboutEmergingTheme.length > 0, `DAY ${day}`);
+    assert.ok(
+      aboutEmergingTheme.every((post) =>
+        !/(?:[0-3]티어|Tier\s*[0-3])/.test(post.body)
+      ),
+      `DAY ${day}: ${aboutEmergingTheme.map((post) => post.body).join("\n")}`,
+    );
+  }
+});
+
+test("completed samples can reverse both first-week readings from historical metrics", () => {
+  const fixtures = [
+    {
+      trajectory: "weak-to-strong" as const,
+      seed: 9_292,
+      expected: /기다려 보랬|더 지켜보자던|기다려 보니/,
+    },
+    {
+      trajectory: "strong-to-weak" as const,
+      seed: 9_293,
+      expected: /첫 주 반짝|거품|강해 보였는데|결론이 바뀐다/,
+    },
+  ];
+  for (const fixture of fixtures) {
+    const { state, themeId } = emergingThemeTrajectoryState(
+      fixture.trajectory,
+      fixture.seed,
+    );
+    const emerging = getDailyCommunityPosts(state, 74).filter((post) =>
+      post.id.startsWith("daily-emerging-")
+    );
+    assert.equal(emerging.length, 1, fixture.trajectory);
+    assert.ok(emerging[0].id.endsWith("-reversal"));
+    assert.equal(emerging[0].themeId, themeId);
+    assert.match(emerging[0].body, fixture.expected);
+    assert.doesNotMatch(
+      emerging[0].body,
+      /내가 .*했지|내 말이 맞|예언|\d+\/14|집계|(?:[0-3]티어|Tier\s*[0-3])/,
+    );
+  }
 });
 
 test("keeps only deterministic high-appeal fandom signals after launch", () => {
@@ -1579,7 +1715,7 @@ test("restriction reactions distinguish all four pick-rate and win-rate quadrant
       shares: [0.3, 0.26, 0.2, 0.14, 0.1],
       winRates: [0.46, 0.5, 0.5, 0.5, 0.5],
       expected:
-        /인기랑 강함|점유율 .*승률|픽률은 높아도|승률 .*우선 타격|표본만 크고|많이 들고 왔지만 많이 지던|거품 픽|인기세를 벌|픽률을 위험도로 착각|입상 전환율 낮|많이 보인다는 이유/,
+        /인기랑 강함|점유율 .*승률|픽률은 높아도|승률 .*우선 타격|표본만 크고|많이 들고 왔지만 많이 지던|거품 픽|인기세를 벌|픽률을 위험도로 착각|본선 진출률 낮|많이 보인다는 이유/,
       displayedWinRate: "46.0%",
     },
     {
@@ -1593,7 +1729,7 @@ test("restriction reactions distinguish all four pick-rate and win-rate quadrant
       shares: [0.34, 0.26, 0.2, 0.16, 0.04],
       winRates: [0.5, 0.5, 0.5, 0.5, 0.6],
       expected:
-        /숨은 강덱|표본이 적|입상 전환율|적게 들고 와서|장인 덱|낮은 픽률|승률 높은 소수|티어 이름보다 실제 결과/,
+        /숨은 강덱|표본이 적|본선 진출률|적게 들고 와서|장인 덱|낮은 픽률|승률 높은 소수|티어 이름보다 실제 결과/,
       displayedWinRate: "60.0%",
     },
     {
@@ -1680,7 +1816,7 @@ test("a tier-balanced list cannot earn unconditional praise for cutting popular 
 
   const posts = restrictionContextPosts(state, 166, 165);
   const missedSleeper =
-    /진짜 입상 전환|저픽 고승률|성적표 첫 줄|실속 있는|승률은 경고|우선순위 반대|숨은 강덱|풍선효과 후보/;
+    /진짜 본선 진출률|저픽 고승률|성적표 첫 줄|실속 있는|승률은 경고|우선순위 반대|숨은 강덱|풍선효과 후보/;
   const unconditionalPraise =
     /방향이 좋|이번 범위는 납득|균형이 잘 잡|깔끔한 표|합리적이다|필요한 일은 다 한|구성은 적정|판단은 좋았|금제는 이래야지|범위가 제대로|잘했다/;
   assert.equal(posts.length, 16);
@@ -1889,7 +2025,7 @@ test("an uncut low-pick high-win sleeper is flagged independently of the cut tar
   );
 });
 
-test("restriction reactions distinguish thirty-day placement and conversion profiles", () => {
+test("restriction reactions distinguish recent placement and conversion profiles", () => {
   const fixtures: Array<{
     label: string;
     targetId: ThemeId;
@@ -1906,8 +2042,8 @@ test("restriction reactions distinguish thirty-day placement and conversion prof
       partId: "cycle-gate",
       shares: [0.3, 0.26, 0.2, 0.14, 0.1],
       dailyPlacements: [16, 5, 4, 4, 3],
-      expected: /입상 지분|탑컷 생존율|실전 위협|표본도 결과도/,
-      displayed: "480",
+      expected: /탑컷 점유율|탑컷 생존율|실전 위협|표본도 결과도/,
+      displayed: "224",
     },
     {
       label: "low match win rate but strong placement evidence",
@@ -1918,7 +2054,7 @@ test("restriction reactions distinguish thirty-day placement and conversion prof
       targetWinRate: 0.46,
       expected:
         /서로 반대|다른 방향|충돌 신호|평가 보류|가중치|둘 다 무시할 수 없|한 방향이 아닌/,
-      displayed: "480",
+      displayed: "224",
     },
     {
       label: "high pick but weak placement and conversion",
@@ -1927,7 +2063,7 @@ test("restriction reactions distinguish thirty-day placement and conversion prof
       shares: [0.3, 0.26, 0.2, 0.14, 0.1],
       dailyPlacements: [1, 10, 8, 7, 6],
       expected: /인기를 성능|입상까지 간 덱|유행 표본|성적 해석|체감 빈도와 실전 위협/,
-      displayed: "30",
+      displayed: "14",
     },
     {
       label: "low pick but strong conversion",
@@ -1935,8 +2071,8 @@ test("restriction reactions distinguish thirty-day placement and conversion prof
       partId: "abyss-bait",
       shares: [0.34, 0.26, 0.2, 0.16, 0.04],
       dailyPlacements: [8, 6, 5, 3, 10],
-      expected: /숨은 강덱|저픽|선제 검토|표본 크기와 실질 위협|전환.*안전 신호|티어표 밖의 강덱|채용률과 .* 전환/,
-      displayed: "300",
+      expected: /숨은 강덱|저픽|선제 검토|표본 크기와 실질 위협|본선 진출률.*안전 신호|티어표 밖의 강덱|채용률과 .*본선 진출률/,
+      displayed: "140",
     },
   ];
   const signatures = new Set<string>();
@@ -1988,7 +2124,12 @@ test("restriction reactions distinguish thirty-day placement and conversion prof
       placementPosts.length >= 4,
       `${fixture.label}\n${posts.map((post) => post.body).join("\n")}`,
     );
-    assert.ok(posts.some((post) => post.body.includes("30일")), fixture.label);
+    assert.ok(
+      posts.some((post) =>
+        post.body.includes(`${PLACEMENT_WINDOW_DAYS}일`)
+      ),
+      fixture.label,
+    );
     const renderedPlacementCount = new RegExp(
       `(?:탑컷(?:한\\s*횟수가|에는|에|이)?\\s*${fixture.displayed}(?:회|번)|${fixture.displayed}(?:자리|개))`,
     );
@@ -2049,7 +2190,7 @@ test("placement reactions wait for seven theme-specific observed days", () => {
     posts.filter(
       (post) =>
         post.body.includes(targetName) &&
-        /입상 전환|입상 지분|탑컷 \d+회/.test(post.body),
+        /본선 진출률|탑컷 점유율|탑컷 \d+회/.test(post.body),
     ).length,
     0,
     posts.map((post) => post.body).join("\n"),

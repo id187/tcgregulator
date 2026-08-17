@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ENVIRONMENT_HEALTH_PLACEMENT_WINDOW_DAYS,
   ENVIRONMENT_HEALTH_MODEL,
   getChartEnvironmentHealth,
   getEnvironmentHealthBreakdown,
@@ -80,6 +81,63 @@ function makeState(
     ],
   } as unknown as GameState;
 }
+
+function replacePlacementRows(
+  state: GameState,
+  startDay: number,
+  endDay: number,
+  counts: number[],
+): void {
+  for (const entry of state.history) {
+    if (entry.day < startDay || entry.day > endDay) continue;
+    entry.topCutPlacements = placementMap(counts);
+  }
+}
+
+test("keeps environment health on explicit adjacent thirty-day placement windows", () => {
+  assert.equal(ENVIRONMENT_HEALTH_PLACEMENT_WINDOW_DAYS, 30);
+
+  const previous = [8, 7, 6, 6, 5, 0, 0, 0, 0, 0];
+  const current = [0, 0, 8, 7, 6, 6, 5, 0, 0, 0];
+
+  const variedThirtyDays = makeState(previous, current);
+  const sameLastFourteenDays = makeState(previous, current);
+  replacePlacementRows(
+    sameLastFourteenDays,
+    31,
+    46,
+    [0, 0, 0, 0, 0, 32, 0, 0, 0, 0],
+  );
+
+  const variedHealth = getEnvironmentHealthBreakdown(variedThirtyDays);
+  const olderRowsMatter = getEnvironmentHealthBreakdown(sameLastFourteenDays);
+  assert.notEqual(
+    olderRowsMatter.placementDiversity,
+    variedHealth.placementDiversity,
+    "days 15..30 of the current health window must remain observable",
+  );
+
+  const stablePreviousWindow = makeState(previous, current);
+  const changedOlderPreviousRows = makeState(previous, current);
+  replacePlacementRows(
+    changedOlderPreviousRows,
+    1,
+    16,
+    [0, 0, 0, 0, 0, 0, 0, 11, 11, 10],
+  );
+
+  const stableTurnover = getEnvironmentHealthBreakdown(
+    stablePreviousWindow,
+  ).topCohortTurnover;
+  const changedTurnover = getEnvironmentHealthBreakdown(
+    changedOlderPreviousRows,
+  ).topCohortTurnover;
+  assert.notEqual(
+    changedTurnover,
+    stableTurnover,
+    "the previous health cohort must use all thirty adjacent days",
+  );
+});
 
 test("rewards rotation with old and new themes while penalizing lock-in and replacement", () => {
   const previous = [8, 7, 6, 6, 5, 0, 0, 0, 0, 0];

@@ -397,8 +397,8 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       "a",
     ],
   );
-  assert.equal(state.finance.cash, 26.2996);
-  assert.equal(ending.scores.cash, 26.3);
+  assert.equal(state.finance.cash, 26.6145);
+  assert.equal(ending.scores.cash, 26.6);
   assert.equal(ending.scores.environmentHealth, 83.1);
   assert.equal(ending.stewardship.passedPillars, 4);
   assert.equal(ending.stewardship.complete, true);

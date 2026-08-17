@@ -57,6 +57,8 @@ import {
   getPlacementTier,
   getRecentPlacementReport,
   getThemeDebutDay,
+  hasCompletePlacementSample,
+  PLACEMENT_WINDOW_DAYS,
   type RecentPlacementReport,
   type ThemePlacementReport,
 } from "./game/placement-meta";
@@ -535,6 +537,7 @@ function formatPercent(value: number, digits = 1) {
 }
 
 const EMPTY_PLACEMENT_METRICS: ThemePlacementReport = {
+  observedDays: 0,
   placements: 0,
   placementShare: 0,
   estimatedEntrants: 0,
@@ -697,8 +700,8 @@ function getAdvisorBrief(
   const tabBriefs: Record<TabId, AdvisorBrief> = {
     distribution: {
       tone: "info",
-      kicker: "입상 해석",
-      message: "입상 점유율은 최근 30일 탑컷 비중입니다. 채용률·승률과 함께 보십시오.",
+      kicker: "탑컷 해석",
+      message: "탑컷 점유율은 최근 14일 본선 자리의 비중입니다. 채용률·승률과 함께 보십시오.",
     },
     themes: {
       tone: "info",
@@ -774,7 +777,7 @@ function getAdvisorBrief(
         tone: "caution",
         kicker: "환경 유지안",
         message: "아무 파츠도 바꾸지 않으면 현재 메타와 구매 흐름이 그대로 이어집니다. 이것도 하나의 운영 결정입니다.",
-        submessage: "점유율·승률·불쾌도와 실제 파츠 의존도를 비교한 뒤 제출하십시오.",
+        submessage: "채용률·승률·불쾌도와 실제 파츠 의존도를 비교한 뒤 제출하십시오.",
       });
     }
     if (restrictionPolicy.meaningfulCutCount === 0) {
@@ -1270,7 +1273,7 @@ function getGuidedBrief(
     return {
       kicker: "LOTUS · COUNTER RESEARCH",
       title: "환경은 발매 없이도 움직입니다",
-      message: "카운터 연구와 유행이 점유율을 바꿉니다. DAY 15까지 진행해주세요.",
+      message: "카운터 연구와 유행이 채용률을 바꿉니다. DAY 15까지 진행해주세요.",
     };
   }
   if (step === "day15-themes") {
@@ -1297,7 +1300,7 @@ function getGuidedBrief(
     return {
       kicker: "LOTUS · THEME DOSSIER",
       title: `${THEME_BY_ID[target.themeId].shortName} 테마를 선택해주세요`,
-      message: "테마를 열면 점유율·승률·불쾌도와 핵심 파츠 구성을 한 화면에서 확인할 수 있습니다.",
+      message: "테마를 열면 채용률·승률·불쾌도와 핵심 파츠 구성을 한 화면에서 확인할 수 있습니다.",
       placement: "top-right",
     };
   }
@@ -1431,8 +1434,8 @@ function getGuidedBrief(
       kicker: "LOTUS · FIRST MANDATE",
       title: "첫 금제는 책임자님의 결정입니다",
       message: restrictionPolicy.changeCount > 0
-        ? `현재 실효 조정 ${restrictionPolicy.meaningfulCutCount}종 · 영향 테마 ${restrictionPolicy.affectedThemeCount}개 · 추정 충격 ${Math.round(restrictionPolicy.totalImpact)}입니다. 점유율·승률·불쾌도와 파츠 의존도를 비교해 자유롭게 수정하거나 그대로 제출하세요.`
-        : "정해진 정답은 없습니다. 점유율·승률·불쾌도와 파츠 의존도를 비교해 자유롭게 제한을 정하거나, 현 환경 유지안을 제출하세요.",
+        ? `현재 실효 조정 ${restrictionPolicy.meaningfulCutCount}종 · 영향 테마 ${restrictionPolicy.affectedThemeCount}개 · 추정 충격 ${Math.round(restrictionPolicy.totalImpact)}입니다. 채용률·승률·불쾌도와 파츠 의존도를 비교해 자유롭게 수정하거나 그대로 제출하세요.`
+        : "정해진 정답은 없습니다. 채용률·승률·불쾌도와 파츠 의존도를 비교해 자유롭게 제한을 정하거나, 현 환경 유지안을 제출하세요.",
       placement: "bottom-left",
       freeInteraction: true,
     };
@@ -1459,7 +1462,7 @@ function getGuidedBrief(
     return {
       kicker: "LOTUS · FINAL META CHECK",
       title: "반응과 실제 분포를 대조해주세요",
-      message: "커뮤니티의 목소리가 곧 대회 성과는 아닙니다. ‘분포’에서 최근 입상 점유율과 활성 유저를 마지막으로 확인합니다.",
+      message: "커뮤니티의 목소리가 곧 대회 성과는 아닙니다. ‘분포’에서 최근 14일 탑컷 점유율과 활성 유저를 마지막으로 확인합니다.",
       placement: "bottom-right",
     };
   }
@@ -1467,7 +1470,7 @@ function getGuidedBrief(
     return {
       kicker: "LOTUS · FINAL META CHECK",
       title: "최종 메타표를 확인해주세요",
-      message: "밝게 열린 분포에서 최근 30일 입상 분포, 활성 유저, 순환 신호를 확인해주세요. 이 환경을 정상화한 상태로 인계합니다.",
+      message: "탑컷 점유율은 최근 14일 전체 본선 자리 중 차지한 비율이며 티어 기준입니다. 본선 진출률은 그 테마 참가자 중 탑컷에 오른 비율입니다. 채용률·승률과 함께 비교해주세요.",
       placement: "bottom-left",
       inspection: true,
       confirmLabel: "확인 · 인수 완료",
@@ -3085,7 +3088,6 @@ function GameSession({
             selectedRuntime={selectedRuntime}
             selectedTheme={selectedTheme}
             selectedTier={selectedTierResult.tier}
-            selectedTierProvisional={selectedTierResult.provisional}
             detailHeadingRef={detailHeadingRef}
             onBackToThemes={() => setMobileDetail(false)}
             onGuidedPartConfirm={() => setGuidedStep("day15-finance")}
@@ -3967,7 +3969,6 @@ type MetaWorkspaceProps = {
   selectedRuntime: GameState["themes"][string];
   selectedRank: number;
   selectedTier: MetaTier;
-  selectedTierProvisional: boolean;
   selectedRequests: GameState["supportRequests"];
   nextBanDay: number;
   banDraft: Record<string, RestrictionLimit>;
@@ -4000,7 +4001,6 @@ function MetaWorkspace({
   selectedRuntime,
   selectedRank,
   selectedTier,
-  selectedTierProvisional,
   selectedRequests,
   nextBanDay,
   banDraft,
@@ -4044,6 +4044,9 @@ function MetaWorkspace({
   const selectedPlacementDelta =
     selectedPlacement.placementShare -
     selectedPreviousPlacement.placementShare;
+  const selectedSampleComplete = hasCompletePlacementSample(
+    selectedPlacement.observedDays,
+  );
 
   return (
     <section className={`meta-workspace ${view}`}>
@@ -4053,7 +4056,7 @@ function MetaWorkspace({
             <div>
               <span className="eyebrow">META INDEX</span>
               <h2>테마 리스트</h2>
-              <p>점유율 순 · {rankedThemes.length}개 출시 테마</p>
+              <p>채용률 순 · {rankedThemes.length}개 출시 테마</p>
             </div>
             <span className="data-stamp">DAY {game.day}</span>
           </div>
@@ -4064,8 +4067,11 @@ function MetaWorkspace({
                 placementReport.themes[theme.id] ?? EMPTY_PLACEMENT_METRICS;
               const tierResult = getPlacementTier(
                 placement.placementShare,
-                game.day,
+                placementReport.endDay,
                 getThemeDebutDay(game.releaseHistory, theme.id),
+              );
+              const sampleComplete = hasCompletePlacementSample(
+                placement.observedDays,
               );
               const scheduled = game.supportRequests.find(
                 (request) =>
@@ -4116,14 +4122,19 @@ function MetaWorkspace({
                         승률 {formatPercent(runtime.winRate)}
                       </span>
                       <span className="theme-statline placement">
-                        입상 {formatPercent(placement.placementShare)}
+                        탑컷 {formatPercent(placement.placementShare)}
                         <i aria-hidden="true" />
-                        전환 {formatPercent(placement.observedConversion)}
+                        본선 {formatPercent(placement.observedConversion)}
                       </span>
                     </span>
-                    <span className={`tier-label ${getTierTone(tierResult.tier)}`}>
-                      {tierResult.provisional ? "잠정 " : ""}
-                      {tierResult.tier}
+                    <span
+                      className={`tier-label ${
+                        sampleComplete ? getTierTone(tierResult.tier) : "quiet"
+                      }`}
+                    >
+                      {sampleComplete
+                        ? tierResult.tier
+                        : `집계 ${placement.observedDays}/${PLACEMENT_WINDOW_DAYS}`}
                     </span>
                   </button>
                   {scheduled ? (
@@ -4198,19 +4209,30 @@ function MetaWorkspace({
 
             <div className="theme-metrics">
               <div>
-                <span>현재 티어</span>
-                <strong className={getTierTone(selectedTier)}>
-                  {selectedTierProvisional ? "잠정 " : ""}
-                  {selectedTier}
+                <span>
+                  {selectedSampleComplete ? "현재 티어" : "집계 현황"}
+                </span>
+                <strong
+                  className={
+                    selectedSampleComplete
+                      ? getTierTone(selectedTier)
+                      : "quiet"
+                  }
+                >
+                  {selectedSampleComplete
+                    ? selectedTier
+                    : `집계 ${selectedPlacement.observedDays}/${PLACEMENT_WINDOW_DAYS}`}
                 </strong>
                 <small>
-                  {selectedTier === "Tier Out"
-                    ? "메타 집계 제외"
-                    : `최근 30일 입상 기준`}
+                  {!selectedSampleComplete
+                    ? "표본을 쌓는 중"
+                    : selectedTier === "Tier Out"
+                      ? "탑컷 집계 제외"
+                      : "최근 14일 탑컷 기준"}
                 </small>
               </div>
               <div>
-                <span>입상 점유율</span>
+                <span>탑컷 점유율</span>
                 <strong>{formatPercent(selectedPlacement.placementShare)}</strong>
                 <small
                   className={
@@ -4225,9 +4247,9 @@ function MetaWorkspace({
                 </small>
               </div>
               <div>
-                <span>입상 전환율</span>
+                <span>본선 진출률</span>
                 <strong>{formatPercent(selectedPlacement.observedConversion)}</strong>
-                <small>탑컷 / 추정 참가자</small>
+                <small>탑컷 진출 / 추정 참가자</small>
               </div>
               <div>
                 <span>채용률</span>
@@ -4560,17 +4582,22 @@ function DistributionView({
     const placement =
       placementReport.themes[theme.id] ?? EMPTY_PLACEMENT_METRICS;
     return {
+      completeSample: hasCompletePlacementSample(placement.observedDays),
       rank,
       theme,
       placement,
       tier: getPlacementTier(placement.placementShare).tier,
     };
   });
-  const namedTierThemes = tieredThemes.filter(({ tier }) =>
-    isNamedMetaTier(tier),
+  const collectingThemes = tieredThemes.filter(
+    ({ completeSample }) => !completeSample,
+  );
+  const individuallyListedThemes = tieredThemes.filter(
+    ({ completeSample, tier }) =>
+      !completeSample || isNamedMetaTier(tier),
   );
   const tierThreeThemes = tieredThemes.filter(
-    ({ tier }) => tier === "Tier 3",
+    ({ completeSample, tier }) => completeSample && tier === "Tier 3",
   );
   const otherShare = tierThreeThemes.reduce(
     (sum, { placement }) => sum + placement.placementShare,
@@ -4580,20 +4607,25 @@ function DistributionView({
     previousPlacementReport.themes,
   ).reduce(
     (sum, placement) =>
+      hasCompletePlacementSample(placement.observedDays) &&
       getPlacementTier(placement.placementShare).tier === "Tier 3"
         ? sum + placement.placementShare
         : sum,
     0,
   );
   const chartEntries = [
-    ...namedTierThemes.map(({ theme, tier, placement }) => ({
-      id: theme.id,
-      label: theme.name,
-      color: theme.color,
-      share: placement.placementShare,
-      theme,
-      tier,
-    })),
+    ...individuallyListedThemes.map(
+      ({ completeSample, theme, tier, placement }) => ({
+        id: theme.id,
+        label: theme.name,
+        color: theme.color,
+        share: placement.placementShare,
+        theme,
+        tier,
+        completeSample,
+        observedDays: placement.observedDays,
+      }),
+    ),
     ...(tierThreeThemes.length > 0
       ? [
           {
@@ -4603,6 +4635,8 @@ function DistributionView({
             share: otherShare,
             theme: null,
             tier: "Tier 3" as const,
+            completeSample: true,
+            observedDays: PLACEMENT_WINDOW_DAYS,
           },
         ]
       : []),
@@ -4698,8 +4732,8 @@ function DistributionView({
       <header className="subpage-heading distribution-heading">
         <div>
           <span className="eyebrow">TOP CUT DISTRIBUTION</span>
-          <h1>메타 입상 분포</h1>
-          <p>최근 30일 주요 대회 입상 비중과 순환 신호를 확인합니다.</p>
+          <h1>메타 탑컷 분포</h1>
+          <p>최근 14일 주요 대회의 탑컷 점유율과 순환 신호를 확인합니다.</p>
         </div>
         <div className="distribution-heading-actions">
           {highestFatigueTheme &&
@@ -4749,7 +4783,7 @@ function DistributionView({
             onPointerLeave={() => setHoveredEntryId(null)}
           >
             <svg
-              aria-label="0티어부터 2티어까지는 개별 표시하고 3티어 입상은 기타로 합산한 최근 30일 입상 분포입니다. 모든 입상 비중의 합은 100퍼센트입니다."
+              aria-label={`집계가 끝난 0티어부터 2티어까지와 집계 중인 ${collectingThemes.length}개 테마는 개별 표시하고, 집계가 끝난 3티어는 기타로 합산한 최근 14일 탑컷 분포입니다. 모든 탑컷 점유율의 합은 100퍼센트입니다.`}
               className="distribution-donut-svg"
               role="group"
               viewBox="0 0 100 100"
@@ -4768,8 +4802,10 @@ function DistributionView({
                   isInspectingEntry && inspectedEntry?.id === entry.id;
                 const shareLabel = formatPercent(entry.share);
                 const ariaLabel = entry.theme
-                  ? `${entry.label}, 입상 점유율 ${shareLabel}. 상세 정보 열기`
-                  : `기타, 3티어 ${tierThreeThemes.length}개 테마 합산 입상 점유율 ${shareLabel}`;
+                  ? entry.completeSample
+                    ? `${entry.label}, 탑컷 점유율 ${shareLabel}. 상세 정보 열기`
+                    : `${entry.label}, 집계 ${entry.observedDays}/${PLACEMENT_WINDOW_DAYS}, 탑컷 점유율 ${shareLabel}. 상세 정보 열기`
+                  : `기타, 3티어 ${tierThreeThemes.length}개 테마 합산 탑컷 점유율 ${shareLabel}`;
 
                 return (
                   <g
@@ -4832,10 +4868,14 @@ function DistributionView({
                 className="distribution-donut-core-content"
                 key={`${inspectedEntry?.id ?? "empty"}-${inspectedEntry ? (inspectedEntry.share * 100).toFixed(1) : "0"}`}
               >
-                <span>{isInspectingEntry ? "현재 입상 비중" : "입상 1위"}</span>
+                <span>{isInspectingEntry ? "현재 탑컷 비중" : "탑컷 1위"}</span>
                 <strong>{inspectedEntry?.label ?? "-"}</strong>
                 <em>{inspectedEntry ? formatPercent(inspectedEntry.share) : "-"}</em>
-                {inspectedRuntime && inspectedFatigue ? (
+                {inspectedEntry && !inspectedEntry.completeSample ? (
+                  <small>
+                    집계 {inspectedEntry.observedDays}/{PLACEMENT_WINDOW_DAYS}
+                  </small>
+                ) : inspectedRuntime && inspectedFatigue ? (
                   <small className={`donut-fatigue-copy ${inspectedFatigue.level}`}>
                     피로도 {Math.round(inspectedRuntime.fatigue)} · 1위 유지{" "}
                     {inspectedRuntime.topStreakDays}일
@@ -4855,16 +4895,16 @@ function DistributionView({
             <div>
               <span>생태계 건강</span>
               <strong
-                title={`경기 품질 ${Math.round(healthBreakdown.gameplayQuality)} · 입상 다양성 ${Math.round(healthBreakdown.placementDiversity)} · 상위권 순환 ${Math.round(healthBreakdown.topCohortTurnover)} · 세대 공존 ${Math.round(healthBreakdown.generationalBalance)} · 생태계 연속성 ${Math.round(healthBreakdown.ecosystemContinuity)}`}
+                title={`경기 품질 ${Math.round(healthBreakdown.gameplayQuality)} · 탑컷 다양성 ${Math.round(healthBreakdown.placementDiversity)} · 상위권 순환 ${Math.round(healthBreakdown.topCohortTurnover)} · 세대 공존 ${Math.round(healthBreakdown.generationalBalance)} · 생태계 연속성 ${Math.round(healthBreakdown.ecosystemContinuity)}`}
               >
                 {health}
               </strong>
-              <small>입상 다양성 · 순환 · 세대 공존</small>
+              <small>탑컷 다양성 · 순환 · 세대 공존</small>
             </div>
             <div>
               <span>TOP 3 집중</span>
               <strong>{formatPercent(topThreeShare)}</strong>
-              <small>최근 30일 입상 기준</small>
+              <small>최근 14일 탑컷 기준</small>
             </div>
             <div>
               <span>구매 신뢰</span>
@@ -4874,8 +4914,14 @@ function DistributionView({
           </div>
         </article>
 
-        <ol className="distribution-legend" aria-label="0티어부터 2티어까지의 입상 비중과 3티어 합계">
-          {namedTierThemes.map(({ theme, tier, rank, placement }) => {
+        <ol className="distribution-legend" aria-label="집계 중인 테마와 0티어부터 2티어까지의 탑컷 점유율, 3티어 합계">
+          {individuallyListedThemes.map(({
+            completeSample,
+            theme,
+            tier,
+            rank,
+            placement,
+          }) => {
             const runtime = game.themes[theme.id];
             const previousPlacement =
               previousPlacementReport.themes[theme.id] ??
@@ -4902,7 +4948,9 @@ function DistributionView({
                   <span className="legend-theme">
                     <strong>{theme.name}</strong>
                     <small>
-                      {tier} · 피로 {Math.round(runtime.fatigue)}
+                      {completeSample
+                        ? `${tier} · 피로 ${Math.round(runtime.fatigue)}`
+                        : `집계 ${placement.observedDays}/${PLACEMENT_WINDOW_DAYS}`}
                     </small>
                     {fatigue.level !== "none" ? (
                       <span className={`fatigue-badge ${fatigue.level}`}>

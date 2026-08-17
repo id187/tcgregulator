@@ -6840,7 +6840,7 @@ body {
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -6884,110 +6884,6 @@ body {
 .operations-kpis .overview-card.primary .overview-icon,
 .operations-kpis .overview-card.primary .overview-icon svg {
   color: #fff;
-}
-
-.operations-strategy-strip {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(170px, 0.55fr) minmax(0, 2fr);
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 9px;
-  padding: 8px 11px;
-  background: linear-gradient(105deg, #0c2740, #153c5a);
-  border: 1px solid #315876;
-  box-shadow: var(--shadow);
-}
-
-.operations-strategy-heading {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.operations-strategy-heading > div {
-  min-width: 0;
-  display: grid;
-}
-
-.operations-strategy-heading span {
-  color: #68c9d5;
-  font-family: var(--font-mono, monospace);
-  font-size: 7px;
-  font-weight: 900;
-  letter-spacing: 0.1em;
-}
-
-.operations-strategy-heading strong {
-  color: #f0f7fb;
-  font-size: 11px;
-}
-
-.operations-strategy-heading small {
-  overflow: hidden;
-  color: #91aabd;
-  font-size: 7px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.operations-strategy-axes {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.operations-strategy-axis {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: auto minmax(36px, 1fr) auto auto;
-  align-items: center;
-  gap: 5px;
-}
-
-.operations-strategy-axis > span {
-  overflow: hidden;
-  color: #8ca5b8;
-  font-size: 6px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.operations-strategy-axis > div {
-  position: relative;
-  height: 4px;
-  background: #071927;
-  border: 1px solid #375b73;
-}
-
-.operations-strategy-axis > div > i {
-  position: absolute;
-  top: -2px;
-  bottom: -2px;
-  left: 50%;
-  width: 1px;
-  background: #6c889c;
-}
-
-.operations-strategy-axis > div > b {
-  position: absolute;
-  top: 50%;
-  width: 8px;
-  height: 8px;
-  background: #75d2cf;
-  border: 1px solid #d9ffff;
-  border-radius: 50%;
-  box-shadow: 0 0 8px rgb(91 216 208 / 0.34);
-  transform: translate(-50%, -50%);
-}
-
-.operations-strategy-axis > strong {
-  min-width: 23px;
-  color: #dff6f3;
-  font-family: var(--font-mono, monospace);
-  font-size: 7px;
-  text-align: right;
 }
 
 .operations-record.event-result-pending,
@@ -7064,7 +6960,6 @@ body {
 
 .business-action-card {
   min-width: 0;
-  min-height: 228px;
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -7398,10 +7293,6 @@ body {
 }
 
 @media (max-width: 820px) {
-  .operations-strategy-strip {
-    grid-template-columns: 1fr;
-  }
-
   .business-event-choice-grid {
     grid-template-columns: 1fr;
   }
@@ -7490,10 +7381,6 @@ body {
     align-items: flex-start;
     flex-direction: column;
     gap: 3px;
-  }
-
-  .operations-strategy-axes {
-    grid-template-columns: 1fr;
   }
 
   .finance-page .finance-kpis.expanded {

@@ -5197,39 +5197,6 @@ function OperationsView({
         />
       </div>
 
-      <section className="operations-strategy-strip" aria-labelledby="business-strategy-title">
-        <div className="operations-strategy-heading">
-          <div>
-            <span>LONG-TERM DIRECTION</span>
-            <strong id="business-strategy-title">누적 사업 노선</strong>
-          </div>
-          <small>
-            다음 돌발 이벤트 · {game.operations.pendingEvent
-              ? "선택 대기"
-              : game.operations.nextEventDay === null
-                ? "일정 종료"
-                : "예고 없음"}
-          </small>
-        </div>
-        <div className="operations-strategy-axes">
-          {BUSINESS_STRATEGY_AXES.map((axis) => {
-            const value = game.operations.strategy[axis];
-            const labels = BUSINESS_STRATEGY_AXIS_LABELS[axis];
-            return (
-              <div className="operations-strategy-axis" key={axis}>
-                <span>{labels.negative}</span>
-                <div aria-hidden="true">
-                  <i />
-                  <b style={{ left: `${(value + 100) / 2}%` }} />
-                </div>
-                <span>{labels.positive}</span>
-                <strong>{value === 0 ? "중립" : `${value > 0 ? "+" : ""}${value}`}</strong>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
       <div className="operations-workspace">
         <section className="operations-action-panel" aria-labelledby="business-actions-title">
           <div className="operations-section-heading">

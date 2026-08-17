@@ -4047,6 +4047,7 @@ body {
 
 .distribution-legend-item > button,
 .distribution-legend > li > button,
+.distribution-legend > li > .distribution-legend-other,
 .distribution-ranking > button {
   width: 100%;
   height: 100%;
@@ -4059,6 +4060,16 @@ body {
   text-align: left;
   background: var(--surface-soft);
   border: 1px solid var(--line);
+}
+
+.distribution-legend > li > .distribution-legend-other {
+  color: var(--ink-700);
+  background: #f1f4f8;
+  border-style: dashed;
+}
+
+.distribution-donut-segment[role="img"] {
+  cursor: default;
 }
 
 .distribution-legend-item > button:hover,
@@ -7678,16 +7689,22 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.meta-workspace .theme-statline.placement {
+  color: #6fdad4;
+}
+
 .meta-workspace .theme-statline i {
   background: #4a7796;
 }
 
 .meta-workspace .tier-label {
+  min-width: 58px;
   padding: 3px 4px;
   border: 1px solid currentColor;
   font-family: var(--font-mono, monospace);
   text-align: center;
   opacity: 0.94;
+  white-space: nowrap;
 }
 
 .meta-workspace .tier-label.steady {

@@ -26,6 +26,7 @@ import {
   SETTLEMENT_DAYS,
 } from "./game/campaign";
 import {
+  CAMPAIGN_ENVIRONMENT_STABLE_MIN,
   evaluateCampaignEnding,
   getCampaignEndingHints,
   type CampaignCashBand,
@@ -47,6 +48,18 @@ import {
   type ReleaseReactionProfile,
 } from "./game/daily-community";
 import { getDailyCommunitySentiment } from "./game/community-sentiment";
+import { getChartEnvironmentHealth } from "./game/environment-health";
+import {
+  isNamedMetaTier,
+  type MetaTier,
+} from "./game/meta-tiers";
+import {
+  getPlacementTier,
+  getRecentPlacementReport,
+  getThemeDebutDay,
+  type RecentPlacementReport,
+  type ThemePlacementReport,
+} from "./game/placement-meta";
 import {
   BUSINESS_ACTIONS,
   BUSINESS_ACTION_BY_TYPE,
@@ -56,6 +69,7 @@ import {
   getBusinessActionProjectedDirectCash,
   getBusinessActionProjectedDirectGrossRevenue,
   getBusinessEnvironmentHealth,
+  getBusinessEnvironmentHealthBreakdown,
   getChampionshipBacklashRisk,
   getPackOddsDetectionRisk,
   getStrategicProjectRiskProfile,
@@ -520,19 +534,19 @@ function formatPercent(value: number, digits = 1) {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
+const EMPTY_PLACEMENT_METRICS: ThemePlacementReport = {
+  placements: 0,
+  placementShare: 0,
+  estimatedEntrants: 0,
+  observedConversion: 0,
+};
+
 function makeRestrictionDraft(game: GameState) {
   return Object.fromEntries(
     Object.values(game.themes).flatMap((theme) =>
       Object.entries(theme.legalLimits),
     ),
   ) as Record<string, RestrictionLimit>;
-}
-
-function getTierLabel(rank: number, share: number) {
-  if (rank === 0 && share >= 0.2) return "Tier 0";
-  if (rank <= 2) return "Tier 1";
-  if (rank <= 5) return "Tier 2";
-  return "Tier 3";
 }
 
 function getTierTone(label: string) {
@@ -683,8 +697,8 @@ function getAdvisorBrief(
   const tabBriefs: Record<TabId, AdvisorBrief> = {
     distribution: {
       tone: "info",
-      kicker: "분포 해석",
-      message: "점유율은 사용량입니다. 강함 그 자체는 아닙니다.",
+      kicker: "입상 해석",
+      message: "입상 점유율은 최근 30일 탑컷 비중입니다. 채용률·승률과 함께 보십시오.",
     },
     themes: {
       tone: "info",
@@ -1445,7 +1459,7 @@ function getGuidedBrief(
     return {
       kicker: "LOTUS · FINAL META CHECK",
       title: "반응과 실제 분포를 대조해주세요",
-      message: "커뮤니티의 목소리가 곧 전체 시장은 아닙니다. ‘분포’에서 실제 점유율과 활성 유저를 마지막으로 확인합니다.",
+      message: "커뮤니티의 목소리가 곧 대회 성과는 아닙니다. ‘분포’에서 최근 입상 점유율과 활성 유저를 마지막으로 확인합니다.",
       placement: "bottom-right",
     };
   }
@@ -1453,7 +1467,7 @@ function getGuidedBrief(
     return {
       kicker: "LOTUS · FINAL META CHECK",
       title: "최종 메타표를 확인해주세요",
-      message: "밝게 열린 분포에서 실제 점유율, 활성 유저, 순환 신호를 확인해주세요. 이 환경을 정상화한 상태로 인계합니다.",
+      message: "밝게 열린 분포에서 최근 30일 입상 분포, 활성 유저, 순환 신호를 확인해주세요. 이 환경을 정상화한 상태로 인계합니다.",
       placement: "bottom-left",
       inspection: true,
       confirmLabel: "확인 · 인수 완료",
@@ -2094,13 +2108,33 @@ function GameSession({
       ),
     [game],
   );
+  const placementEndDay = game.history.at(-1)?.day ?? game.day;
+  const placementReport = useMemo(
+    () => getRecentPlacementReport(game.history, game.seed, placementEndDay),
+    [game, placementEndDay],
+  );
+  const previousPlacementReport = useMemo(
+    () =>
+      getRecentPlacementReport(
+        game.history,
+        game.seed,
+        placementEndDay - 7,
+      ),
+    [game, placementEndDay],
+  );
 
   const selectedTheme = THEME_BY_ID[selectedThemeId] ?? THEMES[0];
   const selectedRuntime = game.themes[selectedTheme.id];
   const selectedRank = rankedThemes.findIndex(
     (theme) => theme.id === selectedTheme.id,
   );
-  const selectedTier = getTierLabel(selectedRank, selectedRuntime.share);
+  const selectedPlacement =
+    placementReport.themes[selectedTheme.id] ?? EMPTY_PLACEMENT_METRICS;
+  const selectedTierResult = getPlacementTier(
+    selectedPlacement.placementShare,
+    placementEndDay,
+    getThemeDebutDay(game.releaseHistory, selectedTheme.id),
+  );
   const nextReleaseDay = game.phase === "release-edit"
     ? game.day
     : getNextReleaseDay(game.day);
@@ -3031,6 +3065,8 @@ function GameSession({
             mobileDetail={mobileDetail}
             nextBanDay={nextBanDay}
             rankedThemes={rankedThemes}
+            placementReport={placementReport}
+            previousPlacementReport={previousPlacementReport}
             restrictionChanges={restrictionChanges}
             restrictionPolicy={restrictionPolicy}
             guidedThemeTarget={
@@ -3048,7 +3084,8 @@ function GameSession({
             selectedRank={selectedRank}
             selectedRuntime={selectedRuntime}
             selectedTheme={selectedTheme}
-            selectedTier={selectedTier}
+            selectedTier={selectedTierResult.tier}
+            selectedTierProvisional={selectedTierResult.provisional}
             detailHeadingRef={detailHeadingRef}
             onBackToThemes={() => setMobileDetail(false)}
             onGuidedPartConfirm={() => setGuidedStep("day15-finance")}
@@ -3082,6 +3119,8 @@ function GameSession({
             nextBanDay={nextBanDay}
             nextReleaseDay={nextReleaseDay}
             onSelectTheme={selectTheme}
+            placementReport={placementReport}
+            previousPlacementReport={previousPlacementReport}
             rankedThemes={rankedThemes}
             total={total}
           />
@@ -3921,11 +3960,14 @@ type MetaWorkspaceProps = {
   view: "themes" | "restrictions";
   game: GameState;
   rankedThemes: ThemeContent[];
+  placementReport: RecentPlacementReport;
+  previousPlacementReport: RecentPlacementReport;
   latestCommunity: CommunityEvent[];
   selectedTheme: ThemeContent;
   selectedRuntime: GameState["themes"][string];
   selectedRank: number;
-  selectedTier: string;
+  selectedTier: MetaTier;
+  selectedTierProvisional: boolean;
   selectedRequests: GameState["supportRequests"];
   nextBanDay: number;
   banDraft: Record<string, RestrictionLimit>;
@@ -3951,11 +3993,14 @@ function MetaWorkspace({
   view,
   game,
   rankedThemes,
+  placementReport,
+  previousPlacementReport,
   latestCommunity,
   selectedTheme,
   selectedRuntime,
   selectedRank,
   selectedTier,
+  selectedTierProvisional,
   selectedRequests,
   nextBanDay,
   banDraft,
@@ -3991,6 +4036,14 @@ function MetaWorkspace({
   const visibleCommunity = (
     selectedCommunity.length > 0 ? selectedCommunity : latestCommunity
   ).slice(0, 3);
+  const selectedPlacement =
+    placementReport.themes[selectedTheme.id] ?? EMPTY_PLACEMENT_METRICS;
+  const selectedPreviousPlacement =
+    previousPlacementReport.themes[selectedTheme.id] ??
+    EMPTY_PLACEMENT_METRICS;
+  const selectedPlacementDelta =
+    selectedPlacement.placementShare -
+    selectedPreviousPlacement.placementShare;
 
   return (
     <section className={`meta-workspace ${view}`}>
@@ -4000,14 +4053,20 @@ function MetaWorkspace({
             <div>
               <span className="eyebrow">META INDEX</span>
               <h2>테마 리스트</h2>
-              <p>점유율 순 · {rankedThemes.length}개 활성 테마</p>
+              <p>점유율 순 · {rankedThemes.length}개 출시 테마</p>
             </div>
             <span className="data-stamp">DAY {game.day}</span>
           </div>
           <div className="theme-list" role="list">
-            {rankedThemes.map((theme, rank) => {
+            {rankedThemes.map((theme) => {
               const runtime = game.themes[theme.id];
-              const tier = getTierLabel(rank, runtime.share);
+              const placement =
+                placementReport.themes[theme.id] ?? EMPTY_PLACEMENT_METRICS;
+              const tierResult = getPlacementTier(
+                placement.placementShare,
+                game.day,
+                getThemeDebutDay(game.releaseHistory, theme.id),
+              );
               const scheduled = game.supportRequests.find(
                 (request) =>
                   request.themeId === theme.id &&
@@ -4052,12 +4111,20 @@ function MetaWorkspace({
                       <strong>{theme.name}</strong>
                       <small>{theme.playstyle}</small>
                       <span className="theme-statline">
-                        점유율 {formatPercent(runtime.share)}
+                        채용률 {formatPercent(runtime.share)}
                         <i aria-hidden="true" />
                         승률 {formatPercent(runtime.winRate)}
                       </span>
+                      <span className="theme-statline placement">
+                        입상 {formatPercent(placement.placementShare)}
+                        <i aria-hidden="true" />
+                        전환 {formatPercent(placement.observedConversion)}
+                      </span>
                     </span>
-                    <span className={`tier-label ${getTierTone(tier)}`}>{tier}</span>
+                    <span className={`tier-label ${getTierTone(tierResult.tier)}`}>
+                      {tierResult.provisional ? "잠정 " : ""}
+                      {tierResult.tier}
+                    </span>
                   </button>
                   {scheduled ? (
                     <span className="development-dot" title={`DAY ${scheduled.eligibleReleaseDay} 시안 보장`}>
@@ -4095,7 +4162,9 @@ function MetaWorkspace({
                 <div>
                   <span className="eyebrow theme-registry-kicker">
                     THEME DOSSIER
-                    <b>#{String(selectedRank + 1).padStart(3, "0")}</b>
+                    <b>
+                      PICK #{String(selectedRank + 1).padStart(3, "0")}
+                    </b>
                   </span>
                   <h2 id="theme-detail-title" ref={detailHeadingRef} tabIndex={-1}>
                     {selectedTheme.name}
@@ -4130,41 +4199,45 @@ function MetaWorkspace({
             <div className="theme-metrics">
               <div>
                 <span>현재 티어</span>
-                <strong className={getTierTone(selectedTier)}>{selectedTier}</strong>
-                <small>점유율 순위 #{selectedRank + 1}</small>
+                <strong className={getTierTone(selectedTier)}>
+                  {selectedTierProvisional ? "잠정 " : ""}
+                  {selectedTier}
+                </strong>
+                <small>
+                  {selectedTier === "Tier Out"
+                    ? "메타 집계 제외"
+                    : `최근 30일 입상 기준`}
+                </small>
               </div>
               <div>
-                <span>점유율</span>
-                <strong>{formatPercent(selectedRuntime.share)}</strong>
+                <span>입상 점유율</span>
+                <strong>{formatPercent(selectedPlacement.placementShare)}</strong>
                 <small
                   className={
-                    selectedRuntime.share - selectedRuntime.previousWeekShare >= 0
+                    selectedPlacementDelta >= 0
                       ? "positive"
                       : "negative"
                   }
                 >
-                  {selectedRuntime.share - selectedRuntime.previousWeekShare >= 0 ? "+" : ""}
-                  {formatPercent(
-                    selectedRuntime.share - selectedRuntime.previousWeekShare,
-                    2,
-                  )}
+                  {selectedPlacementDelta >= 0 ? "+" : ""}
+                  {formatPercent(selectedPlacementDelta, 2)}
                   p / 7일
                 </small>
+              </div>
+              <div>
+                <span>입상 전환율</span>
+                <strong>{formatPercent(selectedPlacement.observedConversion)}</strong>
+                <small>탑컷 / 추정 참가자</small>
+              </div>
+              <div>
+                <span>채용률</span>
+                <strong>{formatPercent(selectedRuntime.share)}</strong>
+                <small>채용 순위 #{selectedRank + 1}</small>
               </div>
               <div>
                 <span>승률</span>
                 <strong>{formatPercent(selectedRuntime.winRate)}</strong>
                 <small>환경 가중 평균</small>
-              </div>
-              <div>
-                <span>불쾌도</span>
-                <strong>{Math.round(selectedRuntime.unpleasantness)}</strong>
-                <small>/ 100</small>
-              </div>
-              <div>
-                <span>금제 요구</span>
-                <strong>{Math.round(getBanDemand(selectedRuntime))}</strong>
-                <small>/ 100</small>
               </div>
             </div>
 
@@ -4178,6 +4251,8 @@ function MetaWorkspace({
               <span>미학 · {selectedTheme.aesthetic}</span>
               <span>난도 · {selectedTheme.difficulty}</span>
               <span>피로도 · {Math.round(selectedRuntime.fatigue)}</span>
+              <span>불쾌도 · {Math.round(selectedRuntime.unpleasantness)}</span>
+              <span>금제 요구 · {Math.round(getBanDemand(selectedRuntime))}</span>
               {selectedRequests.at(-1) ? (
                 <span>
                   지원 · {supportStatusLabel(selectedRequests.at(-1)!.status)} DAY{" "}
@@ -4450,6 +4525,8 @@ function DistributionView({
   nextReleaseDay,
   nextBanDay,
   rankedThemes,
+  placementReport,
+  previousPlacementReport,
   onSelectTheme,
 }: {
   game: GameState;
@@ -4458,44 +4535,111 @@ function DistributionView({
   nextReleaseDay: number;
   nextBanDay: number;
   rankedThemes: ThemeContent[];
+  placementReport: RecentPlacementReport;
+  previousPlacementReport: RecentPlacementReport;
   onSelectTheme: (themeId: ThemeId) => void;
 }) {
-  const [hoveredThemeId, setHoveredThemeId] = useState<ThemeId | null>(null);
-  const [focusedThemeId, setFocusedThemeId] = useState<ThemeId | null>(null);
-  const chartThemes = game.activeThemeIds.map((themeId) => THEME_BY_ID[themeId]);
+  const [hoveredEntryId, setHoveredEntryId] = useState<string | null>(null);
+  const [focusedEntryId, setFocusedEntryId] = useState<string | null>(null);
+  const placementThemes = [...rankedThemes]
+    .filter(
+      (theme) =>
+        (placementReport.themes[theme.id]?.placements ?? 0) > 0,
+    )
+    .sort((left, right) => {
+      const placementDelta =
+        (placementReport.themes[right.id]?.placementShare ?? 0) -
+        (placementReport.themes[left.id]?.placementShare ?? 0);
+      return (
+        placementDelta ||
+        game.themes[right.id].share - game.themes[left.id].share ||
+        left.id.localeCompare(right.id)
+      );
+    });
+  const tieredThemes = placementThemes.map((theme, rank) => {
+    const placement =
+      placementReport.themes[theme.id] ?? EMPTY_PLACEMENT_METRICS;
+    return {
+      rank,
+      theme,
+      placement,
+      tier: getPlacementTier(placement.placementShare).tier,
+    };
+  });
+  const namedTierThemes = tieredThemes.filter(({ tier }) =>
+    isNamedMetaTier(tier),
+  );
+  const tierThreeThemes = tieredThemes.filter(
+    ({ tier }) => tier === "Tier 3",
+  );
+  const otherShare = tierThreeThemes.reduce(
+    (sum, { placement }) => sum + placement.placementShare,
+    0,
+  );
+  const otherPreviousShare = Object.values(
+    previousPlacementReport.themes,
+  ).reduce(
+    (sum, placement) =>
+      getPlacementTier(placement.placementShare).tier === "Tier 3"
+        ? sum + placement.placementShare
+        : sum,
+    0,
+  );
+  const chartEntries = [
+    ...namedTierThemes.map(({ theme, tier, placement }) => ({
+      id: theme.id,
+      label: theme.name,
+      color: theme.color,
+      share: placement.placementShare,
+      theme,
+      tier,
+    })),
+    ...(tierThreeThemes.length > 0
+      ? [
+          {
+            id: "tier-three-other",
+            label: "기타",
+            color: "#94a3b8",
+            share: otherShare,
+            theme: null,
+            tier: "Tier 3" as const,
+          },
+        ]
+      : []),
+  ];
   const shareTotal =
-    chartThemes.reduce(
-      (sum, theme) => sum + (game.themes[theme.id]?.share ?? 0),
+    chartEntries.reduce(
+      (sum, entry) => sum + entry.share,
       0,
     ) || 1;
-  const distributionSlices = chartThemes.reduce<{
+  const distributionSlices = chartEntries.reduce<{
     accumulated: number;
-    slices: { theme: ThemeContent; offset: number; size: number }[];
+    slices: {
+      entry: (typeof chartEntries)[number];
+      offset: number;
+      size: number;
+    }[];
   }>(
-    (distribution, theme, index) => {
-      const size = index === chartThemes.length - 1
-        ? Math.max(0, 100 - distribution.accumulated)
-        : ((game.themes[theme.id]?.share ?? 0) / shareTotal) * 100;
+    (distribution, entry, index) => {
+      const size =
+        index === chartEntries.length - 1
+          ? Math.max(0, 100 - distribution.accumulated)
+          : (entry.share / shareTotal) * 100;
       return {
         accumulated: distribution.accumulated + size,
         slices: [
           ...distribution.slices,
-          { theme, offset: -distribution.accumulated, size },
+          { entry, offset: -distribution.accumulated, size },
         ],
       };
     },
     { accumulated: 0, slices: [] },
   ).slices;
-  const health = Math.round(
-    Math.max(
-      0,
-      100 -
-        Object.values(game.themes).reduce(
-          (sum, theme) => sum + theme.unpleasantness * theme.share,
-          0,
-        ),
-    ),
+  const healthBreakdown = useMemo(
+    () => getBusinessEnvironmentHealthBreakdown(game),
+    [game],
   );
+  const health = Math.round(healthBreakdown.score);
   const hasFutureRelease =
     game.phase === "release-edit" || game.day < LAST_RELEASE_DAY;
   const hasFutureBan =
@@ -4503,18 +4647,23 @@ function DistributionView({
   const settlementPeriod =
     game.phase === "ended" ||
     (game.phase === "running" && game.day >= LAST_DECISION_DAY);
-  const leader = rankedThemes[0];
-  const leaderRuntime = leader ? game.themes[leader.id] : null;
-  const inspectedThemeId = hoveredThemeId ?? focusedThemeId;
-  const inspectedTheme =
-    rankedThemes.find((theme) => theme.id === inspectedThemeId) ?? leader;
+  const inspectedEntryId = hoveredEntryId ?? focusedEntryId;
+  const inspectedEntry =
+    chartEntries.find((entry) => entry.id === inspectedEntryId) ??
+    chartEntries[0];
+  const inspectedTheme = inspectedEntry?.theme ?? null;
   const inspectedRuntime = inspectedTheme
     ? game.themes[inspectedTheme.id]
-    : leaderRuntime;
-  const isInspectingTheme = inspectedThemeId === inspectedTheme?.id;
-  const topThreeShare = rankedThemes
+    : null;
+  const isInspectingEntry = inspectedEntryId === inspectedEntry?.id;
+  const topThreeShare = placementThemes
     .slice(0, 3)
-    .reduce((sum, theme) => sum + (game.themes[theme.id]?.share ?? 0), 0);
+    .reduce(
+      (sum, theme) =>
+        sum +
+        (placementReport.themes[theme.id]?.placementShare ?? 0),
+      0,
+    );
   const inspectedFatigue = inspectedRuntime
     ? getFatigueSignal(inspectedRuntime)
     : null;
@@ -4548,9 +4697,9 @@ function DistributionView({
     >
       <header className="subpage-heading distribution-heading">
         <div>
-          <span className="eyebrow">META DISTRIBUTION</span>
-          <h1>메타 점유 분포</h1>
-          <p>오늘의 점유율과 순환 신호를 한 화면에서 확인합니다.</p>
+          <span className="eyebrow">TOP CUT DISTRIBUTION</span>
+          <h1>메타 입상 분포</h1>
+          <p>최근 30일 주요 대회 입상 비중과 순환 신호를 확인합니다.</p>
         </div>
         <div className="distribution-heading-actions">
           {highestFatigueTheme &&
@@ -4596,11 +4745,11 @@ function DistributionView({
       <div className="distribution-layout">
         <article className="distribution-chart-card">
           <div
-            className={`distribution-donut${isInspectingTheme ? " is-inspecting" : ""}`}
-            onPointerLeave={() => setHoveredThemeId(null)}
+            className={`distribution-donut${isInspectingEntry ? " is-inspecting" : ""}`}
+            onPointerLeave={() => setHoveredEntryId(null)}
           >
             <svg
-              aria-label="테마별 메타 점유율. 각 조각을 선택하면 해당 테마의 상세 정보로 이동합니다."
+              aria-label="0티어부터 2티어까지는 개별 표시하고 3티어 입상은 기타로 합산한 최근 30일 입상 분포입니다. 모든 입상 비중의 합은 100퍼센트입니다."
               className="distribution-donut-svg"
               role="group"
               viewBox="0 0 100 100"
@@ -4614,39 +4763,45 @@ function DistributionView({
                 r="38"
                 strokeWidth="24"
               />
-              {distributionSlices.map(({ theme, offset, size }) => {
-                const runtime = game.themes[theme.id];
+              {distributionSlices.map(({ entry, offset, size }) => {
                 const isActive =
-                  isInspectingTheme && inspectedTheme?.id === theme.id;
-                const shareLabel = formatPercent(runtime?.share ?? 0);
+                  isInspectingEntry && inspectedEntry?.id === entry.id;
+                const shareLabel = formatPercent(entry.share);
+                const ariaLabel = entry.theme
+                  ? `${entry.label}, 입상 점유율 ${shareLabel}. 상세 정보 열기`
+                  : `기타, 3티어 ${tierThreeThemes.length}개 테마 합산 입상 점유율 ${shareLabel}`;
 
                 return (
                   <g
-                    aria-label={`${theme.name}, 점유율 ${shareLabel}. 상세 정보 열기`}
-                    aria-disabled={guidedInspection || undefined}
+                    aria-label={ariaLabel}
+                    aria-disabled={entry.theme && guidedInspection || undefined}
                     className={`distribution-donut-segment${isActive ? " is-active" : ""}`}
-                    data-theme-id={theme.id}
-                    key={theme.id}
+                    data-theme-id={entry.theme?.id}
+                    key={entry.id}
                     onBlur={() => {
-                      setFocusedThemeId((current) =>
-                        current === theme.id ? null : current,
+                      setFocusedEntryId((current) =>
+                        current === entry.id ? null : current,
                       );
                     }}
                     onClick={() => {
-                      if (!guidedInspection) onSelectTheme(theme.id);
+                      if (entry.theme && !guidedInspection) {
+                        onSelectTheme(entry.theme.id);
+                      }
                     }}
-                    onFocus={() => setFocusedThemeId(theme.id)}
+                    onFocus={() => setFocusedEntryId(entry.id)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
-                        if (!guidedInspection) onSelectTheme(theme.id);
+                        if (entry.theme && !guidedInspection) {
+                          onSelectTheme(entry.theme.id);
+                        }
                       }
                     }}
-                    onPointerEnter={() => setHoveredThemeId(theme.id)}
-                    role="button"
+                    onPointerEnter={() => setHoveredEntryId(entry.id)}
+                    role={entry.theme ? "button" : "img"}
                     tabIndex={guidedInspection ? -1 : 0}
                   >
-                    <title>{`${theme.name}: ${shareLabel}`}</title>
+                    <title>{`${entry.label}: ${shareLabel}`}</title>
                     <circle
                       className="distribution-donut-slice"
                       cx="50"
@@ -4654,12 +4809,12 @@ function DistributionView({
                       fill="none"
                       pathLength="100"
                       r="38"
-                      stroke={theme.color}
+                      stroke={entry.color}
                       strokeLinecap="butt"
                       strokeWidth="24"
                       style={
                         {
-                          "--slice-color": theme.color,
+                          "--slice-color": entry.color,
                           "--slice-offset": offset,
                           "--slice-size": size,
                           strokeDasharray: `${size} ${Math.max(0, 100 - size)}`,
@@ -4675,16 +4830,18 @@ function DistributionView({
             <div className="distribution-donut-core">
               <div
                 className="distribution-donut-core-content"
-                key={`${inspectedTheme?.id ?? "empty"}-${inspectedRuntime ? (inspectedRuntime.share * 100).toFixed(1) : "0"}`}
+                key={`${inspectedEntry?.id ?? "empty"}-${inspectedEntry ? (inspectedEntry.share * 100).toFixed(1) : "0"}`}
               >
-                <span>{isInspectingTheme ? "현재 점유율" : "점유율 1위"}</span>
-                <strong>{inspectedTheme?.name ?? "-"}</strong>
-                <em>{inspectedRuntime ? formatPercent(inspectedRuntime.share) : "-"}</em>
+                <span>{isInspectingEntry ? "현재 입상 비중" : "입상 1위"}</span>
+                <strong>{inspectedEntry?.label ?? "-"}</strong>
+                <em>{inspectedEntry ? formatPercent(inspectedEntry.share) : "-"}</em>
                 {inspectedRuntime && inspectedFatigue ? (
                   <small className={`donut-fatigue-copy ${inspectedFatigue.level}`}>
                     피로도 {Math.round(inspectedRuntime.fatigue)} · 1위 유지{" "}
                     {inspectedRuntime.topStreakDays}일
                   </small>
+                ) : inspectedEntry?.tier === "Tier 3" ? (
+                  <small>{tierThreeThemes.length}개 테마 합산</small>
                 ) : null}
               </div>
             </div>
@@ -4697,13 +4854,17 @@ function DistributionView({
             </div>
             <div>
               <span>생태계 건강</span>
-              <strong>{health}</strong>
-              <small>점유율 가중 불쾌도 기준</small>
+              <strong
+                title={`경기 품질 ${Math.round(healthBreakdown.gameplayQuality)} · 입상 다양성 ${Math.round(healthBreakdown.placementDiversity)} · 상위권 순환 ${Math.round(healthBreakdown.topCohortTurnover)} · 세대 공존 ${Math.round(healthBreakdown.generationalBalance)} · 생태계 연속성 ${Math.round(healthBreakdown.ecosystemContinuity)}`}
+              >
+                {health}
+              </strong>
+              <small>입상 다양성 · 순환 · 세대 공존</small>
             </div>
             <div>
               <span>TOP 3 집중</span>
               <strong>{formatPercent(topThreeShare)}</strong>
-              <small>낮을수록 분산된 환경</small>
+              <small>최근 30일 입상 기준</small>
             </div>
             <div>
               <span>구매 신뢰</span>
@@ -4713,10 +4874,15 @@ function DistributionView({
           </div>
         </article>
 
-        <ol className="distribution-legend" aria-label="테마별 점유율 순위">
-          {rankedThemes.map((theme, index) => {
+        <ol className="distribution-legend" aria-label="0티어부터 2티어까지의 입상 비중과 3티어 합계">
+          {namedTierThemes.map(({ theme, tier, rank, placement }) => {
             const runtime = game.themes[theme.id];
-            const delta = runtime.share - runtime.previousWeekShare;
+            const previousPlacement =
+              previousPlacementReport.themes[theme.id] ??
+              EMPTY_PLACEMENT_METRICS;
+            const delta =
+              placement.placementShare -
+              previousPlacement.placementShare;
             const fatigue = getFatigueSignal(runtime);
             return (
               <li className={`fatigue-${fatigue.level}`} key={theme.id}>
@@ -4727,7 +4893,7 @@ function DistributionView({
                   }}
                   type="button"
                 >
-                  <span className="legend-rank">{index + 1}</span>
+                  <span className="legend-rank">{rank + 1}</span>
                   <span
                     aria-hidden="true"
                     className="legend-color"
@@ -4736,7 +4902,7 @@ function DistributionView({
                   <span className="legend-theme">
                     <strong>{theme.name}</strong>
                     <small>
-                      {getTierLabel(index, runtime.share)} · 피로 {Math.round(runtime.fatigue)}
+                      {tier} · 피로 {Math.round(runtime.fatigue)}
                     </small>
                     {fatigue.level !== "none" ? (
                       <span className={`fatigue-badge ${fatigue.level}`}>
@@ -4745,7 +4911,7 @@ function DistributionView({
                     ) : null}
                   </span>
                   <span className="legend-share">
-                    <strong>{formatPercent(runtime.share)}</strong>
+                    <strong>{formatPercent(placement.placementShare)}</strong>
                     <small className={delta >= 0 ? "positive" : "negative"}>
                       {delta >= 0 ? "+" : ""}
                       {formatPercent(delta, 2)}p
@@ -4756,6 +4922,36 @@ function DistributionView({
               </li>
             );
           })}
+          {tierThreeThemes.length > 0 ? (
+            <li className="tier-three-other">
+              <div className="distribution-legend-other">
+                <span className="legend-rank">기타</span>
+                <span
+                  aria-hidden="true"
+                  className="legend-color"
+                  style={{ backgroundColor: "#94a3b8" }}
+                />
+                <span className="legend-theme">
+                  <strong>기타</strong>
+                  <small>Tier 3 · {tierThreeThemes.length}개 테마</small>
+                </span>
+                <span className="legend-share">
+                  <strong>{formatPercent(otherShare)}</strong>
+                  <small
+                    className={
+                      otherShare - otherPreviousShare >= 0
+                        ? "positive"
+                        : "negative"
+                    }
+                  >
+                    {otherShare - otherPreviousShare >= 0 ? "+" : ""}
+                    {formatPercent(otherShare - otherPreviousShare, 2)}p
+                  </small>
+                </span>
+                <span aria-hidden="true" />
+              </div>
+            </li>
+          ) : null}
         </ol>
       </div>
 
@@ -5268,6 +5464,7 @@ function getFinanceChartData(game: GameState): FinanceChartDatum[] {
       typeof latestEntry?.communitySentiment !== "number"
     ? getDailyCommunitySentiment(game, game.day)
     : null;
+  const liveEnvironmentHealth = getBusinessEnvironmentHealth(game);
 
   return rows.map((entry) => {
     const isLatest = entry.day === latestRecordedDay;
@@ -5292,11 +5489,11 @@ function getFinanceChartData(game: GameState): FinanceChartDatum[] {
             ? game.finance.cash
             : null,
       environmentHealth:
-        typeof entry.environmentHealth === "number"
-          ? entry.environmentHealth
-          : isCurrentDay
-            ? getBusinessEnvironmentHealth(game)
-            : null,
+        getChartEnvironmentHealth(
+          entry,
+          isLatest,
+          liveEnvironmentHealth,
+        ),
       purchaseTrust:
         typeof entry.purchaseTrust === "number"
           ? entry.purchaseTrust
@@ -5802,7 +5999,7 @@ function OperationsView({
   const operatingDayLabel = isTodayRecorded
     ? "오늘"
     : `DAY ${game.history.at(-1)?.day ?? game.day}`;
-  const environmentLabel = environmentHealth >= 70
+  const environmentLabel = environmentHealth >= CAMPAIGN_ENVIRONMENT_STABLE_MIN
     ? "안정"
     : environmentHealth >= 50
       ? "주의"

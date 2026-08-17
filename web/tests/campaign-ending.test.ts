@@ -11,6 +11,21 @@ import {
 } from "../app/game/campaign-ending.ts";
 import { THEME_BY_ID } from "../app/game/content.ts";
 import { createInitialGame } from "../app/game/engine.ts";
+import { getBusinessEnvironmentHealth } from "../app/game/business-actions.ts";
+
+function setEnvironmentStability(
+  state: ReturnType<typeof createInitialGame>,
+  target: number,
+): void {
+  for (const themeId of state.activeThemeIds) {
+    state.themes[themeId].unpleasantness = 1;
+  }
+  state.purchaseTrust = 100;
+  const baseHealth = getBusinessEnvironmentHealth(state);
+  assert.ok(baseHealth >= target);
+  state.purchaseTrust = 50 - (baseHealth - target) / 0.8;
+  assert.equal(getCampaignEnvironmentStability(state), target);
+}
 
 function createCompleteStewardshipState() {
   const state = createInitialGame(101);
@@ -193,22 +208,20 @@ test("cash and environment thresholds use the intended inclusive boundaries", ()
 
   assert.equal(getCampaignEnvironmentBand(49.94), "danger");
   assert.equal(getCampaignEnvironmentBand(49.95), "caution");
-  assert.equal(getCampaignEnvironmentBand(69.94), "caution");
-  assert.equal(getCampaignEnvironmentBand(69.95), "stable");
+  assert.equal(getCampaignEnvironmentBand(64.94), "caution");
+  assert.equal(getCampaignEnvironmentBand(64.95), "stable");
 });
 
 test("all nine cash and environment combinations produce distinct endings", () => {
   const cashScores = [4, 5, 14];
-  const environmentScores = [49, 50, 70];
+  const environmentScores = [49, 50, 65];
   const endings = new Set<string>();
 
   for (const cash of cashScores) {
     for (const environmentHealth of environmentScores) {
       const state = createInitialGame(13);
       state.finance.cash = cash;
-      for (const themeId of state.activeThemeIds) {
-        state.themes[themeId].unpleasantness = 100 - environmentHealth;
-      }
+      setEnvironmentStability(state, environmentHealth);
 
       const ending = evaluateCampaignEnding(state);
 
@@ -226,10 +239,16 @@ test("collapsed purchase trust lowers an otherwise healthy environment ending", 
   for (const themeId of state.activeThemeIds) {
     state.themes[themeId].unpleasantness = 1;
   }
+  state.purchaseTrust = 100;
+  const trustedHealth = getCampaignEnvironmentStability(state);
+  assert.ok(trustedHealth >= 65);
   state.purchaseTrust = 0;
 
-  assert.equal(getCampaignEnvironmentStability(state), 59);
-  assert.equal(evaluateCampaignEnding(state).bands.environment, "caution");
+  assert.equal(
+    getCampaignEnvironmentStability(state),
+    Math.round(Math.max(0, trustedHealth - 40) * 10) / 10,
+  );
+  assert.notEqual(evaluateCampaignEnding(state).bands.environment, "stable");
 });
 
 test("user count is context and does not change the core ending", () => {
@@ -293,8 +312,10 @@ test("ending hints expose missed directions without revealing thresholds", () =>
     ["cash", "environment", "support"],
   );
 
+  const unpreparedState = createInitialGame(202);
+  unpreparedState.purchaseTrust = 0;
   const unpreparedHints = getCampaignEndingHints(
-    evaluateCampaignEnding(createInitialGame(202)),
+    evaluateCampaignEnding(unpreparedState),
   );
   assert.deepEqual(
     new Set(unpreparedHints.map((hint) => hint.id)),

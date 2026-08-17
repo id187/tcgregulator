@@ -31,6 +31,9 @@ import {
   LAST_RELEASE_DAY,
 } from "../app/game/campaign.ts";
 import { getCommunityHeat } from "../app/game/daily-community.ts";
+import { ENVIRONMENT_HEALTH_MODEL } from "../app/game/environment-health.ts";
+import { META_ADOPTION_SHARE_FLOOR } from "../app/game/meta-tiers.ts";
+import { DAILY_TOP_CUT_SLOTS } from "../app/game/placement-meta.ts";
 import {
   getDailyOperatingCost,
   getMarketDivergenceLag,
@@ -50,8 +53,11 @@ import {
   canProposeSupport,
   formatCommunityEvent,
   getCommittedSupportCount,
+  getExpectedTier,
   getNextBanDay,
   getNextReleaseDay,
+  getNewThemeExpectedPower,
+  getNewThemeLaunchPower,
   getPrologueReleaseSelections,
   getPrologueRestrictionChanges,
   isBanDay,
@@ -282,6 +288,7 @@ function assertHealthyShares(state: State): void {
     (themeId) => state.themes[themeId].share,
   );
   assert.ok(shares.every(Number.isFinite));
+  assert.ok(shares.every((share) => share >= META_ADOPTION_SHARE_FLOOR - 1e-9));
   assert.ok(Math.abs(shares.reduce((sum, share) => sum + share, 0) - 1) < 1e-6);
 }
 
@@ -389,7 +396,37 @@ test("creates a fixed DAY 1 campaign start with five themes and 10,000 users", (
     state.history[0].environmentHealth,
     getBusinessEnvironmentHealth(state),
   );
+  assert.equal(
+    state.history[0].environmentHealthModel,
+    ENVIRONMENT_HEALTH_MODEL,
+  );
   assert.equal(state.history[0].purchaseTrust, state.purchaseTrust);
+  assert.deepEqual(
+    state.history[0].winRates,
+    Object.fromEntries(
+      state.activeThemeIds.map((themeId) => [
+        themeId,
+        state.themes[themeId].winRate,
+      ]),
+    ),
+  );
+  assert.deepEqual(
+    Object.keys(state.history[0].topCutPlacements ?? {}).sort(),
+    [...state.activeThemeIds].sort(),
+  );
+  assert.equal(
+    Object.values(state.history[0].topCutPlacements ?? {}).reduce(
+      (sum, placements) => sum + placements,
+      0,
+    ),
+    DAILY_TOP_CUT_SLOTS,
+  );
+  const advanced = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+  assert.notStrictEqual(advanced.history[0].winRates, state.history[0].winRates);
+  assert.notStrictEqual(
+    advanced.history[0].topCutPlacements,
+    state.history[0].topCutPlacements,
+  );
   assert.deepEqual(state.community, []);
   assert.deepEqual(state.releaseHistory, []);
 });
@@ -1445,6 +1482,52 @@ test("support proposals have a thirty-day cooldown and are guaranteed on the nex
   assert.equal(state.supportRequests[1].eligibleReleaseDay, 90);
 });
 
+test("a support release can bring a Tier Out theme back into the observed meta", () => {
+  let state = createInitialGame(7_701);
+  const targetId = state.activeThemeIds.find(
+    (themeId) =>
+      themeId !== state.currentTopThemeId &&
+      state.themes[themeId].supportCount === 0,
+  );
+  assert.ok(targetId);
+  state = reduceGame(state, {
+    type: "PROPOSE_SUPPORT",
+    themeId: targetId,
+    direction: "consistency",
+  });
+  state = advanceToFirstRelease(state);
+  assert.ok(state.releaseSlate);
+  const requested = state.releaseSlate.options.find(
+    (option) => option.requested && option.themeId === targetId,
+  );
+  assert.ok(requested);
+
+  const runtime = state.themes[targetId];
+  const recipient = state.themes[state.currentTopThemeId];
+  const transferred = runtime.share - META_ADOPTION_SHARE_FLOOR;
+  runtime.share = META_ADOPTION_SHARE_FLOOR;
+  runtime.previousWeekShare = META_ADOPTION_SHARE_FLOOR;
+  recipient.share += transferred;
+
+  const selected = [
+    requested,
+    ...state.releaseSlate.options.filter((option) => option.id !== requested.id),
+  ].slice(0, 3);
+  state = reduceGame(state, {
+    type: "SUBMIT_RELEASE",
+    selections: selected.map((option, index) => ({
+      optionId: option.id,
+      powerAdjustment: index === 0 ? 3 : 0,
+    })),
+  });
+  assert.equal(state.themes[targetId].share, META_ADOPTION_SHARE_FLOOR);
+
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, state.day + 1);
+  assert.ok(state.themes[targetId].share > META_ADOPTION_SHARE_FLOOR);
+  assert.equal(state.themes[targetId].supportCount, 1);
+  assertHealthyShares(state);
+});
+
 test("support releases unlock exactly three prepared cards and stop after three waves", () => {
   let state = createInitialGame(7781);
   const targetId = state.activeThemeIds.find(
@@ -1584,6 +1667,124 @@ test("day 60 release review offers exactly three new themes and three supports",
   );
 });
 
+test("packs for themes with stronger recent placements sell harder", () => {
+  const atRelease = advanceToFirstRelease(createInitialGame(3_221));
+  assert.ok(atRelease.releaseSlate);
+  const supportOption = atRelease.releaseSlate.options.find(
+    (option) =>
+      option.kind === "support" &&
+      atRelease.history[0].shares[option.themeId] !== undefined,
+  );
+  assert.ok(supportOption);
+  const newOptions = atRelease.releaseSlate.options.filter(
+    (option) => option.kind === "new-theme",
+  );
+  assert.ok(newOptions.length >= 2);
+  const donorId = Object.keys(atRelease.history[0].shares).find(
+    (themeId) => themeId !== supportOption.themeId,
+  );
+  assert.ok(donorId);
+  const selections = [supportOption, ...newOptions.slice(0, 2)].map(
+    (option) => ({
+      optionId: option.id,
+      powerAdjustment: 0 as const,
+    }),
+  );
+
+  const withTargetPlacements = (targetPlacements: number): State => {
+    const state = structuredClone(atRelease);
+    for (const entry of state.history) {
+      assert.ok(entry.topCutPlacements);
+      for (const themeId of Object.keys(entry.topCutPlacements)) {
+        entry.topCutPlacements[themeId] = 0;
+      }
+      entry.topCutPlacements[supportOption.themeId] = targetPlacements;
+      entry.topCutPlacements[donorId] =
+        DAILY_TOP_CUT_SLOTS - targetPlacements;
+    }
+    return state;
+  };
+
+  const highTier = reduceGame(
+    withTargetPlacements(DAILY_TOP_CUT_SLOTS),
+    { type: "SUBMIT_RELEASE", selections },
+  );
+  const tierOut = reduceGame(
+    withTargetPlacements(0),
+    { type: "SUBMIT_RELEASE", selections },
+  );
+  assert.ok(highTier.finance.today > tierOut.finance.today);
+});
+
+test("new-theme launch power and same-day sales ignore stale slate forecasts", () => {
+  const atRelease = advanceToFirstRelease(createInitialGame(6_540));
+  assert.ok(atRelease.releaseSlate);
+  const newOptions = atRelease.releaseSlate.options.filter(
+    (option) => option.kind === "new-theme",
+  );
+  assert.equal(newOptions.length, 3);
+  const adjustments = [-3, 0, 3] as const;
+
+  for (const option of newOptions) {
+    const content = THEMES.find((theme) => theme.id === option.themeId);
+    assert.ok(content);
+    assert.equal(
+      option.expectedPower,
+      getNewThemeExpectedPower(content, atRelease.day),
+    );
+  }
+
+  const selections = newOptions.map((option, index) => ({
+    optionId: option.id,
+    powerAdjustment: adjustments[index],
+  }));
+  const released = reduceGame(atRelease, {
+    type: "SUBMIT_RELEASE",
+    selections,
+  });
+
+  const staleSlate = structuredClone(atRelease);
+  for (const option of staleSlate.releaseSlate!.options) {
+    if (option.kind !== "new-theme") continue;
+    option.expectedPower = 100;
+    option.expectedTier = "Tier 0";
+  }
+  const releasedFromStale = reduceGame(staleSlate, {
+    type: "SUBMIT_RELEASE",
+    selections,
+  });
+  assert.equal(releasedFromStale.finance.today, released.finance.today);
+  assert.deepEqual(
+    releasedFromStale.releaseHistory.at(-1)?.products,
+    released.releaseHistory.at(-1)?.products,
+  );
+
+  const observed = reduceGame(releasedFromStale, {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
+  for (const [index, option] of newOptions.entries()) {
+    const content = THEMES.find((theme) => theme.id === option.themeId);
+    assert.ok(content);
+    const expectedLaunchPower = getNewThemeLaunchPower(
+      content,
+      adjustments[index],
+      atRelease.day,
+    );
+    assert.ok(
+      Math.abs(
+        observed.themes[option.themeId].power - expectedLaunchPower,
+      ) < 1e-9,
+    );
+    assert.equal(
+      released.releaseHistory.at(-1)?.products.find(
+        (product) => product.optionId === option.id,
+      )?.expectedTier,
+      getExpectedTier(expectedLaunchPower),
+    );
+  }
+});
+
 test("release submission requires three unique valid selections and applies their adjustments", () => {
   const atRelease = advanceToFirstRelease(createInitialGame(654));
   assert.ok(atRelease.releaseSlate);
@@ -1694,12 +1895,10 @@ test("release submission requires three unique valid selections and applies thei
   );
 
   for (const { option, adjustment } of selected.slice(0, 2)) {
-    const content = THEMES.find((theme) => theme.id === option.themeId);
-    assert.ok(content);
     assert.ok(
       Math.abs(
         observed.themes[option.themeId].power -
-          (content.basePower + adjustment * 2.2),
+          (option.expectedPower + adjustment * 2.2),
       ) < 1e-9,
     );
   }
@@ -1708,6 +1907,7 @@ test("release submission requires three unique valid selections and applies thei
 test("keeps shares finite and normalized through every release and restriction gate", () => {
   let state = createInitialGame(999);
   let reviews = 0;
+  let sawTierOut = false;
 
   while (state.phase !== "ended") {
     if (state.operations.pendingEvent) {
@@ -1724,12 +1924,25 @@ test("keeps shares finite and normalized through every release and restriction g
     }
 
     assertHealthyShares(state);
+    sawTierOut ||= state.activeThemeIds.some(
+      (themeId) =>
+        state.themes[themeId].share <= META_ADOPTION_SHARE_FLOOR + 1e-9,
+    );
     assert.ok(reviews < 100, "the simulation should continue past every review");
   }
 
   assert.equal(state.day, CAMPAIGN_END_DAY);
   assert.equal(state.phase, "ended");
   assert.equal(state.releaseHistory.length, 15);
+  assert.equal(sawTierOut, true);
+  const finalShares = state.activeThemeIds
+    .map((themeId) => state.themes[themeId].share)
+    .sort((left, right) => right - left);
+  assert.ok(finalShares.slice(0, 3).reduce((sum, share) => sum + share, 0) >= 0.3);
+  assert.ok(
+    finalShares.filter((share) => share <= META_ADOPTION_SHARE_FLOOR + 1e-9)
+      .length >= 5,
+  );
   assertHealthyShares(state);
 });
 

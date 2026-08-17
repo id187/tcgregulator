@@ -361,6 +361,60 @@ function setRestrictionFollowupSnapshot(
   )[0][0];
 }
 
+function setRestrictionDecisionMeta(
+  state: GameState,
+  day: number,
+  shares: Readonly<Record<ThemeId, number>>,
+  winRates: Readonly<Record<ThemeId, number>>,
+): void {
+  const snapshot = state.history.find((entry) => entry.day === day);
+  assert.ok(snapshot);
+  snapshot.shares = { ...shares };
+  snapshot.winRates = { ...winRates };
+  snapshot.topThemeId = Object.entries(shares).sort(
+    ([leftId, left], [rightId, right]) =>
+      right - left || leftId.localeCompare(rightId),
+  )[0][0];
+  for (const themeId of state.activeThemeIds) {
+    const runtime = state.themes[themeId];
+    const share = shares[themeId];
+    const winRate = winRates[themeId];
+    if (runtime && Number.isFinite(share)) {
+      runtime.share = share;
+      runtime.previousWeekShare = share;
+    }
+    if (runtime && Number.isFinite(winRate)) runtime.winRate = winRate;
+  }
+}
+
+function setRestrictionPlacementWindow(
+  state: GameState,
+  decisionDay: number,
+  shares: Readonly<Record<ThemeId, number>>,
+  winRates: Readonly<Record<ThemeId, number>>,
+  dailyPlacements: Readonly<Record<ThemeId, number>>,
+): void {
+  state.history = Array.from({ length: 30 }, (_, index) => ({
+    day: decisionDay - 29 + index,
+    totalUsers: 100_000,
+    revenue: 0.5,
+    topThemeId: Object.entries(shares).sort(
+      ([leftId, left], [rightId, right]) =>
+        right - left || leftId.localeCompare(rightId),
+    )[0][0],
+    shares: { ...shares },
+    winRates: { ...winRates },
+    topCutPlacements: { ...dailyPlacements },
+  }));
+  for (const themeId of state.activeThemeIds) {
+    const runtime = state.themes[themeId];
+    if (!runtime) continue;
+    runtime.share = shares[themeId];
+    runtime.previousWeekShare = shares[themeId];
+    runtime.winRate = winRates[themeId];
+  }
+}
+
 function releaseWithMixedReactions(seed = 9191): GameState {
   let state = createInitialGame(seed);
   state.operations.nextEventDay = null;
@@ -873,7 +927,7 @@ test("bursts for four release days with strong, weak, art, and ban-support react
   );
   assert.ok(
     launchPosts.some((post) =>
-      /돈에 미쳤네|파워 인플레|체급을 이렇게|매출 그래프|밸런스를 상품/.test(
+        /돈에 미쳤네|파워 인플레|체급을 이렇게|매출 그래프|밸런스를 상품|너무 노골적/.test(
         post.body,
       ),
     ),
@@ -1489,6 +1543,575 @@ test("balanced reviews praise Tier 1/Tier 2 coverage and a full stale release wi
       )
     ),
   );
+});
+
+test("restriction reactions distinguish all four pick-rate and win-rate quadrants", () => {
+  const fixtures: Array<{
+    label: string;
+    change: RestrictionFixtureChange;
+    shares: readonly [number, number, number, number, number];
+    winRates: readonly [number, number, number, number, number];
+    expected: RegExp;
+    displayedWinRate: string;
+  }> = [
+    {
+      label: "popular powerhouse",
+      change: {
+        themeId: "cycle",
+        partId: "cycle-gate",
+        oldLimit: 3,
+        newLimit: 1,
+      },
+      shares: [0.3, 0.26, 0.2, 0.14, 0.1],
+      winRates: [0.59, 0.5, 0.5, 0.5, 0.5],
+      expected:
+        /많이 쓰이고 많이 이기|표본도 크고 결과도|동시에 경고|큰 표본에서도 .* 승률|표본 큰 고승률|픽률만 높은 덱과 달리|픽률과 승률이 같이 높|대상 자체는 정면 승부/,
+      displayedWinRate: "59.0%",
+    },
+    {
+      label: "popular underperformer",
+      change: {
+        themeId: "cycle",
+        partId: "cycle-gate",
+        oldLimit: 3,
+        newLimit: 1,
+      },
+      shares: [0.3, 0.26, 0.2, 0.14, 0.1],
+      winRates: [0.46, 0.5, 0.5, 0.5, 0.5],
+      expected:
+        /인기랑 강함|점유율 .*승률|픽률은 높아도|승률 .*우선 타격|표본만 크고|많이 들고 왔지만 많이 지던|거품 픽|인기세를 벌|픽률을 위험도로 착각|입상 전환율 낮|많이 보인다는 이유/,
+      displayedWinRate: "46.0%",
+    },
+    {
+      label: "low-pick high-win",
+      change: {
+        themeId: "abyss",
+        partId: "abyss-bait",
+        oldLimit: 3,
+        newLimit: 1,
+      },
+      shares: [0.34, 0.26, 0.2, 0.16, 0.04],
+      winRates: [0.5, 0.5, 0.5, 0.5, 0.6],
+      expected:
+        /숨은 강덱|표본이 적|입상 전환율|적게 들고 와서|장인 덱|낮은 픽률|승률 높은 소수|티어 이름보다 실제 결과/,
+      displayedWinRate: "60.0%",
+    },
+    {
+      label: "weak fringe",
+      change: {
+        themeId: "abyss",
+        partId: "abyss-bait",
+        oldLimit: 3,
+        newLimit: 1,
+      },
+      shares: [0.34, 0.26, 0.2, 0.16, 0.04],
+      winRates: [0.5, 0.5, 0.5, 0.5, 0.45],
+      expected:
+        /픽도 낮고 승률도 낮|환경이 알아서 밀어|티어 밖|적게 보이고 성적도|지원 검토 대상|하위권 약체|티어 아웃 직전|낮은 픽·낮은 승률/,
+      displayedWinRate: "45.0%",
+    },
+  ];
+
+  const signatures = new Set<string>();
+  for (const [index, fixture] of fixtures.entries()) {
+    const state = makeScheduledRestrictionReactionState(
+      [fixture.change],
+      38_120 + index,
+    );
+    const shares = Object.fromEntries(
+      state.activeThemeIds.map((themeId, themeIndex) => [
+        themeId,
+        fixture.shares[themeIndex],
+      ]),
+    );
+    const winRates = Object.fromEntries(
+      state.activeThemeIds.map((themeId, themeIndex) => [
+        themeId,
+        fixture.winRates[themeIndex],
+      ]),
+    );
+    setRestrictionDecisionMeta(state, 165, shares, winRates);
+
+    const posts = restrictionContextPosts(state, 166, 165);
+    const quadrantPosts = posts.filter((post) => fixture.expected.test(post.body));
+    assert.equal(posts.length, 16, fixture.label);
+    assert.ok(
+      quadrantPosts.length >= 4,
+      `${fixture.label}\n${posts.map((post) => post.body).join("\n")}`,
+    );
+    assert.ok(
+      posts.some((post) => post.body.includes(fixture.displayedWinRate)),
+      `${fixture.label} must render its decision-day win rate`,
+    );
+    assert.ok(posts.every((post) => !/[{}]/.test(post.body)), fixture.label);
+    signatures.add(quadrantPosts.map((post) => post.body).sort().join("\n"));
+  }
+  assert.equal(signatures.size, fixtures.length);
+});
+
+test("a tier-balanced list cannot earn unconditional praise for cutting popular losers and missing a sleeper", () => {
+  const state = makeScheduledRestrictionReactionState([
+    { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 2 },
+    { themeId: "white-night", partId: "white-night-prayer", oldLimit: 3, newLimit: 2 },
+    { themeId: "ironblood", partId: "ironblood-squire", oldLimit: 3, newLimit: 2 },
+    { themeId: "abyss", partId: "abyss-bait", oldLimit: 3, newLimit: 2 },
+  ], 38_151);
+  const sleeper = THEMES[5];
+  state.activeThemeIds.push(sleeper.id);
+  state.themes[sleeper.id] = makeRuntime(sleeper, 0.04);
+  const shares = Object.fromEntries(
+    state.activeThemeIds.map((themeId, index) => [
+      themeId,
+      [0.32, 0.24, 0.16, 0.13, 0.11, 0.04][index],
+    ]),
+  );
+  const winRates = Object.fromEntries(
+    state.activeThemeIds.map((themeId, index) => [
+      themeId,
+      [0.46, 0.47, 0.49, 0.45, 0.46, 0.62][index],
+    ]),
+  );
+  setRestrictionDecisionMeta(state, 165, shares, winRates);
+
+  const profile = getPublishedRestrictionPolicyProfile(state, 165);
+  assert.equal(profile.quality, "balanced");
+  assert.equal(profile.upperMeaningfulCuts, 2);
+  assert.equal(profile.tier2MeaningfulCuts, 2);
+
+  const posts = restrictionContextPosts(state, 166, 165);
+  const missedSleeper =
+    /진짜 입상 전환|저픽 고승률|성적표 첫 줄|실속 있는|승률은 경고|우선순위 반대|숨은 강덱|풍선효과 후보/;
+  const unconditionalPraise =
+    /방향이 좋|이번 범위는 납득|균형이 잘 잡|깔끔한 표|합리적이다|필요한 일은 다 한|구성은 적정|판단은 좋았|금제는 이래야지|범위가 제대로|잘했다/;
+  assert.equal(posts.length, 16);
+  assert.ok(
+    posts.filter((post) => missedSleeper.test(post.body)).length >= 4,
+    posts.map((post) => post.body).join("\n"),
+  );
+  assert.ok(
+    posts.some((post) => post.body.includes(sleeper.shortName)),
+    `the ignored sleeper must be named: ${sleeper.shortName}`,
+  );
+  assert.ok(posts.some((post) => post.body.includes("62.0%")));
+  assert.equal(
+    posts.filter((post) => unconditionalPraise.test(post.body)).length,
+    0,
+    posts.map((post) => post.body).join("\n"),
+  );
+});
+
+test("pick-win restriction copy stays historical with and without a saved win-rate snapshot", () => {
+  const makeHistoricalFixture = (seed: number) => {
+    const state = makeScheduledRestrictionReactionState([
+      { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 1 },
+    ], seed);
+    const shares = Object.fromEntries(
+      state.activeThemeIds.map((themeId, index) => [
+        themeId,
+        [0.3, 0.26, 0.2, 0.14, 0.1][index],
+      ]),
+    );
+    const winRates = Object.fromEntries(
+      state.activeThemeIds.map((themeId, index) => [
+        themeId,
+        [0.46, 0.5, 0.5, 0.5, 0.5][index],
+      ]),
+    );
+    setRestrictionDecisionMeta(state, 165, shares, winRates);
+    return state;
+  };
+  const bodies = (state: GameState) =>
+    restrictionContextPosts(state, 166, 165).map((post) => post.body);
+
+  const snapshotted = makeHistoricalFixture(38_161);
+  const snapshottedBefore = bodies(snapshotted);
+  snapshotted.themes.cycle.winRate = 0.7;
+  snapshotted.themes.cycle.share = 0.01;
+  assert.deepEqual(bodies(snapshotted), snapshottedBefore);
+
+  const legacy = makeHistoricalFixture(38_162);
+  const decisionSnapshot = legacy.history.find((entry) => entry.day === 165);
+  assert.ok(decisionSnapshot);
+  delete decisionSnapshot.winRates;
+  legacy.themes.cycle.winRate = 0.5;
+  const legacyBefore = bodies(legacy);
+  legacy.themes.cycle.winRate = 0.7;
+  assert.deepEqual(
+    bodies(legacy),
+    legacyBefore,
+    "old saves without winRates must use a neutral historical fallback, not today's runtime",
+  );
+});
+
+const UNCONDITIONAL_LIST_PRAISE =
+  /숨만 고른 금제라 괜찮|납득 가능|첫인상은 좋|문제 지점은 제대로|적당해 보|마음에 든|정교한 금제|순서상 맞|이 정도는 해야 정기 금제|방향이 좋|이번 범위는 납득|균형이 잘 잡|깔끔한 표|합리적이다|필요한 일은 다 한|구성은 적정|판단은 좋았|금제는 이래야지|범위가 제대로|잘했다|대상 선정 자체는 성적표를 읽|실전 위협은 확인|숨은 강덱 근거|선제 검토 대상/;
+
+const PERFORMANCE_BLIND_CUT_CRITIQUE =
+  /거품|인기를 성능|픽률을 위험도|많이 지던|점유율 .* 승률|금제 슬롯 낭비|환경이 알아서 밀어|티어 밖|하위권 약체|우선순위가 완전히|성적 해석이 뒤집/;
+
+test("performance-blind cuts suppress unconditional praise at exact-four, three-card, and five-plus breadths", () => {
+  const balancedFour: readonly RestrictionFixtureChange[] = [
+    { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 2 },
+    { themeId: "white-night", partId: "white-night-prayer", oldLimit: 3, newLimit: 2 },
+    { themeId: "ironblood", partId: "ironblood-squire", oldLimit: 3, newLimit: 2 },
+    { themeId: "abyss", partId: "abyss-bait", oldLimit: 3, newLimit: 2 },
+  ];
+  const fixtures: Array<{
+    label: string;
+    changes: readonly RestrictionFixtureChange[];
+    shares: readonly number[];
+    winRates: readonly number[];
+    expectedCuts: number;
+    expectedTierTwoCuts: number;
+  }> = [
+    {
+      label: "balanced four with popular losers and no sleeper",
+      changes: balancedFour,
+      shares: [0.3, 0.24, 0.18, 0.16, 0.12],
+      winRates: [0.46, 0.47, 0.5, 0.5, 0.5],
+      expectedCuts: 4,
+      expectedTierTwoCuts: 2,
+    },
+    {
+      label: "balanced four containing a weak fringe cut",
+      changes: balancedFour,
+      shares: [0.4, 0.25, 0.18, 0.12, 0.05],
+      winRates: [0.56, 0.55, 0.5, 0.5, 0.45],
+      expectedCuts: 4,
+      expectedTierTwoCuts: 2,
+    },
+    {
+      label: "five-card list containing popular losers",
+      changes: [
+        ...balancedFour,
+        {
+          themeId: "machine-revolution",
+          partId: "machine-revolution-assembly-line",
+          oldLimit: 3,
+          newLimit: 2,
+        },
+      ],
+      shares: [0.3, 0.24, 0.18, 0.16, 0.12],
+      winRates: [0.46, 0.47, 0.48, 0.5, 0.5],
+      expectedCuts: 5,
+      expectedTierTwoCuts: 2,
+    },
+    {
+      label: "Tier 1-only three-card list with low win rates",
+      changes: [
+        { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 2 },
+        { themeId: "white-night", partId: "white-night-prayer", oldLimit: 3, newLimit: 2 },
+        {
+          themeId: "machine-revolution",
+          partId: "machine-revolution-assembly-line",
+          oldLimit: 3,
+          newLimit: 2,
+        },
+      ],
+      shares: [0.3, 0.24, 0.18, 0.16, 0.12],
+      winRates: [0.46, 0.47, 0.48, 0.5, 0.5],
+      expectedCuts: 3,
+      expectedTierTwoCuts: 0,
+    },
+  ];
+
+  for (const [index, fixture] of fixtures.entries()) {
+    const state = makeScheduledRestrictionReactionState(
+      fixture.changes,
+      38_200 + index,
+    );
+    const shares = Object.fromEntries(
+      state.activeThemeIds.map((themeId, themeIndex) => [
+        themeId,
+        fixture.shares[themeIndex],
+      ]),
+    );
+    const winRates = Object.fromEntries(
+      state.activeThemeIds.map((themeId, themeIndex) => [
+        themeId,
+        fixture.winRates[themeIndex],
+      ]),
+    );
+    setRestrictionDecisionMeta(state, 165, shares, winRates);
+
+    const profile = getPublishedRestrictionPolicyProfile(state, 165);
+    const posts = restrictionContextPosts(state, 166, 165);
+    assert.equal(profile.meaningfulCutCount, fixture.expectedCuts, fixture.label);
+    assert.equal(profile.tier2MeaningfulCuts, fixture.expectedTierTwoCuts, fixture.label);
+    assert.equal(posts.length, 16, fixture.label);
+    assert.ok(
+      posts.some((post) => PERFORMANCE_BLIND_CUT_CRITIQUE.test(post.body)),
+      `${fixture.label}\n${posts.map((post) => post.body).join("\n")}`,
+    );
+    assert.equal(
+      posts.filter((post) => UNCONDITIONAL_LIST_PRAISE.test(post.body)).length,
+      0,
+      `${fixture.label}\n${posts.map((post) => post.body).join("\n")}`,
+    );
+    assert.ok(posts.every((post) => !/[{}]/.test(post.body)), fixture.label);
+  }
+});
+
+test("an uncut low-pick high-win sleeper is flagged independently of the cut target profile", () => {
+  const state = makeScheduledRestrictionReactionState([
+    { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 1 },
+  ], 38_210);
+  const sleeper = THEMES[5];
+  state.activeThemeIds.push(sleeper.id);
+  state.themes[sleeper.id] = makeRuntime(sleeper, 0.04);
+  const shares = Object.fromEntries(
+    state.activeThemeIds.map((themeId, index) => [
+      themeId,
+      [0.32, 0.24, 0.16, 0.13, 0.11, 0.04][index],
+    ]),
+  );
+  const winRates = Object.fromEntries(
+    state.activeThemeIds.map((themeId, index) => [
+      themeId,
+      [0.58, 0.5, 0.5, 0.5, 0.5, 0.62][index],
+    ]),
+  );
+  setRestrictionDecisionMeta(state, 165, shares, winRates);
+
+  const posts = restrictionContextPosts(state, 166, 165);
+  const independentSleeperCopy =
+    /빠진 .* 점유율|저픽 고승률|적게 잡히고도|픽률 표 밖|빈자리를 먹을|안 자른 덱의 승률|선제 검토가 빠졌/;
+  assert.equal(posts.length, 16);
+  assert.ok(
+    posts.filter((post) => independentSleeperCopy.test(post.body)).length >= 4,
+    posts.map((post) => post.body).join("\n"),
+  );
+  assert.ok(posts.some((post) => post.body.includes(sleeper.shortName)));
+  assert.ok(posts.some((post) => post.body.includes("62.0%")));
+  assert.equal(
+    posts.filter((post) => /픽만 많고 승률은 딸리는|유행 덱 숫자만/.test(post.body)).length,
+    0,
+  );
+});
+
+test("restriction reactions distinguish thirty-day placement and conversion profiles", () => {
+  const fixtures: Array<{
+    label: string;
+    targetId: ThemeId;
+    partId: string;
+    shares: readonly number[];
+    dailyPlacements: readonly number[];
+    targetWinRate?: number;
+    expected: RegExp;
+    displayed: string;
+  }> = [
+    {
+      label: "high placement and high conversion",
+      targetId: "cycle",
+      partId: "cycle-gate",
+      shares: [0.3, 0.26, 0.2, 0.14, 0.1],
+      dailyPlacements: [16, 5, 4, 4, 3],
+      expected: /입상 지분|탑컷 생존율|실전 위협|표본도 결과도/,
+      displayed: "480",
+    },
+    {
+      label: "low match win rate but strong placement evidence",
+      targetId: "cycle",
+      partId: "cycle-gate",
+      shares: [0.3, 0.26, 0.2, 0.14, 0.1],
+      dailyPlacements: [16, 5, 4, 4, 3],
+      targetWinRate: 0.46,
+      expected:
+        /서로 반대|다른 방향|충돌 신호|평가 보류|가중치|둘 다 무시할 수 없|한 방향이 아닌/,
+      displayed: "480",
+    },
+    {
+      label: "high pick but weak placement and conversion",
+      targetId: "cycle",
+      partId: "cycle-gate",
+      shares: [0.3, 0.26, 0.2, 0.14, 0.1],
+      dailyPlacements: [1, 10, 8, 7, 6],
+      expected: /인기를 성능|입상까지 간 덱|유행 표본|성적 해석|체감 빈도와 실전 위협/,
+      displayed: "30",
+    },
+    {
+      label: "low pick but strong conversion",
+      targetId: "abyss",
+      partId: "abyss-bait",
+      shares: [0.34, 0.26, 0.2, 0.16, 0.04],
+      dailyPlacements: [8, 6, 5, 3, 10],
+      expected: /숨은 강덱|저픽|선제 검토|표본 크기와 실질 위협|전환.*안전 신호|티어표 밖의 강덱|채용률과 .* 전환/,
+      displayed: "300",
+    },
+  ];
+  const signatures = new Set<string>();
+
+  for (const [index, fixture] of fixtures.entries()) {
+    const state = makeScheduledRestrictionReactionState([{
+      themeId: fixture.targetId,
+      partId: fixture.partId,
+      oldLimit: 3,
+      newLimit: 1,
+    }], 38_220 + index);
+    const shares = Object.fromEntries(
+      state.activeThemeIds.map((themeId, themeIndex) => [
+        themeId,
+        fixture.shares[themeIndex],
+      ]),
+    );
+    const winRates = Object.fromEntries(
+      state.activeThemeIds.map((themeId) => [
+        themeId,
+        themeId === fixture.targetId
+          ? fixture.targetWinRate ?? 0.5
+          : 0.5,
+      ]),
+    );
+    const dailyPlacements = Object.fromEntries(
+      state.activeThemeIds.map((themeId, themeIndex) => [
+        themeId,
+        fixture.dailyPlacements[themeIndex],
+      ]),
+    );
+    setRestrictionPlacementWindow(
+      state,
+      165,
+      shares,
+      winRates,
+      dailyPlacements,
+    );
+
+    const posts = restrictionContextPosts(state, 166, 165);
+    const placementPosts = posts.filter((post) => fixture.expected.test(post.body));
+    assert.equal(posts.length, 16, fixture.label);
+    assert.equal(
+      new Set(posts.map((post) => post.body)).size,
+      posts.length,
+      `${fixture.label} must not repeat a placement reaction`,
+    );
+    assert.ok(
+      placementPosts.length >= 4,
+      `${fixture.label}\n${posts.map((post) => post.body).join("\n")}`,
+    );
+    assert.ok(posts.some((post) => post.body.includes("30일")), fixture.label);
+    const renderedPlacementCount = new RegExp(
+      `(?:탑컷(?:한\\s*횟수가|에는|에|이)?\\s*${fixture.displayed}(?:회|번)|${fixture.displayed}(?:자리|개))`,
+    );
+    assert.ok(
+      posts.some((post) => renderedPlacementCount.test(post.body)),
+      `${fixture.label} must render the frozen placement count`,
+    );
+    assert.ok(posts.every((post) => !/[{}]/.test(post.body)), fixture.label);
+    signatures.add(placementPosts.map((post) => post.body).sort().join("\n"));
+  }
+  assert.equal(signatures.size, fixtures.length);
+});
+
+test("placement reactions wait for seven theme-specific observed days", () => {
+  const state = makeScheduledRestrictionReactionState([{
+    themeId: "abyss",
+    partId: "abyss-bait",
+    oldLimit: 3,
+    newLimit: 1,
+  }], 38_224);
+  const shares = Object.fromEntries(
+    state.activeThemeIds.map((themeId, index) => [
+      themeId,
+      [0.34, 0.26, 0.2, 0.16, 0.04][index],
+    ]),
+  );
+  const winRates = Object.fromEntries(
+    state.activeThemeIds.map((themeId) => [themeId, 0.5]),
+  );
+  const dailyPlacements = Object.fromEntries(
+    state.activeThemeIds.map((themeId, index) => [
+      themeId,
+      [8, 6, 5, 3, 10][index],
+    ]),
+  );
+  setRestrictionPlacementWindow(
+    state,
+    165,
+    shares,
+    winRates,
+    dailyPlacements,
+  );
+
+  const targetId = "abyss" as ThemeId;
+  const donorId = state.activeThemeIds.find((themeId) => themeId !== targetId)!;
+  for (const entry of state.history.slice(0, -1)) {
+    entry.shares[donorId] += entry.shares[targetId];
+    delete entry.shares[targetId];
+    delete entry.winRates?.[targetId];
+    entry.topCutPlacements![donorId] += entry.topCutPlacements![targetId];
+    delete entry.topCutPlacements![targetId];
+  }
+
+  const targetName = THEME_BY_ID[targetId].shortName;
+  const posts = restrictionContextPosts(state, 166, 165);
+  assert.equal(posts.length, 16);
+  assert.equal(
+    posts.filter(
+      (post) =>
+        post.body.includes(targetName) &&
+        /입상 전환|입상 지분|탑컷 \d+회/.test(post.body),
+    ).length,
+    0,
+    posts.map((post) => post.body).join("\n"),
+  );
+});
+
+test("placement restriction copy is frozen at the decision window and legacy fallback is deterministic", () => {
+  const makePlacementFixture = (seed: number, stored: boolean) => {
+    const state = makeScheduledRestrictionReactionState([
+      { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 1 },
+    ], seed);
+    const shares = Object.fromEntries(
+      state.activeThemeIds.map((themeId, index) => [
+        themeId,
+        [0.3, 0.26, 0.2, 0.14, 0.1][index],
+      ]),
+    );
+    const winRates = Object.fromEntries(
+      state.activeThemeIds.map((themeId) => [themeId, 0.5]),
+    );
+    const placements = Object.fromEntries(
+      state.activeThemeIds.map((themeId, index) => [
+        themeId,
+        [16, 5, 4, 4, 3][index],
+      ]),
+    );
+    setRestrictionPlacementWindow(state, 165, shares, winRates, placements);
+    if (!stored) {
+      for (const entry of state.history) delete entry.topCutPlacements;
+    }
+    return state;
+  };
+  const bodies = (state: GameState) =>
+    restrictionContextPosts(state, 166, 165).map((post) => post.body);
+
+  for (const [index, stored] of [true, false].entries()) {
+    const state = makePlacementFixture(38_230 + index, stored);
+    const before = bodies(state);
+    state.themes.cycle.share = 0.01;
+    state.themes.cycle.winRate = 0.8;
+    const latest = state.history.at(-1);
+    assert.ok(latest);
+    state.history.push({
+      ...latest,
+      day: 166,
+      shares: { ...latest.shares, cycle: 0.01 },
+      winRates: { ...latest.winRates, cycle: 0.8 },
+      topCutPlacements: Object.fromEntries(
+        state.activeThemeIds.map((themeId, themeIndex) => [
+          themeId,
+          [0, 12, 8, 7, 5][themeIndex],
+        ]),
+      ),
+    });
+    assert.deepEqual(
+      bodies(state),
+      before,
+      stored
+        ? "stored placement history must ignore later runtime and future reports"
+        : "legacy placement reconstruction must use only frozen historical rows",
+    );
+  }
 });
 
 test("coverage and cosmetic signals stay in their own factual reaction pools", () => {

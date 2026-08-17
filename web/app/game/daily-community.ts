@@ -30,6 +30,11 @@ import {
 } from "./campaign.ts";
 import { interpolateKorean } from "./korean-particles.ts";
 import { getStableThemeRandomIdentifier } from "./future-theme-id-migration.ts";
+import { getRecentPlacementReport } from "./placement-meta.ts";
+import type {
+  RecentPlacementReport,
+  ThemePlacementReport,
+} from "./placement-meta.ts";
 import { getPublishedRestrictionDecisionSignals } from "./restriction-considerations.ts";
 import type {
   RestrictionDecisionSignals,
@@ -1668,6 +1673,166 @@ const RESTRICTION_META_COPY = [
   "상위권 빈자리를 카운터 덱이 아니라 원래 2위가 그대로 먹는 분위기임",
 ] as const;
 
+const POPULAR_UNDERPERFORMER_CUT_COPY = [
+  "픽만 많고 승률은 딸리는 거품인데 {theme}를 자르네. 인기랑 강함부터 구분해야지",
+  "{theme} 점유율 {decisionShare}만 보고 눌렀나? 승률 {decisionWinRate}면 과대표집부터 의심해야 하는데",
+  "많이 보인다는 이유로 자르면 유저가 많은 덱부터 벌받는다. {theme} 성적은 오히려 평균 아래잖아",
+  "티어표 줄 수만 읽고 금제했네. {theme}는 픽률은 높아도 매치 승률이 못 따라오고 있었음",
+  "{theme}가 인기 덱인 건 맞는데 강덱인지는 별개지. 승률 {decisionWinRate}짜리를 우선 타격할 이유가 뭐임?",
+  "승률 낮은 유행 덱을 잘라 놓고 환경을 잡았다고 하면 데이터 해석이 거꾸로다",
+  "픽률 높은 초보·팬층까지 전부 성능 지표로 센 거 아님? {theme}는 표본만 크고 결과는 평범했는데",
+  "많이 들고 왔지만 많이 지던 덱이다. {theme} 제한은 강함보다 인기세를 벌주는 모양새임",
+  "점유율 {decisionShare}, 승률 {decisionWinRate}. 이 두 숫자를 같이 보고도 {theme}가 첫 대상이었나",
+  "거품 픽을 금제로 터뜨리면 다음 유행 덱도 똑같이 맞는다. 승률 기준이 없으면 납득 못 함",
+  "{theme} 유저 수가 많아서 체감 빈도만 높았지 매치 승률은 낮았다. 이걸 핵심 문제로 잡네",
+  "픽률을 위험도로 착각한 금제 같다. {theme}보다 적게 보이고 더 잘 이기는 덱부터 봐야 했음",
+  "사용자가 많은 덱과 매치 승률이 높은 덱은 다르다. {theme}는 전자였는데 왜 성능 제재를 받음?",
+  "인기 덱을 잘라 분포 숫자는 내려가겠지. 그런데 승률 높은 진짜 위협은 그대로면 무슨 의미임",
+] as const;
+
+const LOW_PICK_HIGH_WIN_CUT_COPY = [
+  "{theme} 픽률은 {decisionShare}뿐인데 승률이 {decisionWinRate}면 숨은 강덱을 제대로 찾긴 했네",
+  "표본이 적다고 넘기기엔 {theme} 승률이 너무 높았다. 선제 조정 근거는 이해됨",
+  "티어표 아래쪽만 본 게 아니라 매치 승률까지 읽은 선택이라면 {theme} 제한은 말이 된다",
+  "{theme}는 적게 들고 와서 적게 보였을 뿐, 잡은 사람은 계속 이기던 덱이었다",
+  "픽률보다 승률이 먼저 튀는 장인 덱도 있다. {theme}를 본 건 단순 순위 금제는 아니네",
+  "{decisionShare} 표본이라 변동성은 확인해야 하지만 승률 {decisionWinRate}를 방치하기도 어려웠음",
+  "숨은 꿀덱이 완전히 퍼진 뒤 자르는 것보다 지금 병목을 짚은 판단은 납득 가능",
+  "{theme} 점유율만 보면 과잉인데 성적표까지 보면 얘기가 달라진다. 근거 공개는 해 줘라",
+  "낮은 픽률 뒤에 숙련자 편향이 있는지, 덱 자체가 센 건지 후속 데이터가 중요하겠다",
+  "승률 높은 소수 덱을 잡은 건 좋지만 표본 크기와 매치업 편중도 같이 설명해야 함",
+  "{theme}가 다음 주 유행했으면 바로 1티어였을 수 있다. 미리 본 판단인지 지켜보자",
+  "순위는 낮아도 실전 승률은 높았다. 이번엔 티어 이름보다 실제 결과를 본 듯",
+] as const;
+
+const POPULAR_POWERHOUSE_CUT_COPY = [
+  "{theme}는 점유율 {decisionShare}에 승률 {decisionWinRate}까지 높았으니 대상 자체는 정면 승부네",
+  "많이 쓰이고 많이 이기는 덱이면 {theme} 조정 명분은 충분하다. 강도만 과하지 않으면 됨",
+  "{theme}는 인기 거품으로 변명할 구간이 아니다. 표본도 크고 결과도 같이 나왔음",
+  "점유율과 승률이 동시에 경고였으니 {theme} 핵심을 본 건 데이터상 맞다",
+  "큰 표본에서도 {theme} 승률이 유지됐으니 단순 유행 덱 취급은 못 하지",
+  "픽률만 높은 덱과 달리 {theme}는 승률도 따라왔다. 이번엔 타깃보다 제한 강도가 쟁점임",
+  "{theme}를 건드린 방향은 맞다. 대체 덱이 빈자리 독식하지 않게 다음 줄도 같이 봐야 함",
+  "표본 큰 고승률 덱을 외면하는 게 더 이상했을 상황. 후속 분포만 확인하자",
+  "{decisionShare}나 쓰이면서 {decisionWinRate}를 냈으면 숙련자 편향만으로 설명하기 어렵다",
+  "이번 {theme} 조정은 티어 이름 때문이 아니라 픽률과 승률이 같이 높았기 때문이어야 한다",
+] as const;
+
+const WEAK_FRINGE_CUT_COPY = [
+  "픽도 낮고 승률도 낮은 {theme}를 굳이 자른 이유가 뭐임? 금제 슬롯 낭비 같은데",
+  "{theme} 점유율 {decisionShare}, 승률 {decisionWinRate}. 이미 환경이 알아서 밀어낸 덱을 또 침",
+  "티어 밖에서 지고 있던 덱에 추가 제재라니 우선순위가 완전히 뒤집혔다",
+  "적게 보이고 성적도 안 나오는 {theme}보다 현재 우승권 병목을 먼저 봐야지",
+  "{theme}는 금제가 아니라 지원 검토 대상에 가까웠는데 왜 제한부터 늘어남?",
+  "하위권 약체를 잘라 표만 길어졌다. 상위 분포에는 아무 변화도 없겠네",
+  "표본도 성적도 경고가 아닌데 {theme}가 맞았다면 불쾌 패턴 같은 별도 근거를 공개해야 함",
+  "이미 티어 아웃 직전인 덱을 누르면 환경 개선이 아니라 유저만 잃는다",
+  "{theme}를 제재해도 메타 파이는 위 덱들이 나눠 먹는다. 대상 선정부터 실패임",
+  "낮은 픽·낮은 승률 덱을 잡고 균형 금제라고 부르진 말자. 실효 위협은 따로 있다",
+] as const;
+
+const MISSED_SLEEPER_THREAT_COPY = [
+  "{theme}는 픽만 많고 승률 {decisionWinRate}인데, {other}는 {otherShare} 픽으로 {otherWinRate}를 찍고도 통과했네",
+  "눈에 많이 보이는 {theme}부터 잘랐지만 진짜 매치 승률은 {other} 쪽이 더 높았다",
+  "유행 덱 숫자만 줄이고 저픽 고승률 {other}를 놔두면 다음 메타 1위만 예약해 준 셈임",
+  "{other}는 표본 적다는 이유로 무시했나? 승률 {otherWinRate}면 최소한 같이 설명했어야지",
+  "픽률표 첫 줄만 보고 {theme}를 쳤네. 성적표 첫 줄의 {other}는 왜 안 봄?",
+  "거품 낀 {theme}를 내리고 실속 있는 {other}를 그대로 두면 파이가 어디로 갈지 뻔하다",
+  "이번 표 뒤에 {other} 점유율 오르면 몰랐다고 하지 마라. 이미 승률은 경고 중이었음",
+  "{theme}는 많이 져서 자연 하락할 수 있었고 {other}는 적게 잡아도 계속 이겼다. 우선순위 반대임",
+  "점유율 {decisionShare}만 큰 {theme}보다 {other}의 승률 {otherWinRate}가 더 위험 신호 아닌가",
+  "상위 픽률을 자르는 건 쉬운데 낮은 표본 속 강덱을 찾는 게 운영 판단이지. 이번엔 놓쳤다",
+  "{other} 숙련자 편향을 감안해도 격차가 큰데 검토 흔적이 없다. 다음 풍선효과 후보임",
+  "인기 덱 제재는 보여 주기 쉽고 숨은 강덱 검증은 어렵다. 그래서 둘 다 봐야 한다",
+] as const;
+
+const MISSED_SLEEPER_GENERAL_COPY = [
+  "이번 표에서 빠진 {other}는 점유율 {otherShare}에 승률 {otherWinRate}다. 다음 승계 후보까지 같이 봤어야지",
+  "제재 대상만 논하기 전에 저픽 고승률 {other}를 왜 넘겼는지부터 설명해 줘",
+  "{other}는 적게 잡히고도 {otherWinRate}를 냈다. 현재 순위만 보면 다음 환경을 놓친다",
+  "픽률 표 밖에 있던 {other}의 승률은 이미 경고였다. 이건 후속 표본으로 미룰 문제가 아님",
+  "빈자리를 먹을 가능성은 {other}쪽이 더 크다. 점유율 {otherShare}만 보고 제외하면 풍선효과를 예약하는 셈이지",
+  "{other}를 숙련자 편향으로 보려면 {otherWinRate}의 검토 근거는 남겨야 한다. 그 줄이 없네",
+  "어느 덱을 잘랐는지만큼 안 자른 덱의 승률도 금제 평가다. {other}가 그 빈칸임",
+  "{other} 승률 {otherWinRate}를 놓친 채 구성만 균형 잡혔다고 할 수는 없다",
+  "지금은 {otherShare} 픽이라도 {other}가 빈자리를 받으면 이야기가 달라진다. 선제 검토가 빠졌음",
+  "상위 픽만 잘라내는 게 전부가 아니다. {other} 같은 낮은 표본의 실질 위협도 같이 보는 게 운영 판단이지",
+] as const;
+
+const HIGH_PLACEMENT_HIGH_CONVERSION_CUT_COPY = [
+  "{theme}는 최근 {placementDays}일 탑컷 {placements}회에 입상 전환 {conversion}다. 픽률만 높은 덱과는 근거가 다르네",
+  "채용도 많고 입상 지분 {placementShare}도 크다면 {theme} 대상 선정 자체는 성적표를 읽은 셈임",
+  "{theme} 유저 수만 많은 게 아니라 탑컷 생존율도 높았다. 이번은 인기세만 잡은 건 아님",
+  "최근 집계에서 {theme}가 {placements}자리를 먹고 전환율 {conversion}를 냈으면 실전 위협은 확인됐다",
+  "점유율과 입상 지분이 같이 튀었다. {theme}를 본 건 티어 이름보다 실적 때문이어야 함",
+  "{placementShare} 입상 파이와 {conversion} 전환율이면 {theme}는 표본도 결과도 경고였다. 이제 강도를 따져야지",
+  "{theme} 채용률만 높은 게 아니라 {placementDays}일 입상표에서도 {placementShare}를 차지했다. 결과 근거는 있음",
+  "탑컷 {placements}회를 상위권 표본으로 보면 {theme}는 단순 유행 덱이었다고 하기 어렵다",
+  "전환율 {conversion}와 입상 지분 {placementShare}가 같이 높았다. {theme}를 검토한 이유는 픽률 외에도 분명함",
+  "최근 {placementDays}일에 {theme}가 만든 탑컷이 {placements}회면 표본 크기와 성적을 동시에 충족했다",
+] as const;
+
+const HIGH_PICK_WEAK_PLACEMENT_CUT_COPY = [
+  "{theme}는 픽은 많았는데 최근 {placementDays}일 입상 전환이 {conversion}에 그쳤다. 인기를 성능으로 잘못 읽은 거 아님?",
+  "대회장에 {theme}가 많았던 건 맞지만 탑컷 지분은 {placementShare}뿐이다. 입상까지 간 덱을 보자",
+  "{theme} 채용률에 비해 탑컷 {placements}회는 약하다. 유행 표본을 강덱 표본으로 세지 마",
+  "전환율 {conversion}인 고픽 덱을 자르고 적정 금제라고 하면 성적 해석이 뒤집힌다",
+  "픽률표에서는 {theme}가 위였지만 입상표에서는 그렇지 않았다. 왜 제재 우선이었나",
+  "{theme} 탑컷 전환이 평균보다 낮았다면 체감 빈도와 실전 위협을 분리해야 한다",
+  "{placementDays}일 동안 {theme} 입상 지분은 {placementShare}였다. 픽이 많았다는 사실만으로 우선 제재하긴 약함",
+  "상위권에 올라간 {theme}가 {placements}개라면 대회장 모수보다 탑컷 효율을 먼저 물어야지",
+  "{theme} 전환율 {conversion}는 전체 기준보다 낮았다. 고픽이라는 이유만으로 성능 금제하면 안 됨",
+  "입상 자료가 붙었는데도 {theme} 픽 숫자만 보었다면 데이터를 반만 읽은 판단이다",
+] as const;
+
+const MIXED_WIN_PLACEMENT_CUT_COPY = [
+  "{theme} 매치 승률은 {decisionWinRate}인데 최근 {placementDays}일 탑컷 전환은 {conversion}다. 서로 반대라 하나만 보고 칭찬하거나 비판할 수 없음",
+  "채용률·승률 조합만 보면 우선순위가 낮아 보이지만 {theme} 입상 지분은 {placementShare}였다. 대상 선정 근거를 더 공개해야 함",
+  "{theme} 승률 {decisionWinRate}와 탑컷 {placements}회가 다른 방향을 가리킨다. 표본·대회 구조부터 분리해서 보자",
+  "일반 매치에서는 {theme}가 지고 탑컷에서는 {conversion}로 남았다. 순위만으로도 금제표만으로도 단정 못 함",
+  "{theme}는 승률만 보면 거품인데 입상 자료만 보면 실적이 있다. 이런 충돌 신호에서는 보류한 평가가 맞지",
+  "{placementDays}일 입상 표본은 {theme}를 위협으로 보고 매치 승률은 그렇지 않다. 두 지표 가중치를 먼저 설명해 줘",
+  "{theme} 입상 지분 {placementShare}가 높아도 승률 {decisionWinRate}를 없던 숫자로 취급할 수는 없다",
+  "승률은 약하고 전환율은 강한 {theme}라면 숙련도·대회 편향·매치업을 보지 않고서는 대상 선정을 평가하기 어렵다",
+  "{theme} 탑컷 {placements}회는 무시할 수 없고 {decisionWinRate} 승률도 무시할 수 없다. 이번은 평가 보류 분기임",
+  "채용률·승률·입상이 한 방향이 아닌 {theme}를 단순 1티어 컷으로 포장하면 판단 과정을 숨기는 거다",
+] as const;
+
+const LOW_PICK_STRONG_CONVERSION_CUT_COPY = [
+  "{theme}는 점유율은 낮아도 최근 {placementDays}일 입상 전환 {conversion}를 냈다. 숨은 강덱 근거는 있네",
+  "{theme} 픽 표본은 적은데 탑컷에 {placements}회 올랐다. 단순 하위 순위 덱으로 보기는 어렵지",
+  "저픽 {theme}가 전환율은 평균보다 훨씬 높았다. 티어표 줄보다 입상 자료를 본 판단이라면 이해됨",
+  "채용률만 보면 과잉인데 {conversion} 탑컷 전환을 보면 {theme}는 선제 검토 대상이었다",
+  "{theme}가 적게 잡힌 건 맞지만 잡은 사람의 입상 비율이 높았다. 표본 크기와 실질 위협을 같이 봐야 함",
+  "입상 지분 {placementShare}보다 주목할 건 {conversion} 전환이다. {theme}는 퍼지기 전 강덱일 수 있었음",
+  "{placementDays}일 표본에서 {theme} 전환이 {conversion}라면 낮은 채용률을 안전 신호로 볼 수는 없다",
+  "사용자는 적어도 {theme}로 탑컷한 횟수가 {placements}회다. 소수 숙련자 편향인지 덱 체급인지 검토할 만함",
+  "점유율 순위는 낮았지만 {placementShare} 입상 지분을 낸 {theme}라면 티어표 밖의 강덱으로 볼 근거가 생긴다",
+  "{theme} 채용률과 {conversion} 전환의 격차가 크다. 이런 덱을 찾아내는 게 단순 상위 픽 순위보다 어려운 판단임",
+] as const;
+
+const MISSED_STRONG_CONVERSION_SLEEPER_COPY = [
+  "안 자른 {other}는 최근 {otherPlacementDays}일 탑컷 {otherPlacements}회, 전환 {otherConversion}다. 다음 승계 위협을 놓쳤네",
+  "{other}는 저픽이어도 입상 전환이 {otherConversion}였다. 현재 순위만 보고 통과시킨 거지",
+  "픽률표 밖의 {other}가 탑컷에는 {otherPlacements}번 남았다. 이게 풍선효과 후보 아님?",
+  "{other}의 {otherConversion} 입상 전환 신호를 놓쳤다. 자른 표만 넓어도 대상 선정을 잘한 게 아님",
+  "숨은 강덱은 픽률보다 전환율에서 먼저 보인다. {other} {otherConversion}를 넘긴 건 명백한 빈칸임",
+  "{otherShare} 픽만 보면 작아 보여도 {otherPlacements}회 입상은 그렇지 않다. 입상 자료를 왜 붙인 거야",
+  "{other}는 {otherPlacementDays}일 입상표에서 {otherPlacements}자리를 남겼다. 저픽이라 빼는 게 아니라 승계 위협으로 봤어야 함",
+  "전환율 {otherConversion}인 {other}를 통과시키고 현재 픽 순위만 조정했다. 다음 메타를 본 표라고 하기 어렵다",
+  "{otherShare} 채용률을 이유로 {other}를 제외했지만 입상 전환은 {otherConversion}였다. 선정 기준이 뒤집힘",
+  "빈자리를 받을 {other}의 탑컷이 이미 {otherPlacements}회다. 이렇게 보이는 복병을 빼고 금제표를 평가할 수는 없음",
+] as const;
+
+const PERFORMANCE_BLIND_TIER_COVERAGE_COPY = [
+  "1·2티어를 둘 다 건드렸어도 승률과 입상 근거가 약한 대상이 끼었다면 균형 금제가 아님",
+  "1티어·2티어 칸을 채운 것과 실제 위협을 자른 것은 다르다. 이번은 후자 검증이 빈다",
+  "상위 두 구간을 커버했다는 숫자만으로는 부족하다. 1·2티어 대상의 실전 성적부터 다시 봐야 함",
+  "1티어와 2티어에서 두 장씩 골랐다고 대상 선정까지 적정해지진 않는다. 입상 전환을 빼먹었네",
+  "현역 두 구간을 모두 놓은 형식은 맞아도 1·2티어 안에서 약체를 자른 선정은 따로 비판받아야 한다",
+  "1·2티어 범위는 넓었지만 픽률·승률·입상을 함께 보지 않으면 범위 자체가 칭찬거리는 아님",
+] as const;
+
 const RECENT_SUPPORT_RESTRICTION_COPY = [
   "{theme} 발매 {days}일 만에 핵심을 자르면 누가 다음 팩을 예약함?",
   "신카드 팔 때는 문제없다더니 판매 끝나자마자 금제네",
@@ -2639,6 +2804,11 @@ type RestrictionAnchor = {
   impact: number;
   assessment: RestrictionAssessment;
   noChangeConcern: boolean;
+  decisionShare: number;
+  decisionWinRate: number;
+  decisionRank: number;
+  decisionThemeCount: number;
+  decisionLeaderShare: number;
 };
 
 function restrictedDurationBefore(
@@ -2671,6 +2841,8 @@ type RecentRestrictionDecision = {
   decisionDay: number;
   age: 1 | 2 | 3;
   anchors: RestrictionAnchor[];
+  placementReport: RecentPlacementReport;
+  placementObservedDays: Partial<Record<ThemeId, number>>;
 };
 
 function partAvailability(
@@ -2779,12 +2951,37 @@ function recentRestrictionDecision(
       }
     }
 
+    const placementReport = getRecentPlacementReport(
+      state.history,
+      state.seed,
+      decisionDay,
+    );
+    const placementObservedDays: Partial<Record<ThemeId, number>> = {};
+    for (const entry of state.history) {
+      if (
+        entry.day < placementReport.startDay ||
+        entry.day > placementReport.endDay
+      ) {
+        continue;
+      }
+      for (const [themeId, share] of Object.entries(entry.shares)) {
+        if (!Number.isFinite(share) || share <= 0) continue;
+        placementObservedDays[themeId] =
+          (placementObservedDays[themeId] ?? 0) + 1;
+      }
+    }
     const anchors: RestrictionAnchor[] = provisional.map((anchor) => {
       const totalImpact = totalImpactByTheme.get(anchor.content.id) ?? 0;
       const cutCount = cutsByTheme.get(anchor.content.id) ?? 0;
       const snapshot = historyAtOrBefore(state, decisionDay);
       const decisionShare =
         snapshot?.shares[anchor.content.id] ?? anchor.content.startingShare;
+      const decisionPosition = shareRank(
+        snapshot?.shares ?? { [anchor.content.id]: decisionShare },
+        anchor.content.id,
+      );
+      const decisionWinRate =
+        snapshot?.winRates?.[anchor.content.id] ?? 0.5;
       const decisionShares = snapshot
         ? Object.values(snapshot.shares).filter(
           (share) => Number.isFinite(share) && share >= 0,
@@ -2819,9 +3016,24 @@ function recentRestrictionDecision(
             : anchor.impact < 3.5
               ? "light"
               : "appropriate";
-      return { ...anchor, assessment, noChangeConcern };
+      return {
+        ...anchor,
+        assessment,
+        noChangeConcern,
+        decisionShare,
+        decisionWinRate,
+        decisionRank: decisionPosition.rank,
+        decisionThemeCount: decisionPosition.count,
+        decisionLeaderShare: decisionTopShare,
+      };
     });
-    return { decisionDay, age, anchors };
+    return {
+      decisionDay,
+      age,
+      anchors,
+      placementReport,
+      placementObservedDays,
+    };
   }
   return undefined;
 }
@@ -3211,7 +3423,32 @@ function balancedFourCutCopyPool(
     : context.age === 2
       ? [coverage, detail, role, scope]
       : [role, scope, coverage];
-  return routing[pass % routing.length];
+  const selected = routing[pass % routing.length];
+  const performance = restrictionPerformanceAssessment(state, context);
+  const performancePool = restrictionPickWinPool(
+    state,
+    context,
+    anchor,
+    performance,
+  );
+  // Keep complete role and product-timing passes. A performance-blind list
+  // replaces coverage/scope praise; role and factual detail passes stay intact.
+  if (
+    performance.suppressGenericPraise &&
+    (selected === coverage || selected === scope)
+  ) {
+    if (selected === coverage && index % context.anchors.length === 0) {
+      return PERFORMANCE_BLIND_TIER_COVERAGE_COPY;
+    }
+    if (selected === scope && index % context.anchors.length === 0) {
+      return scope;
+    }
+    return performancePool ?? RESTRICTION_CAUTION_COPY;
+  }
+  if (performancePool && selected === scope) {
+    return index % context.anchors.length === 0 ? scope : performancePool;
+  }
+  return selected;
 }
 
 function singleRestrictionCopyPool(
@@ -3446,6 +3683,385 @@ function shareRank(
   };
 }
 
+type PickWinProfile =
+  | "popular-underperformer"
+  | "popular-powerhouse"
+  | "low-pick-high-win"
+  | "weak-fringe"
+  | "ordinary";
+
+type IgnoredSleeper = {
+  content: ThemeContent;
+  share: number;
+  winRate: number;
+  placement: PlacementEvidence | null;
+};
+
+type PlacementPerformanceProfile =
+  | "high-placement-high-conversion"
+  | "high-pick-weak-results"
+  | "low-pick-strong-conversion"
+  | "ordinary";
+
+type PlacementEvidence = ThemePlacementReport & {
+  adoptionShare: number;
+  baselineConversion: number;
+  observedDays: number;
+};
+
+type RestrictionPerformanceAssessment = {
+  ignoredSleeper: IgnoredSleeper | null;
+  hasClearlyBadCut: boolean;
+  suppressGenericPraise: boolean;
+};
+
+function pickWinProfile(anchor: RestrictionAnchor): PickWinProfile {
+  const popular = isHighAdoption(
+    anchor.decisionShare,
+    anchor.decisionLeaderShare,
+  );
+  const lowPick = isLowAdoption(
+    anchor.decisionShare,
+    anchor.decisionRank,
+    anchor.decisionThemeCount,
+  );
+  if (popular && anchor.decisionWinRate <= 0.495) {
+    return "popular-underperformer";
+  }
+  if (popular && anchor.decisionWinRate >= 0.525) {
+    return "popular-powerhouse";
+  }
+  if (lowPick && anchor.decisionWinRate >= 0.525) {
+    return "low-pick-high-win";
+  }
+  if (lowPick && anchor.decisionWinRate <= 0.48) {
+    return "weak-fringe";
+  }
+  return "ordinary";
+}
+
+/** Theme popularity is an adoption fact, independent of placement tiers. */
+function isHighAdoption(share: number, leaderShare: number): boolean {
+  const relativeCutoff = Math.max(
+    0.05,
+    leaderShare * (leaderShare >= 0.2 ? 0.55 : 0.75),
+  );
+  return share >= relativeCutoff;
+}
+
+function isLowAdoption(share: number, rank: number, count: number): boolean {
+  return (
+    share <= 0.04 ||
+    (rank >= Math.ceil(count * 0.6) && share <= 0.05)
+  );
+}
+
+function placementEvidence(
+  context: RecentRestrictionDecision,
+  themeId: ThemeId,
+): PlacementEvidence | null {
+  const report = context.placementReport;
+  const theme = report.themes[themeId];
+  if (!theme || report.recordedDays === 0 || report.totalPlacements === 0) {
+    return null;
+  }
+  const totalEntrants = Object.values(report.themes).reduce(
+    (sum, candidate) => sum + candidate.estimatedEntrants,
+    0,
+  );
+  if (totalEntrants <= 0) return null;
+  return {
+    ...theme,
+    adoptionShare: theme.estimatedEntrants / totalEntrants,
+    baselineConversion: report.totalPlacements / totalEntrants,
+    observedDays: context.placementObservedDays[themeId] ?? 0,
+  };
+}
+
+function placementPerformanceProfile(
+  context: RecentRestrictionDecision,
+  themeId: ThemeId,
+  share: number,
+  rank: number,
+  count: number,
+  leaderShare: number,
+): PlacementPerformanceProfile {
+  const evidence = placementEvidence(context, themeId);
+  if (
+    !evidence ||
+    evidence.baselineConversion <= 0 ||
+    evidence.observedDays < 7
+  ) {
+    return "ordinary";
+  }
+  const relativePlacement =
+    evidence.placementShare / Math.max(0.001, evidence.adoptionShare);
+  const relativeConversion =
+    evidence.observedConversion / evidence.baselineConversion;
+  if (
+    isHighAdoption(share, leaderShare) &&
+    (relativePlacement <= 0.75 || relativeConversion <= 0.75)
+  ) {
+    return "high-pick-weak-results";
+  }
+  if (
+    isLowAdoption(share, rank, count) &&
+    evidence.placements >= 3 &&
+    relativePlacement >= 1.25 &&
+    relativeConversion >= 1.25
+  ) {
+    return "low-pick-strong-conversion";
+  }
+  if (
+    evidence.placementShare >= 0.12 &&
+    relativePlacement >= 0.95 &&
+    relativeConversion >= 1.1
+  ) {
+    return "high-placement-high-conversion";
+  }
+  return "ordinary";
+}
+
+function anchorPlacementProfile(
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+): PlacementPerformanceProfile {
+  return placementPerformanceProfile(
+    context,
+    anchor.content.id,
+    anchor.decisionShare,
+    anchor.decisionRank,
+    anchor.decisionThemeCount,
+    anchor.decisionLeaderShare,
+  );
+}
+
+function ignoredSleeperAtDecision(
+  state: GameState,
+  context: RecentRestrictionDecision,
+): IgnoredSleeper | null {
+  const snapshot = historyAtOrBefore(state, context.decisionDay);
+  if (!snapshot) return null;
+  const tightenedThemes = new Set(
+    context.anchors
+      .filter((anchor) => anchor.direction === "tighten")
+      .map((anchor) => anchor.content.id),
+  );
+  const decisionLeaderShare = Math.max(
+    0,
+    ...Object.values(snapshot.shares).filter((share) => Number.isFinite(share)),
+  );
+  const candidates = Object.entries(snapshot.shares)
+    .flatMap(([themeId, share]) => {
+      const content = THEME_BY_ID[themeId];
+      const winRate = snapshot.winRates?.[themeId] ?? 0.5;
+      const position = shareRank(snapshot.shares, themeId);
+      const placementProfile = placementPerformanceProfile(
+        context,
+        themeId,
+        share,
+        position.rank,
+        position.count,
+        decisionLeaderShare,
+      );
+      if (
+        !content ||
+        tightenedThemes.has(themeId) ||
+        !isLowAdoption(share, position.rank, position.count) ||
+        (!Number.isFinite(winRate) &&
+          placementProfile !== "low-pick-strong-conversion") ||
+        (winRate < 0.525 &&
+          placementProfile !== "low-pick-strong-conversion")
+      ) {
+        return [];
+      }
+      return [{
+        content,
+        share,
+        winRate,
+        placement: placementEvidence(context, themeId),
+      }];
+    })
+    .sort(
+      (left, right) =>
+        Number(
+          placementPerformanceProfile(
+            context,
+            right.content.id,
+            right.share,
+            shareRank(snapshot.shares, right.content.id).rank,
+            shareRank(snapshot.shares, right.content.id).count,
+            decisionLeaderShare,
+          ) === "low-pick-strong-conversion",
+        ) -
+          Number(
+            placementPerformanceProfile(
+              context,
+              left.content.id,
+              left.share,
+              shareRank(snapshot.shares, left.content.id).rank,
+              shareRank(snapshot.shares, left.content.id).count,
+              decisionLeaderShare,
+            ) === "low-pick-strong-conversion",
+          ) ||
+        right.winRate - left.winRate ||
+        left.share - right.share ||
+        left.content.id.localeCompare(right.content.id),
+    );
+  return candidates[0] ?? null;
+}
+
+function isClearlyBadPickWinProfile(profile: PickWinProfile): boolean {
+  return profile === "popular-underperformer" || profile === "weak-fringe";
+}
+
+function isStrongPlacementProfile(
+  profile: PlacementPerformanceProfile,
+): boolean {
+  return (
+    profile === "high-placement-high-conversion" ||
+    profile === "low-pick-strong-conversion"
+  );
+}
+
+function isClearlyBadRestrictionTarget(
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+): boolean {
+  const pickWin = pickWinProfile(anchor);
+  const placement = anchorPlacementProfile(context, anchor);
+  if (isClearlyBadPickWinProfile(pickWin)) {
+    return !isStrongPlacementProfile(placement);
+  }
+  return placement === "high-pick-weak-results";
+}
+
+function targetPickWinPool(
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+): readonly string[] | null {
+  if (anchor.direction !== "tighten") return null;
+  const profile = pickWinProfile(anchor);
+  const placementProfile = anchorPlacementProfile(context, anchor);
+  if (
+    isClearlyBadPickWinProfile(profile) &&
+    isStrongPlacementProfile(placementProfile)
+  ) {
+    return MIXED_WIN_PLACEMENT_CUT_COPY;
+  }
+  if (profile === "popular-underperformer") {
+    return placementProfile === "high-pick-weak-results"
+      ? HIGH_PICK_WEAK_PLACEMENT_CUT_COPY
+      : POPULAR_UNDERPERFORMER_CUT_COPY;
+  }
+  if (profile === "weak-fringe") return WEAK_FRINGE_CUT_COPY;
+  if (placementProfile === "high-pick-weak-results") {
+    return HIGH_PICK_WEAK_PLACEMENT_CUT_COPY;
+  }
+  if (placementProfile === "low-pick-strong-conversion") {
+    return LOW_PICK_STRONG_CONVERSION_CUT_COPY;
+  }
+  if (placementProfile === "high-placement-high-conversion") {
+    return HIGH_PLACEMENT_HIGH_CONVERSION_CUT_COPY;
+  }
+  if (profile === "popular-powerhouse") {
+    return POPULAR_POWERHOUSE_CUT_COPY;
+  }
+  if (profile === "low-pick-high-win") {
+    return LOW_PICK_HIGH_WIN_CUT_COPY;
+  }
+  return null;
+}
+
+function restrictionPerformanceAssessment(
+  state: GameState,
+  context: RecentRestrictionDecision,
+): RestrictionPerformanceAssessment {
+  const ignoredSleeper = ignoredSleeperAtDecision(state, context);
+  const hasClearlyBadCut = context.anchors.some(
+    (anchor) =>
+      anchor.direction === "tighten" &&
+      isClearlyBadRestrictionTarget(context, anchor),
+  );
+  return {
+    ignoredSleeper,
+    hasClearlyBadCut,
+    suppressGenericPraise: hasClearlyBadCut || ignoredSleeper !== null,
+  };
+}
+
+function restrictionPickWinPool(
+  state: GameState,
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+  performance = restrictionPerformanceAssessment(state, context),
+): readonly string[] | null {
+  if (anchor.direction !== "tighten") return null;
+  const profile = pickWinProfile(anchor);
+  const targetPool = targetPickWinPool(context, anchor);
+  if (!performance.suppressGenericPraise) return targetPool;
+  if (isClearlyBadRestrictionTarget(context, anchor)) {
+    if (
+      profile === "popular-underperformer" &&
+      performance.ignoredSleeper &&
+      performance.ignoredSleeper.winRate >= anchor.decisionWinRate + 0.025
+    ) {
+      return performance.ignoredSleeper.placement &&
+          placementPerformanceProfile(
+            context,
+            performance.ignoredSleeper.content.id,
+            performance.ignoredSleeper.share,
+            shareRank(
+              historyAtOrBefore(state, context.decisionDay)?.shares ?? {},
+              performance.ignoredSleeper.content.id,
+            ).rank,
+            shareRank(
+              historyAtOrBefore(state, context.decisionDay)?.shares ?? {},
+              performance.ignoredSleeper.content.id,
+            ).count,
+            Math.max(
+              0,
+              ...Object.values(
+                historyAtOrBefore(state, context.decisionDay)?.shares ?? {},
+              ).filter((share) => Number.isFinite(share)),
+            ),
+          ) === "low-pick-strong-conversion"
+        ? MISSED_STRONG_CONVERSION_SLEEPER_COPY
+        : MISSED_SLEEPER_THREAT_COPY;
+    }
+    return targetPool ?? RESTRICTION_CAUTION_COPY;
+  }
+  if (performance.ignoredSleeper) {
+    const snapshot = historyAtOrBefore(state, context.decisionDay);
+    const position = shareRank(
+      snapshot?.shares ?? {},
+      performance.ignoredSleeper.content.id,
+    );
+    return placementPerformanceProfile(
+      context,
+      performance.ignoredSleeper.content.id,
+      performance.ignoredSleeper.share,
+      position.rank,
+      position.count,
+      Math.max(
+        0,
+        ...Object.values(snapshot?.shares ?? {}).filter((share) =>
+          Number.isFinite(share)
+        ),
+      ),
+    ) === "low-pick-strong-conversion"
+      ? MISSED_STRONG_CONVERSION_SLEEPER_COPY
+      : MISSED_SLEEPER_GENERAL_COPY;
+  }
+  return RESTRICTION_CAUTION_COPY;
+}
+
+function isPickWinReactionSlot(age: 1 | 2 | 3, index: number): boolean {
+  if (age === 1) return index % 4 <= 1;
+  if (age === 2) return index % 4 === 1;
+  return index % 3 === 0;
+}
+
 function unbanReactionAssessment(
   state: GameState,
   context: RecentRestrictionDecision,
@@ -3583,15 +4199,6 @@ function restrictionCopyPool(
     const routing = age === 1 ? dayOne : age === 2 ? dayTwo : dayThree;
     return routing[index % routing.length];
   }
-  if (isSingleCardTightening(context, anchor)) {
-    return singleRestrictionCopyPool(state, context, anchor, analysis, index);
-  }
-  if (
-    profile.meaningfulCutCount > 0 &&
-    profile.meaningfulCutCount <= 2
-  ) {
-    return narrowRestrictionCopyPool(state, context, anchor, analysis, index);
-  }
   if (isBalancedFourCutReview(context, profile)) {
     return balancedFourCutCopyPool(
       state,
@@ -3601,21 +4208,50 @@ function restrictionCopyPool(
       index,
     );
   }
+  const performance = restrictionPerformanceAssessment(state, context);
+  const pickWinPool = restrictionPickWinPool(
+    state,
+    context,
+    anchor,
+    performance,
+  );
+  if (pickWinPool && isPickWinReactionSlot(age, index)) return pickWinPool;
+  if (isSingleCardTightening(context, anchor)) {
+    return singleRestrictionCopyPool(state, context, anchor, analysis, index);
+  }
+  if (
+    profile.meaningfulCutCount > 0 &&
+    profile.meaningfulCutCount <= 2
+  ) {
+    return narrowRestrictionCopyPool(state, context, anchor, analysis, index);
+  }
+  const listPerformancePool = performance.suppressGenericPraise
+    ? anchor.direction === "tighten"
+      ? pickWinPool ?? RESTRICTION_CAUTION_COPY
+      : RESTRICTION_CAUTION_COPY
+    : null;
   const primary = anchor.assessment === "unban"
     ? isUnbanCautionSlot(age, index)
       ? UNBAN_CAUTION_COPY
       : unbanPrimaryPool(unbanReactionAssessment(state, context, anchor).tone)
-    : primaryRestrictionPool(anchor);
-  const coverage = restrictionCoveragePool(profile);
-  const composition = restrictionCompositionPool(profile);
+    : listPerformancePool ?? primaryRestrictionPool(anchor);
+  const coverage = listPerformancePool ?? restrictionCoveragePool(profile);
+  const composition = listPerformancePool ?? restrictionCompositionPool(profile);
   const count = restrictionCountPool(profile);
   const detail = restrictionPolicyDetailPool(state, context, anchor);
-  const signalPools = restrictionDecisionSignalPools(
+  const unrestrictedSignalPools = restrictionDecisionSignalPools(
     state,
     context,
     anchor,
     analysis,
   );
+  const signalPools = performance.suppressGenericPraise
+    ? unrestrictedSignalPools.filter(
+        (pool) =>
+          pool !== BALANCED_RESTRICTION_REVIEW_COPY &&
+          pool !== APPROPRIATE_RESTRICTION_COPY,
+      )
+    : unrestrictedSignalPools;
   const signal = (offset: number, fallback: readonly string[]) =>
     signalPools.length > 0
       ? signalPools[offset % signalPools.length]
@@ -3630,9 +4266,9 @@ function restrictionCopyPool(
   const meme = anchor.direction === "loosen" ? primary : RESTRICTION_MEME_COPY;
   const caution = anchor.direction === "loosen"
     ? UNBAN_CAUTION_COPY
-    : profile.quality === "balanced"
+    : listPerformancePool ?? (profile.quality === "balanced"
       ? BALANCED_RESTRICTION_REVIEW_CAUTION_COPY
-      : RESTRICTION_CAUTION_COPY;
+      : RESTRICTION_CAUTION_COPY);
   const dayOne: readonly (readonly string[])[] = [
     coverage,
     signal(0, composition),
@@ -3740,6 +4376,9 @@ function makeRestrictionContextPost(
         ignoredSignal.themeId
       ] ?? 0
     : 0;
+  const ignoredSleeper = ignoredSleeperAtDecision(state, context);
+  const placement = placementEvidence(context, anchor.content.id);
+  const sleeperPlacement = ignoredSleeper?.placement ?? null;
   const replacementSignal = decisionSignals.signals.find(
     (signal) =>
       signal.kind === "replacement-risk" &&
@@ -3761,7 +4400,10 @@ function makeRestrictionContextPost(
       ),
     ),
     restrictedDays: String(anchor.restrictedDays),
-    decisionShare: `${((unban?.decisionShare ?? 0) * 100).toFixed(1)}%`,
+    decisionShare: `${(
+      (unban?.decisionShare ?? anchor.decisionShare) * 100
+    ).toFixed(1)}%`,
+    decisionWinRate: `${(anchor.decisionWinRate * 100).toFixed(1)}%`,
     share: `${((unban?.currentShare ?? 0) * 100).toFixed(1)}%`,
     delta: `${(Math.abs(unban?.delta ?? 0) * 100).toFixed(1)}`,
     rank: String(unban?.rank ?? 0),
@@ -3774,6 +4416,22 @@ function makeRestrictionContextPost(
     ignoredTheme: ignoredContent?.shortName ?? "최상위 테마",
     ignoredPart: ignoredPart?.name ?? "최상위권 핵심",
     ignoredShare: `${(ignoredShare * 100).toFixed(1)}%`,
+    placementDays: String(
+      placement?.observedDays ?? context.placementReport.recordedDays,
+    ),
+    placements: String(placement?.placements ?? 0),
+    placementShare: `${((placement?.placementShare ?? 0) * 100).toFixed(1)}%`,
+    conversion: `${((placement?.observedConversion ?? 0) * 100).toFixed(1)}%`,
+    other: ignoredSleeper?.content.shortName ?? "저픽 고승률 테마",
+    otherShare: `${((ignoredSleeper?.share ?? 0) * 100).toFixed(1)}%`,
+    otherWinRate: `${((ignoredSleeper?.winRate ?? 0.5) * 100).toFixed(1)}%`,
+    otherPlacements: String(sleeperPlacement?.placements ?? 0),
+    otherPlacementDays: String(
+      sleeperPlacement?.observedDays ?? context.placementReport.recordedDays,
+    ),
+    otherConversion: `${(
+      (sleeperPlacement?.observedConversion ?? 0) * 100
+    ).toFixed(1)}%`,
     usage: `${((target?.usageRate ?? anchor.part.inclusion) * 100).toFixed(1)}%`,
     averageCopies: (target?.averageCopies ?? anchor.part.averageCopies).toFixed(1),
     relatedPart: relatedPart?.name ?? "대체 파츠",

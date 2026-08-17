@@ -20,7 +20,10 @@ export type CampaignEnvironmentBand = "danger" | "caution" | "stable";
 export const CAMPAIGN_CASH_TIGHT_MIN = 5;
 export const CAMPAIGN_CASH_RESERVE_MIN = 14;
 export const CAMPAIGN_ENVIRONMENT_CAUTION_MIN = 50;
-export const CAMPAIGN_ENVIRONMENT_STABLE_MIN = 70;
+// A healthy power-law meta is naturally more concentrated than the former
+// uniform long tail.  Keep the danger boundary intact, but calibrate the
+// stable ending to the new distribution model instead of rewarding flatness.
+export const CAMPAIGN_ENVIRONMENT_STABLE_MIN = 65;
 
 export const CAMPAIGN_SUPPORT_RELEASE_MIN = 3;
 export const CAMPAIGN_SUPPORT_THEME_MIN = 2;

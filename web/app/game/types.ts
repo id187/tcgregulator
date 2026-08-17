@@ -317,6 +317,8 @@ export interface OperationsState {
   strategy: BusinessStrategy;
 }
 
+export type EnvironmentHealthModel = "placement-v1";
+
 export interface DailyHistory {
   day: number;
   totalUsers: number;
@@ -327,6 +329,8 @@ export interface DailyHistory {
   operatingCash?: number;
   /** Snapshot used by the 90-day market/health comparison chart. */
   environmentHealth?: number;
+  /** Identifies the scoring formula used by environmentHealth. */
+  environmentHealthModel?: EnvironmentHealthModel;
   /** Purchase confidence at the end of the recorded day. */
   purchaseTrust?: number;
   /** Net community mood on a 0..100 scale, with 50 as neutral. */
@@ -337,6 +341,10 @@ export interface DailyHistory {
   communityNegative?: number;
   topThemeId: ThemeId;
   shares: Record<ThemeId, number>;
+  /** Matchup-weighted win rates frozen with the share snapshot. */
+  winRates?: Record<ThemeId, number>;
+  /** Deterministic daily representation among the 32 tournament top-cut slots. */
+  topCutPlacements?: Record<ThemeId, number>;
 }
 
 export interface GameState {

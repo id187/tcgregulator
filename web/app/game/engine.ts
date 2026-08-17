@@ -7,6 +7,16 @@ import {
   THEME_BY_ID,
 } from "./content.ts";
 import {
+  META_ADOPTION_SHARE_FLOOR,
+  type MetaTier,
+} from "./meta-tiers.ts";
+import {
+  getDeterministicDailyTopCutPlacements,
+  getPlacementTier,
+  getRecentPlacementReport,
+  getThemeDebutDay,
+} from "./placement-meta.ts";
+import {
   BUSINESS_ACTION_BY_TYPE,
   getBusinessActionAvailability,
   getBusinessActionScheduledEndDay,
@@ -50,6 +60,7 @@ import {
 import { withKoreanParticle } from "./korean-particles.ts";
 import { getStableThemeRandomIdentifier } from "./future-theme-id-migration.ts";
 import { getDailyCommunitySentiment } from "./community-sentiment.ts";
+import { ENVIRONMENT_HEALTH_MODEL } from "./environment-health.ts";
 import {
   getPublishedRestrictionPolicyProfile,
   getRestrictionPolicyProfile,
@@ -61,6 +72,7 @@ import type {
   BusinessEventRecord,
   CommunityEvent,
   CommunityEventType,
+  DailyHistory,
   ExpectedTier,
   GameCommand,
   GameState,
@@ -77,9 +89,17 @@ import type {
   ThemeRuntime,
 } from "./types.ts";
 
-const SHARE_FLOOR = 0.005;
+const SHARE_FLOOR = META_ADOPTION_SHARE_FLOOR;
 const SHARE_CEILING = 0.55;
 const DAILY_SHARE_LIMIT = 0.012;
+// A theme below the exit target is no longer represented in the observed
+// competitive field.  A higher re-entry target prevents 0% themes from
+// flickering in and out of the table on ordinary day-to-day noise.
+const META_EXIT_TARGET_SHARE = 0.0075;
+const META_REENTRY_TARGET_SHARE = 0.014;
+const META_TIER_OUT_SNAP_SHARE = 0.005;
+const META_TIER_OUT_MIN_THEME_COUNT = 18;
+const NEW_THEME_POWER_CREEP_PER_RELEASE = 0.4;
 const COMMUNITY_LIMIT = 500;
 const UNPLEASANTNESS_RUNTIME_SCALE = 0.65;
 const INITIAL_OPERATING_CASH = 2.5;
@@ -115,6 +135,13 @@ const SUPPORT_SHARE_SURGE_BY_ADJUSTMENT: Record<PowerAdjustment, number> = {
   1: 0.04,
   2: 0.06,
   3: 0.08,
+};
+const PACK_DEMAND_BY_META_TIER: Record<MetaTier, number> = {
+  "Tier 0": 0.075,
+  "Tier 1": 0.05,
+  "Tier 2": 0.027,
+  "Tier 3": 0.01,
+  "Tier Out": 0,
 };
 const PROLOGUE_RELEASE_PLAN = [
   { optionIndex: 0, powerAdjustment: 3 },
@@ -866,6 +893,10 @@ function cloneState(state: GameState): GameState {
     history: state.history.map((entry) => ({
       ...entry,
       shares: { ...entry.shares },
+      ...(entry.winRates ? { winRates: { ...entry.winRates } } : {}),
+      ...(entry.topCutPlacements
+        ? { topCutPlacements: { ...entry.topCutPlacements } }
+        : {}),
     })),
     recentRevenue: [...state.recentRevenue],
   };
@@ -1046,6 +1077,34 @@ function softmax(values: number[]): number[] {
   return exponentials.map((value) => value / total);
 }
 
+function applyMetaAdoptionCutoff(
+  modeledShares: number[],
+  currentShares: number[],
+): number[] {
+  const included = modeledShares.map((share, index) =>
+    share >=
+    (currentShares[index] <= META_ADOPTION_SHARE_FLOOR + 1e-9
+      ? META_REENTRY_TARGET_SHARE
+      : META_EXIT_TARGET_SHARE),
+  );
+
+  if (!included.some(Boolean)) {
+    const leaderIndex = modeledShares.reduce(
+      (best, share, index) => (share > modeledShares[best] ? index : best),
+      0,
+    );
+    included[leaderIndex] = true;
+  }
+
+  const includedTotal = modeledShares.reduce(
+    (total, share, index) => total + (included[index] ? share : 0),
+    0,
+  );
+  return modeledShares.map((share, index) =>
+    included[index] ? share / includedTotal : 0,
+  );
+}
+
 function projectWithBounds(
   values: number[],
   lowerBounds: number[],
@@ -1109,9 +1168,22 @@ function updateMetaShares(state: GameState): void {
     runtime.previousWeekShare = weekSnapshot?.shares[id] ?? runtime.previousWeekShare;
     const win = (runtime.winRate - 0.5) * 10;
     const appeal = (content.appeal - 50) / 50;
+    // Difficulty is an adoption cost, not a combat penalty.  A demanding deck
+    // can therefore keep an excellent win rate in practiced hands while still
+    // remaining a sleeper pick instead of automatically becoming popular.
+    const difficulty = (content.difficulty - 50) / 50;
     const freshness = runtime.freshness / 100;
     const fatigue = runtime.fatigue / 100;
     const unpleasantness = runtime.unpleasantness / 100;
+    const visibility = ids.length >= META_TIER_OUT_MIN_THEME_COUNT
+      ? clamp(
+          Math.log(
+            Math.max(runtime.share, META_ADOPTION_SHARE_FLOOR) * ids.length,
+          ),
+          -2.5,
+          2,
+        )
+      : 0;
     const noise =
       (keyedRandom(state.seed, "meta-noise", state.day, id) - 0.5) * 0.07;
 
@@ -1121,6 +1193,8 @@ function updateMetaShares(state: GameState): void {
         0.2 * freshness -
         0.65 * fatigue -
         0.35 * unpleasantness +
+        0.26 * visibility -
+        0.12 * difficulty +
         noise,
     );
     casualUtilities.push(
@@ -1129,6 +1203,8 @@ function updateMetaShares(state: GameState): void {
         0.35 * freshness -
         0.55 * fatigue -
         0.7 * unpleasantness +
+        0.18 * visibility -
+        0.55 * difficulty +
         noise,
     );
     collectorUtilities.push(
@@ -1137,48 +1213,81 @@ function updateMetaShares(state: GameState): void {
         0.6 * freshness -
         0.35 * fatigue -
         0.2 * unpleasantness +
+        0.08 * visibility -
+        0.2 * difficulty +
         noise,
     );
   }
 
-  const tierTargets = softmax(tierUtilities.map((value) => value / 0.78));
-  const casualTargets = softmax(casualUtilities.map((value) => value / 0.82));
+  const matureMeta = ids.length >= META_TIER_OUT_MIN_THEME_COUNT;
+  const tierTemperature = matureMeta ? 0.52 : 0.78;
+  const casualTemperature = matureMeta ? 0.62 : 0.82;
+  const collectorTemperature = matureMeta ? 0.76 : 0.86;
+  const tierTargets = softmax(
+    tierUtilities.map((value) => value / tierTemperature),
+  );
+  const casualTargets = softmax(
+    casualUtilities.map((value) => value / casualTemperature),
+  );
   const collectorTargets = softmax(
-    collectorUtilities.map((value) => value / 0.86),
+    collectorUtilities.map((value) => value / collectorTemperature),
   );
   const tierWeight = state.users.tier;
   const casualWeight = state.users.casual * 0.75;
   const collectorWeight = state.users.collector * 0.35;
   const totalWeight = tierWeight + casualWeight + collectorWeight;
-  const desired = ids.map((_, index) => {
-    const modeled =
+  const modeledShares = ids.map((_, index) =>
       (tierTargets[index] * tierWeight +
         casualTargets[index] * casualWeight +
         collectorTargets[index] * collectorWeight) /
-      totalWeight;
-    return 0.96 * modeled + 0.04 / ids.length;
-  });
+      totalWeight,
+  );
 
   const oldShares = ids.map((id) => state.themes[id].share);
+  const desired = ids.length >= META_TIER_OUT_MIN_THEME_COUNT
+    ? applyMetaAdoptionCutoff(modeledShares, oldShares)
+    : modeledShares.map((share) => 0.96 * share + 0.04 / ids.length);
   const candidate = desired.map((target, index) =>
     oldShares[index] + clamp(0.055 * (target - oldShares[index]), -DAILY_SHARE_LIMIT, DAILY_SHARE_LIMIT),
   );
-  const lowerBounds = oldShares.map((share) =>
-    Math.max(SHARE_FLOOR, share - DAILY_SHARE_LIMIT),
+  const tieredOut = candidate.map(
+    (share, index) =>
+      desired[index] === 0 &&
+      share <= META_TIER_OUT_SNAP_SHARE &&
+      state.themes[ids[index]].freshness <= 0,
   );
-  const upperBounds = oldShares.map((share) =>
-    Math.min(SHARE_CEILING, share + DAILY_SHARE_LIMIT),
+  const snappedCandidate = candidate.map((share, index) =>
+    tieredOut[index] ? META_ADOPTION_SHARE_FLOOR : share,
   );
-  const projected = projectWithBounds(candidate, lowerBounds, upperBounds);
+  const lowerBounds = oldShares.map((share, index) =>
+    tieredOut[index]
+      ? META_ADOPTION_SHARE_FLOOR
+      : Math.max(SHARE_FLOOR, share - DAILY_SHARE_LIMIT),
+  );
+  const upperBounds = oldShares.map((share, index) =>
+    tieredOut[index]
+      ? META_ADOPTION_SHARE_FLOOR
+      : Math.min(SHARE_CEILING, share + DAILY_SHARE_LIMIT),
+  );
+  const projected = projectWithBounds(
+    snappedCandidate,
+    lowerBounds,
+    upperBounds,
+  );
 
   for (let index = 0; index < ids.length; index += 1) {
     state.themes[ids[index]].share = round(projected[index], 9);
   }
   const sum = ids.reduce((total, id) => total + state.themes[id].share, 0);
-  state.themes[ids[ids.length - 1]].share = round(
-    state.themes[ids[ids.length - 1]].share + (1 - sum),
-    9,
-  );
+  const residual = round(1 - sum, 9);
+  if (residual !== 0) {
+    const residualIndex = projected.reduce(
+      (best, share, index) => (share > projected[best] ? index : best),
+      0,
+    );
+    const residualTheme = state.themes[ids[residualIndex]];
+    residualTheme.share = round(residualTheme.share + residual, 9);
+  }
 }
 
 function hasCounterEvent(
@@ -1652,19 +1761,60 @@ function salesCurve(age: number): number {
   return Math.exp(-age / RELEASE_SALES_DECAY_DAYS) / denominator;
 }
 
+function newThemePowerCreep(releaseDay: number): number {
+  const releaseSteps = Math.max(
+    0,
+    Math.floor((releaseDay - 30) / RELEASE_INTERVAL),
+  );
+  return round(releaseSteps * NEW_THEME_POWER_CREEP_PER_RELEASE, 4);
+}
+
+/** Stable forecast shared by release generation and save normalization. */
+export function getNewThemeExpectedPower(
+  content: Pick<ThemeContent, "basePower">,
+  releaseDay: number,
+): number {
+  return content.basePower + newThemePowerCreep(releaseDay);
+}
+
+/** Power that a newly released theme will have when its effects apply. */
+export function getNewThemeLaunchPower(
+  content: Pick<ThemeContent, "basePower">,
+  adjustment: PowerAdjustment,
+  releaseDay: number,
+): number {
+  return round(
+    clamp(
+      getNewThemeExpectedPower(content, releaseDay) + adjustment * 2.2,
+      10,
+      95,
+    ),
+    4,
+  );
+}
+
 function releaseTargetShare(
   content: ThemeContent,
   adjustment: PowerAdjustment,
+  releaseDay = 30,
 ): number {
   return clamp(
-    0.035 + (content.appeal - 50) / 1000 + adjustment * 0.006,
+    0.035 +
+      (content.appeal - 50) / 1000 +
+      adjustment * 0.006 +
+      newThemePowerCreep(releaseDay) * 0.001,
     0.025,
-    0.09,
+    0.1,
   );
 }
 
 function updateFinance(state: GameState): void {
   const activeUsers = totalUsers(state);
+  const placementReport = getRecentPlacementReport(
+    state.history,
+    state.seed,
+    state.history.at(-1)?.day ?? state.day,
+  );
   let revenue =
     (activeUsers * CATALOG_DAILY_SPEND_PER_USER) / 100_000_000 +
     businessEventRevenueBonus(state);
@@ -1679,11 +1829,36 @@ function updateFinance(state: GameState): void {
       if (!content) continue;
       const tuningHype = (product.powerAdjustment + 3) / 6;
       const novelty = product.kind === "new-theme" ? 1 : 0.58;
-      const modeledShare = runtime?.share ?? releaseTargetShare(content, product.powerAdjustment);
+      const modeledShare = runtime?.share ?? releaseTargetShare(
+        content,
+        product.powerAdjustment,
+        batch.day,
+      );
       const modeledFatigue = runtime?.fatigue ?? 8;
+      const debutDay = getThemeDebutDay(
+        state.releaseHistory,
+        product.themeId,
+      );
+      const placementTierDay = debutDay === null
+        ? state.day
+        : Math.max(state.day, debutDay);
+      const productMetaTier = getPlacementTier(
+        placementReport.themes[product.themeId]?.placementShare ?? 0,
+        placementTierDay,
+        debutDay,
+      ).tier;
+      const modeledPower = runtime?.power ??
+        (product.kind === "new-theme"
+          ? getNewThemeLaunchPower(
+              content,
+              product.powerAdjustment,
+              batch.day,
+            )
+          : content.basePower);
       const buyerRate = clamp(
         0.045 +
           0.62 * modeledShare +
+          PACK_DEMAND_BY_META_TIER[productMetaTier] +
           0.07 * tuningHype +
           0.075 * novelty +
           0.04 * (content.appeal / 100) -
@@ -1694,7 +1869,7 @@ function updateFinance(state: GameState): void {
           // expose this short-term sales / long-term trust contradiction.
           0.055 *
             clamp(
-              ((runtime?.power ?? content.basePower) - 64) / 24 +
+              (modeledPower - 64) / 24 +
                 modeledShare * 1.4,
               0,
               1,
@@ -1884,7 +2059,7 @@ function generateReleaseSlate(state: GameState): void {
     makeReleaseOption(state, {
       kind: "new-theme",
       themeId: content.id,
-      expectedPower: content.basePower,
+      expectedPower: getNewThemeExpectedPower(content, state.day),
       requested: false,
     }),
   );
@@ -1944,8 +2119,9 @@ function activateNewTheme(
   releaseDay = state.day,
 ): void {
   if (state.themes[content.id]) throw new Error(`${content.id} is already active.`);
-  const powerOffset = adjustment * 2.2;
-  const targetShare = releaseTargetShare(content, adjustment);
+  const powerOffset =
+    adjustment * 2.2 + newThemePowerCreep(releaseDay);
+  const targetShare = releaseTargetShare(content, adjustment, releaseDay);
   const previousIds = [...state.activeThemeIds];
   state.activeThemeIds.push(content.id);
   state.themes[content.id] = createThemeRuntime(
@@ -2116,13 +2292,18 @@ function submitRelease(
       throw new Error(`${option.themeId} already received all three support waves.`);
     }
 
+    const expectedPower = option.kind === "new-theme"
+      ? getNewThemeLaunchPower(
+          THEME_BY_ID[option.themeId],
+          selection.powerAdjustment,
+          state.day,
+        )
+      : option.expectedPower + selection.powerAdjustment * 2.2;
     products.push({
       optionId: option.id,
       kind: option.kind,
       themeId: option.themeId,
-      expectedTier: getExpectedTier(
-        option.expectedPower + selection.powerAdjustment * 2.2,
-      ),
+      expectedTier: getExpectedTier(expectedPower),
       powerAdjustment: selection.powerAdjustment,
       ...(option.direction ? { direction: option.direction } : {}),
       ...(option.requestId ? { requestId: option.requestId } : {}),
@@ -2248,22 +2429,39 @@ function recordHistory(state: GameState): void {
   const shares = Object.fromEntries(
     activeContents(state).map((content) => [content.id, state.themes[content.id].share]),
   );
-  state.history.push({
+  const winRates = Object.fromEntries(
+    activeContents(state).map((content) => [
+      content.id,
+      state.themes[content.id].winRate,
+    ]),
+  );
+  const topCutPlacements = getDeterministicDailyTopCutPlacements({
+    seed: state.seed,
+    day: state.day,
+    shares,
+    winRates,
+  });
+  const historyEntry: DailyHistory = {
     day: state.day,
     totalUsers: round(totalUsers(state), 2),
     revenue: state.finance.today,
     cash: state.finance.cash,
     operatingCash: state.finance.todayOperatingCash,
-    environmentHealth: getBusinessEnvironmentHealth(state),
     purchaseTrust: state.purchaseTrust,
     topThemeId: state.currentTopThemeId,
     shares,
-  });
+    winRates,
+    topCutPlacements,
+  };
+  state.history.push(historyEntry);
+  // Health includes the settled day's top-cut sample, so compute it only after
+  // the row is visible to the rolling placement selectors.
+  historyEntry.environmentHealth = getBusinessEnvironmentHealth(state);
+  historyEntry.environmentHealthModel = ENVIRONMENT_HEALTH_MODEL;
   // Some daily-board branches consult today's settled history. Snapshot mood
   // only after that row exists so the stored gauge exactly matches the board
   // the player can open immediately after settlement.
   const communitySentiment = getDailyCommunitySentiment(state, state.day);
-  const historyEntry = state.history[state.history.length - 1];
   historyEntry.communitySentiment = communitySentiment.index;
   historyEntry.communityPositive = communitySentiment.positive;
   historyEntry.communityNegative = communitySentiment.negative;

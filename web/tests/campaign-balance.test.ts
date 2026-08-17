@@ -333,7 +333,7 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       distinctThemes: 3,
       distinctDirections: 3,
       positivePowerPressure: 0,
-      tierZeroProducts: 0,
+      tierZeroProducts: 1,
     },
   );
   assert.deepEqual(
@@ -397,9 +397,9 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       "a",
     ],
   );
-  assert.equal(state.finance.cash, 22.8561);
-  assert.equal(ending.scores.cash, 22.9);
-  assert.equal(ending.scores.environmentHealth, 70);
+  assert.equal(state.finance.cash, 26.2996);
+  assert.equal(ending.scores.cash, 26.3);
+  assert.equal(ending.scores.environmentHealth, 83.1);
   assert.equal(ending.stewardship.passedPillars, 4);
   assert.equal(ending.stewardship.complete, true);
   assert.equal(ending.qualifiedForBestEnding, true);

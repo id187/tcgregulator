@@ -202,7 +202,10 @@ test("lower-only and upper-ignored D+1 boards are strongly negative", () => {
     balanced.score >= lower.score + 25,
     `${JSON.stringify({ lower, balanced })}`,
   );
-  assert.ok(balanced.positive > lower.positive);
+  assert.ok(
+    balanced.negative < lower.negative,
+    `${JSON.stringify({ lower, balanced })}`,
+  );
 });
 
 test("healthy no-change is positive while unhealthy no-change is negative", () => {

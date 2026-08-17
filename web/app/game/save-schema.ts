@@ -32,6 +32,14 @@ import {
   getDailyOperatingCost,
   OPERATING_COST_START_DAY,
 } from "./finance.ts";
+import {
+  getExpectedTier,
+  getNewThemeExpectedPower,
+  getNewThemeLaunchPower,
+} from "./engine.ts";
+import { META_ADOPTION_SHARE_FLOOR } from "./meta-tiers.ts";
+import { DAILY_TOP_CUT_SLOTS } from "./placement-meta.ts";
+import { ENVIRONMENT_HEALTH_MODEL } from "./environment-health.ts";
 import type {
   BusinessEventChoice,
   BusinessEventOutcome,
@@ -42,8 +50,10 @@ import type {
   CommunityCategory,
   CommunityEventType,
   ExpectedTier,
+  EnvironmentHealthModel,
   GameState,
   PartRole,
+  PowerAdjustment,
   ReleaseOption,
   SupportDirection,
   SupportRequest,
@@ -58,6 +68,9 @@ const MAX_ACTIVE_THEMES = THEMES.length;
 const MIN_ACTIVE_THEMES = 5;
 const MAX_SAFE_COUNTER = 1_000_000_000;
 const MAX_FINANCE_VALUE = 1_000_000_000_000;
+const ENVIRONMENT_HEALTH_MODELS = new Set<EnvironmentHealthModel>([
+  ENVIRONMENT_HEALTH_MODEL,
+]);
 const INITIAL_OPERATING_CASH = 2.5;
 const OPERATING_CASH_MARGIN = 0.32;
 const STARTING_THEME_IDS = new Set<ThemeId>([
@@ -641,6 +654,83 @@ function migrateLegacyFutureIdentifiersDeep(
   return Object.fromEntries(migratedEntries);
 }
 
+function mutableRecord(value: unknown): UnknownRecord | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as UnknownRecord
+    : null;
+}
+
+/**
+ * Schema v7 predates new-theme power creep, so a save can legitimately contain
+ * a release slate or same-day batch with the old forecast. Rebuild only the
+ * deterministic new-theme fields before validation; malformed structure is
+ * deliberately left untouched for the strict validators below to reject.
+ */
+function normalizePendingNewThemePredictions(state: UnknownRecord): UnknownRecord {
+  const currentDay = state.day;
+  if (typeof currentDay !== "number" || !Number.isInteger(currentDay)) {
+    return state;
+  }
+
+  const slate = mutableRecord(state.releaseSlate);
+  if (slate && slate.day === currentDay && Array.isArray(slate.options)) {
+    for (const optionValue of slate.options) {
+      const option = mutableRecord(optionValue);
+      if (
+        !option ||
+        option.kind !== "new-theme" ||
+        typeof option.themeId !== "string" ||
+        !Object.prototype.hasOwnProperty.call(option, "expectedPower") ||
+        !Object.prototype.hasOwnProperty.call(option, "expectedTier")
+      ) {
+        continue;
+      }
+      const content = THEME_BY_ID[option.themeId];
+      if (!content) continue;
+      const expectedPower = getNewThemeExpectedPower(content, currentDay);
+      option.expectedPower = expectedPower;
+      option.expectedTier = getExpectedTier(expectedPower);
+    }
+  }
+
+  if (!Array.isArray(state.releaseHistory)) return state;
+  for (const batchValue of state.releaseHistory) {
+    const batch = mutableRecord(batchValue);
+    if (
+      !batch ||
+      batch.day !== currentDay ||
+      !Array.isArray(batch.products)
+    ) {
+      continue;
+    }
+    for (const productValue of batch.products) {
+      const product = mutableRecord(productValue);
+      if (
+        !product ||
+        product.kind !== "new-theme" ||
+        typeof product.themeId !== "string" ||
+        typeof product.powerAdjustment !== "number" ||
+        !Number.isInteger(product.powerAdjustment) ||
+        product.powerAdjustment < -3 ||
+        product.powerAdjustment > 3 ||
+        !Object.prototype.hasOwnProperty.call(product, "expectedTier")
+      ) {
+        continue;
+      }
+      const content = THEME_BY_ID[product.themeId];
+      if (!content) continue;
+      product.expectedTier = getExpectedTier(
+        getNewThemeLaunchPower(
+          content,
+          product.powerAdjustment as PowerAdjustment,
+          currentDay,
+        ),
+      );
+    }
+  }
+  return state;
+}
+
 function isReleaseDay(day: number): boolean {
   return day > 0 && day <= LAST_RELEASE_DAY && day % RELEASE_INTERVAL === 0;
 }
@@ -684,8 +774,13 @@ function validateThemeRuntime(
   const path = `$.themes.${themeId}`;
   const runtime = expectRecord(value, path, THEME_RUNTIME_KEYS);
 
-  expectNumber(runtime.share, `${path}.share`, 0, 1);
-  expectNumber(runtime.previousWeekShare, `${path}.previousWeekShare`, 0, 1);
+  expectNumber(runtime.share, `${path}.share`, META_ADOPTION_SHARE_FLOOR, 1);
+  expectNumber(
+    runtime.previousWeekShare,
+    `${path}.previousWeekShare`,
+    META_ADOPTION_SHARE_FLOOR,
+    1,
+  );
   expectNumber(runtime.winRate, `${path}.winRate`, 0, 1);
   expectNumber(runtime.power, `${path}.power`, 0, 100);
   expectNumber(runtime.unpleasantness, `${path}.unpleasantness`, 0, 100);
@@ -1921,10 +2016,13 @@ function validateHistory(
         "cash",
         "operatingCash",
         "environmentHealth",
+        "environmentHealthModel",
         "purchaseTrust",
         "communitySentiment",
         "communityPositive",
         "communityNegative",
+        "winRates",
+        "topCutPlacements",
       ],
     );
     const day = expectNumber(entry.day, `${path}.day`, 0, currentDay, true);
@@ -1955,6 +2053,19 @@ function validateHistory(
         0,
         100,
       );
+    }
+    if (entry.environmentHealthModel !== undefined) {
+      expectEnum(
+        entry.environmentHealthModel,
+        `${path}.environmentHealthModel`,
+        ENVIRONMENT_HEALTH_MODELS,
+      );
+      if (entry.environmentHealth === undefined) {
+        fail(
+          `${path}.environmentHealthModel`,
+          "requires environmentHealth",
+        );
+      }
     }
     if (entry.purchaseTrust !== undefined) {
       expectNumber(entry.purchaseTrust, `${path}.purchaseTrust`, 0, 100);
@@ -2017,21 +2128,62 @@ function validateHistory(
       shareTotal += expectNumber(
         shares[themeId],
         `${path}.shares.${themeId}`,
-        0,
+        META_ADOPTION_SHARE_FLOOR,
         1,
       );
     }
     if (Math.abs(shareTotal - 1) > 0.00001) {
       fail(`${path}.shares`, "must add up to 1");
     }
+    if (entry.winRates !== undefined) {
+      const winRates = expectRecord(
+        entry.winRates,
+        `${path}.winRates`,
+        historicalThemeIds,
+      );
+      for (const themeId of historicalThemeIds) {
+        expectNumber(
+          winRates[themeId],
+          `${path}.winRates.${themeId}`,
+          0,
+          1,
+        );
+      }
+    }
+    if (entry.topCutPlacements !== undefined) {
+      const placements = expectRecord(
+        entry.topCutPlacements,
+        `${path}.topCutPlacements`,
+        historicalThemeIds,
+      );
+      const placementTotal = historicalThemeIds.reduce(
+        (total, themeId) =>
+          total + expectNumber(
+            placements[themeId],
+            `${path}.topCutPlacements.${themeId}`,
+            0,
+            DAILY_TOP_CUT_SLOTS,
+            true,
+          ),
+        0,
+      );
+      if (placementTotal !== DAILY_TOP_CUT_SLOTS) {
+        fail(
+          `${path}.topCutPlacements`,
+          `must add up to ${DAILY_TOP_CUT_SLOTS}`,
+        );
+      }
+    }
   });
   return { lastDay: previousDay, lastTotalUsers };
 }
 
 export function parseGameState(value: unknown): GameState {
-  const normalized = migrateLegacyFutureIdentifiersDeep(
-    normalizeSaveVersion(value),
-  ) as UnknownRecord;
+  const normalized = normalizePendingNewThemePredictions(
+    migrateLegacyFutureIdentifiersDeep(
+      normalizeSaveVersion(value),
+    ) as UnknownRecord,
+  );
   const state = expectRecord(normalized, "$", TOP_LEVEL_KEYS);
   if (state.schemaVersion !== 7) {
     fail("$.schemaVersion", "must equal 7 after migration");

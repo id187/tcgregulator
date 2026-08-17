@@ -15,6 +15,7 @@ import {
 } from "./campaign.ts";
 import { OPERATING_CASH_MARGIN } from "./finance.ts";
 import { getPublishedRestrictionPolicyProfile } from "./restriction-policy.ts";
+import { getEnvironmentHealthBreakdown } from "./environment-health.ts";
 
 export type BusinessActionDefinition = {
   type: BusinessActionType;
@@ -483,45 +484,10 @@ export function getBusinessActionScheduledEndDay(
 }
 
 export function getBusinessEnvironmentHealth(state: GameState): number {
-  const rankedShares = state.activeThemeIds
-    .map((themeId) => state.themes[themeId].share)
-    .sort((left, right) => right - left);
-  const weightedUnpleasantness = state.activeThemeIds.reduce(
-    (sum, themeId) => {
-      const theme = state.themes[themeId];
-      return sum + theme.unpleasantness * theme.share;
-    },
-    0,
-  );
-  const weightedFatigue = state.activeThemeIds.reduce((sum, themeId) => {
-    const theme = state.themes[themeId];
-    return sum + theme.fatigue * theme.share;
-  }, 0);
-  const topShare = rankedShares[0] ?? 0;
-  const topThreeShare = rankedShares
-    .slice(0, 3)
-    .reduce((sum, share) => sum + share, 0);
-
-  // Environment health is intentionally not just an "annoyance average".
-  // One oppressive deck, a locked top three, and long-running fatigue all
-  // make a format unhealthy even when the individual cards look tolerable.
-  const dominancePenalty = Math.max(0, topShare - 0.24) * 58;
-  const concentrationPenalty = Math.max(0, topThreeShare - 0.62) * 30;
-  const fatiguePenalty = Math.max(0, weightedFatigue - 34) * 0.2;
-
-  return round(
-    clamp(
-      100 -
-        weightedUnpleasantness -
-        dominancePenalty -
-        concentrationPenalty -
-        fatiguePenalty,
-      0,
-      100,
-    ),
-    2,
-  );
+  return getEnvironmentHealthBreakdown(state).score;
 }
+
+export { getEnvironmentHealthBreakdown as getBusinessEnvironmentHealthBreakdown };
 
 export function getChampionshipBacklashRisk(state: GameState): number {
   const health = getBusinessEnvironmentHealth(state);
@@ -533,11 +499,19 @@ export function getChampionshipBacklashRisk(state: GameState): number {
     const theme = state.themes[themeId];
     return sum + theme.fatigue * theme.share;
   }, 0);
+  const weightedUnpleasantness = state.activeThemeIds.reduce(
+    (sum, themeId) => {
+      const theme = state.themes[themeId];
+      return sum + theme.unpleasantness * theme.share;
+    },
+    0,
+  );
   const risk =
     0.08 +
     Math.max(0, 60 - health) * 0.012 +
     Math.max(0, topShare - 0.28) * 1.4 +
-    Math.max(0, weightedFatigue - 45) * 0.004;
+    Math.max(0, weightedFatigue - 45) * 0.004 +
+    Math.max(0, weightedUnpleasantness - 55) * 0.006;
   return Math.max(0.05, Math.min(0.9, risk));
 }
 

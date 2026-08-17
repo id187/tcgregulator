@@ -7,9 +7,18 @@ import {
   LAST_RELEASE_DAY,
 } from "../app/game/campaign.ts";
 import { getBusinessEventChoice } from "../app/game/business-events.ts";
+import { getBusinessEnvironmentHealth } from "../app/game/business-actions.ts";
+import {
+  ENVIRONMENT_HEALTH_MODEL,
+  getChartEnvironmentHealth,
+} from "../app/game/environment-health.ts";
+import { DAILY_TOP_CUT_SLOTS } from "../app/game/placement-meta.ts";
 import {
   createCampaignStart,
   createInitialGame,
+  getExpectedTier,
+  getNewThemeExpectedPower,
+  getNewThemeLaunchPower,
   getPrologueReleaseSelections,
   getPrologueRestrictionChanges,
   reduceGame,
@@ -618,11 +627,29 @@ test("accepts legacy history rows while preserving the new dashboard metrics", (
     restored.purchaseTrust,
   );
   assert.ok(restored.history.every((entry) => entry.environmentHealth !== undefined));
+  assert.ok(
+    restored.history.every(
+      (entry) => entry.environmentHealthModel === ENVIRONMENT_HEALTH_MODEL,
+    ),
+  );
+  assert.equal(
+    restored.history.at(-1)?.environmentHealth,
+    getBusinessEnvironmentHealth(restored),
+  );
   assert.ok(restored.history.every((entry) => entry.communitySentiment !== undefined));
   assert.ok(
     restored.history.every(
       (entry) =>
         (entry.communityPositive ?? 0) + (entry.communityNegative ?? 0) <= 20,
+    ),
+  );
+  assert.ok(
+    restored.history.every(
+      (entry) =>
+        Object.values(entry.topCutPlacements ?? {}).reduce(
+          (sum, placements) => sum + placements,
+          0,
+        ) === DAILY_TOP_CUT_SLOTS,
     ),
   );
 
@@ -631,16 +658,67 @@ test("accepts legacy history rows while preserving the new dashboard metrics", (
     delete entry.cash;
     delete entry.operatingCash;
     delete entry.environmentHealth;
+    delete entry.environmentHealthModel;
     delete entry.purchaseTrust;
     delete entry.communitySentiment;
     delete entry.communityPositive;
     delete entry.communityNegative;
+    delete entry.topCutPlacements;
   }
   const migrated = parseGameState(legacy);
   assert.equal(migrated.history.length, current.history.length);
   assert.equal(migrated.history[0].cash, undefined);
   assert.equal(migrated.history[0].environmentHealth, undefined);
+  assert.equal(migrated.history[0].environmentHealthModel, undefined);
   assert.equal(migrated.history[0].communitySentiment, undefined);
+  assert.equal(migrated.history[0].topCutPlacements, undefined);
+
+  const modernContinuation = reduceGame(restored, {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
+  const legacyContinuation = reduceGame(migrated, {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
+  assert.deepEqual(legacyContinuation.themes, modernContinuation.themes);
+  assert.deepEqual(legacyContinuation.users, modernContinuation.users);
+  assert.deepEqual(legacyContinuation.finance, modernContinuation.finance);
+  assert.equal(
+    legacyContinuation.purchaseTrust,
+    modernContinuation.purchaseTrust,
+  );
+});
+
+test("accepts legacy-v7 health values but excludes them from the current chart model", () => {
+  const legacy = jsonRoundTrip(createInitialGame(7_303)) as GameState;
+  for (const entry of legacy.history) {
+    delete entry.environmentHealthModel;
+    entry.environmentHealth = 0;
+  }
+
+  const restored = parseGameState(legacy);
+  const liveHealth = getBusinessEnvironmentHealth(restored);
+  assert.equal(restored.history.at(-1)?.environmentHealth, 0);
+  assert.equal(
+    getChartEnvironmentHealth(restored.history[0], false, liveHealth),
+    null,
+  );
+  assert.equal(
+    getChartEnvironmentHealth(restored.history.at(-1)!, true, liveHealth),
+    liveHealth,
+  );
+
+  const advanced = reduceGame(restored, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(
+    advanced.history.at(-1)?.environmentHealthModel,
+    ENVIRONMENT_HEALTH_MODEL,
+  );
+  assert.equal(
+    advanced.history.at(-1)?.environmentHealth,
+    getBusinessEnvironmentHealth(advanced),
+  );
+  parseGameState(jsonRoundTrip(advanced));
 });
 
 test("round-trips release editing, support requests, and dynamic theme history", () => {
@@ -682,6 +760,104 @@ test("round-trips release editing, support requests, and dynamic theme history",
   assert.equal(historicalWidths[0], 5);
   assert.ok(historicalWidths.at(-1)! > historicalWidths[0]);
   parseGameState(jsonRoundTrip(continued));
+});
+
+test("normalizes stale schema-v7 new-theme forecasts and same-day products", () => {
+  const atRelease = reachFirstRelease(8_124);
+  assert.ok(atRelease.releaseSlate);
+  const newOption = atRelease.releaseSlate.options.find(
+    (option) => option.kind === "new-theme",
+  );
+  assert.ok(newOption);
+  const content = THEMES.find((theme) => theme.id === newOption.themeId);
+  assert.ok(content);
+  const expectedPower = getNewThemeExpectedPower(content, atRelease.day);
+  assert.ok(expectedPower > content.basePower);
+
+  const staleReleaseEdit = structuredClone(atRelease);
+  const staleOption = staleReleaseEdit.releaseSlate!.options.find(
+    (option) => option.id === newOption.id,
+  );
+  assert.ok(staleOption);
+  staleOption.expectedPower = content.basePower;
+  staleOption.expectedTier = getExpectedTier(content.basePower);
+  const restoredReleaseEdit = parseGameState(staleReleaseEdit);
+  const normalizedOption = restoredReleaseEdit.releaseSlate!.options.find(
+    (option) => option.id === newOption.id,
+  );
+  assert.equal(normalizedOption?.expectedPower, expectedPower);
+  assert.equal(normalizedOption?.expectedTier, getExpectedTier(expectedPower));
+
+  const selections = restoredReleaseEdit.releaseSlate!.options
+    .slice(0, 3)
+    .map((option) => ({
+      optionId: option.id,
+      powerAdjustment: 0 as const,
+    }));
+  const submitted = reduceGame(restoredReleaseEdit, {
+    type: "SUBMIT_RELEASE",
+    selections,
+  });
+  const expectedLaunchPower = getNewThemeLaunchPower(
+    content,
+    0,
+    submitted.day,
+  );
+  const submittedProduct = submitted.releaseHistory.at(-1)!.products.find(
+    (product) => product.optionId === newOption.id,
+  );
+  assert.equal(
+    submittedProduct?.expectedTier,
+    getExpectedTier(expectedLaunchPower),
+  );
+
+  const staleSubmitted = structuredClone(submitted);
+  const staleProduct = staleSubmitted.releaseHistory.at(-1)!.products.find(
+    (product) => product.optionId === newOption.id,
+  );
+  assert.ok(staleProduct);
+  staleProduct.expectedTier = staleProduct.expectedTier === "Tier 0"
+    ? "Tier 3"
+    : "Tier 0";
+  const restoredSubmitted = parseGameState(staleSubmitted);
+  assert.equal(
+    restoredSubmitted.releaseHistory.at(-1)!.products.find(
+      (product) => product.optionId === newOption.id,
+    )?.expectedTier,
+    getExpectedTier(expectedLaunchPower),
+  );
+
+  const observed = reduceGame(restoredSubmitted, {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
+  assert.equal(observed.themes[newOption.themeId].power, expectedLaunchPower);
+  parseGameState(observed);
+});
+
+test("keeps the historical share floor closed across advance and reparse", () => {
+  const initial = createInitialGame(5_151);
+  const floorSave = structuredClone(initial);
+  const weekSnapshot = floorSave.history.find((entry) => entry.day === 40);
+  assert.ok(weekSnapshot);
+  const targetId = Object.keys(weekSnapshot.shares).find(
+    (themeId) => themeId !== weekSnapshot.topThemeId,
+  );
+  assert.ok(targetId);
+  const transferred = weekSnapshot.shares[targetId] - 0.001;
+  weekSnapshot.shares[targetId] = 0.001;
+  weekSnapshot.shares[weekSnapshot.topThemeId] += transferred;
+
+  const restored = parseGameState(floorSave);
+  const advanced = reduceGame(restored, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(advanced.themes[targetId].previousWeekShare, 0.001);
+  parseGameState(advanced);
+
+  const zeroHistory = structuredClone(floorSave);
+  const zeroSnapshot = zeroHistory.history.find((entry) => entry.day === 40)!;
+  zeroSnapshot.shares[zeroSnapshot.topThemeId] += 0.001;
+  zeroSnapshot.shares[targetId] = 0;
+  assert.throws(() => parseGameState(zeroHistory), SaveSchemaError);
 });
 
 test("cross-validates applied support waves and rejects a forged fourth product", () => {
@@ -1039,6 +1215,13 @@ test("rejects legacy v2, extra fields, active-theme mismatches, and invalid runt
   delete missingThemeRuntime.themes[missingThemeRuntime.activeThemeIds[0]];
   assert.throws(() => parseGameState(missingThemeRuntime), SaveSchemaError);
 
+  const zeroRuntimeShare = structuredClone(initial);
+  const [zeroShareId, recipientId] = zeroRuntimeShare.activeThemeIds;
+  const transferredShare = zeroRuntimeShare.themes[zeroShareId].share;
+  zeroRuntimeShare.themes[zeroShareId].share = 0;
+  zeroRuntimeShare.themes[recipientId].share += transferredShare;
+  assert.throws(() => parseGameState(zeroRuntimeShare), SaveSchemaError);
+
   const unearnedActiveTheme = structuredClone(initial);
   const inactiveContent = THEMES.find(
     (theme) => !unearnedActiveTheme.activeThemeIds.includes(theme.id),
@@ -1136,7 +1319,13 @@ test("rejects invalid support cooldowns, slate options, and request links", () =
   assert.throws(() => parseGameState(tooFewOptions), SaveSchemaError);
 
   const wrongTier = structuredClone(atRelease);
-  wrongTier.releaseSlate!.options[0].expectedTier = "Tier 0";
+  const supportOption = wrongTier.releaseSlate!.options.find(
+    (option) => option.kind === "support",
+  );
+  assert.ok(supportOption);
+  supportOption.expectedTier = supportOption.expectedTier === "Tier 0"
+    ? "Tier 3"
+    : "Tier 0";
   assert.throws(() => parseGameState(wrongTier), SaveSchemaError);
 
   const requestedOptionIndex = atRelease.releaseSlate!.options.findIndex(
@@ -1188,9 +1377,66 @@ test("rejects malformed release batches and historical share maps", () => {
   (unknownHistoricalTheme.history[0].shares as Record<string, number>).injected = 0;
   assert.throws(() => parseGameState(unknownHistoricalTheme), SaveSchemaError);
 
+  const invalidHistoricalWinRate = jsonRoundTrip(released) as GameState;
+  const winRateThemeId = Object.keys(
+    invalidHistoricalWinRate.history[0].winRates!,
+  )[0];
+  invalidHistoricalWinRate.history[0].winRates![winRateThemeId] = 1.01;
+  assert.throws(() => parseGameState(invalidHistoricalWinRate), SaveSchemaError);
+
+  const unknownHistoricalWinRate = jsonRoundTrip(released) as GameState;
+  (unknownHistoricalWinRate.history[0].winRates as Record<string, number>)
+    .injected = 0.5;
+  assert.throws(() => parseGameState(unknownHistoricalWinRate), SaveSchemaError);
+
+  const missingHistoricalWinRate = jsonRoundTrip(released) as GameState;
+  delete missingHistoricalWinRate.history[0].winRates![winRateThemeId];
+  assert.throws(() => parseGameState(missingHistoricalWinRate), SaveSchemaError);
+
+  const legacyHistoryWithoutWinRates = jsonRoundTrip(released) as GameState;
+  for (const snapshot of legacyHistoryWithoutWinRates.history) {
+    delete snapshot.winRates;
+  }
+  parseGameState(legacyHistoryWithoutWinRates);
+
+  const placementEntry = released.history[0];
+  const placementIds = Object.keys(placementEntry.topCutPlacements!);
+  assert.ok(placementIds.length >= 2);
+
+  const invalidPlacementTotal = structuredClone(released);
+  invalidPlacementTotal.history[0].topCutPlacements![placementIds[0]] += 1;
+  assert.throws(() => parseGameState(invalidPlacementTotal), SaveSchemaError);
+
+  const negativePlacement = structuredClone(released);
+  negativePlacement.history[0].topCutPlacements![placementIds[0]] = -1;
+  assert.throws(() => parseGameState(negativePlacement), SaveSchemaError);
+
+  const fractionalPlacement = structuredClone(released);
+  fractionalPlacement.history[0].topCutPlacements![placementIds[0]] = 0.5;
+  assert.throws(() => parseGameState(fractionalPlacement), SaveSchemaError);
+
+  const missingPlacement = structuredClone(released);
+  delete missingPlacement.history[0].topCutPlacements![placementIds[0]];
+  assert.throws(() => parseGameState(missingPlacement), SaveSchemaError);
+
+  const unknownPlacement = jsonRoundTrip(released) as GameState;
+  (unknownPlacement.history[0].topCutPlacements as Record<string, number>)
+    .injected = 0;
+  assert.throws(() => parseGameState(unknownPlacement), SaveSchemaError);
+
   const impossibleHealth = jsonRoundTrip(released) as GameState;
   impossibleHealth.history[0].environmentHealth = 101;
   assert.throws(() => parseGameState(impossibleHealth), SaveSchemaError);
+
+  const unknownHealthModel = jsonRoundTrip(released) as GameState;
+  (unknownHealthModel.history[0] as unknown as {
+    environmentHealthModel: string;
+  }).environmentHealthModel = "invented-model";
+  assert.throws(() => parseGameState(unknownHealthModel), SaveSchemaError);
+
+  const modelWithoutHealth = jsonRoundTrip(released) as GameState;
+  delete modelWithoutHealth.history[0].environmentHealth;
+  assert.throws(() => parseGameState(modelWithoutHealth), SaveSchemaError);
 
   const impossibleTrust = jsonRoundTrip(released) as GameState;
   impossibleTrust.history[0].purchaseTrust = -1;

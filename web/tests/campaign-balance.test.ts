@@ -151,8 +151,8 @@ function getBalancedRestrictionChanges(
       (left, right) =>
         right.score - left.score || left.part.id.localeCompare(right.part.id),
     );
-    assert.ok(candidates.length >= 2, "each policy band needs two valid cuts");
-    for (const candidate of candidates.slice(0, 2)) {
+    assert.ok(candidates.length >= 3, "each policy band needs three valid cuts");
+    for (const candidate of candidates.slice(0, 3)) {
       changes[candidate.part.id] = candidate.nextLimit;
     }
   }
@@ -308,7 +308,7 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
   );
   assert.deepEqual(
     publishedPolicies.map((profile) => profile.changeCount),
-    [4, 5, 5, 5, 5, 5, 5],
+    [6, 7, 7, 7, 7, 7, 7],
   );
   assert.equal(
     publishedPolicies.reduce(
@@ -397,9 +397,9 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       "a",
     ],
   );
-  assert.equal(state.finance.cash, 18.9598);
-  assert.equal(ending.scores.cash, 19);
-  assert.equal(ending.scores.environmentHealth, 70.7);
+  assert.equal(state.finance.cash, 22.8561);
+  assert.equal(ending.scores.cash, 22.9);
+  assert.equal(ending.scores.environmentHealth, 70);
   assert.equal(ending.stewardship.passedPillars, 4);
   assert.equal(ending.stewardship.complete, true);
   assert.equal(ending.qualifiedForBestEnding, true);

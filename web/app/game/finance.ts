@@ -23,6 +23,7 @@ export const REVENUE_DROP_ALERT_RATE = -12;
 export const POST_RELEASE_DROP_RESIDUAL_ALERT_RATE = -8;
 
 export type RevenueChangeSignal = "surge" | "drop" | null;
+export type MarketDivergenceLag = 0 | 1 | null;
 
 export function getRevenueChangeSignal(
   changeRate: number,
@@ -48,6 +49,37 @@ export function getRevenueChangeSignal(
   }
 
   if (changeRate <= REVENUE_DROP_ALERT_RATE) return "drop";
+  return null;
+}
+
+/**
+ * Flags the deliberately uncomfortable market beat where sales jump while
+ * ecosystem health or purchase trust falls either immediately or on D+1.
+ */
+export function getMarketDivergenceLag(
+  isRevenueSurge: boolean,
+  environmentDelta: number | null,
+  purchaseTrustDelta: number | null,
+  nextEnvironmentDelta: number | null,
+  nextPurchaseTrustDelta: number | null,
+  nextDaySpan = 1,
+): MarketDivergenceLag {
+  if (!isRevenueSurge) return null;
+  const isMeaningfulDrop = (value: number | null) =>
+    value !== null && value <= -0.5;
+  if (
+    isMeaningfulDrop(environmentDelta) ||
+    isMeaningfulDrop(purchaseTrustDelta)
+  ) {
+    return 0;
+  }
+  if (
+    nextDaySpan === 1 &&
+    (isMeaningfulDrop(nextEnvironmentDelta) ||
+      isMeaningfulDrop(nextPurchaseTrustDelta))
+  ) {
+    return 1;
+  }
   return null;
 }
 

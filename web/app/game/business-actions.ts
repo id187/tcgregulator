@@ -483,16 +483,43 @@ export function getBusinessActionScheduledEndDay(
 }
 
 export function getBusinessEnvironmentHealth(state: GameState): number {
-  return Math.max(
+  const rankedShares = state.activeThemeIds
+    .map((themeId) => state.themes[themeId].share)
+    .sort((left, right) => right - left);
+  const weightedUnpleasantness = state.activeThemeIds.reduce(
+    (sum, themeId) => {
+      const theme = state.themes[themeId];
+      return sum + theme.unpleasantness * theme.share;
+    },
     0,
-    Math.min(
-      100,
+  );
+  const weightedFatigue = state.activeThemeIds.reduce((sum, themeId) => {
+    const theme = state.themes[themeId];
+    return sum + theme.fatigue * theme.share;
+  }, 0);
+  const topShare = rankedShares[0] ?? 0;
+  const topThreeShare = rankedShares
+    .slice(0, 3)
+    .reduce((sum, share) => sum + share, 0);
+
+  // Environment health is intentionally not just an "annoyance average".
+  // One oppressive deck, a locked top three, and long-running fatigue all
+  // make a format unhealthy even when the individual cards look tolerable.
+  const dominancePenalty = Math.max(0, topShare - 0.24) * 58;
+  const concentrationPenalty = Math.max(0, topThreeShare - 0.62) * 30;
+  const fatiguePenalty = Math.max(0, weightedFatigue - 34) * 0.2;
+
+  return round(
+    clamp(
       100 -
-        state.activeThemeIds.reduce((sum, themeId) => {
-          const theme = state.themes[themeId];
-          return sum + theme.unpleasantness * theme.share;
-        }, 0),
+        weightedUnpleasantness -
+        dominancePenalty -
+        concentrationPenalty -
+        fatiguePenalty,
+      0,
+      100,
     ),
+    2,
   );
 }
 

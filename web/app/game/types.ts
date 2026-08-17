@@ -321,6 +321,20 @@ export interface DailyHistory {
   day: number;
   totalUsers: number;
   revenue: number;
+  /** Spendable operating cash after this day's settlement, in eok won. */
+  cash?: number;
+  /** Net operating cash generated on this day, in eok won. */
+  operatingCash?: number;
+  /** Snapshot used by the 90-day market/health comparison chart. */
+  environmentHealth?: number;
+  /** Purchase confidence at the end of the recorded day. */
+  purchaseTrust?: number;
+  /** Net community mood on a 0..100 scale, with 50 as neutral. */
+  communitySentiment?: number;
+  /** Number of positive posts in the twenty-post daily board. */
+  communityPositive?: number;
+  /** Number of negative posts in the twenty-post daily board. */
+  communityNegative?: number;
   topThemeId: ThemeId;
   shares: Record<ThemeId, number>;
 }
@@ -356,6 +370,12 @@ export type GameCommand =
   | {
       type: "SUBMIT_BAN";
       changes: Record<string, RestrictionLimit>;
+      /**
+       * The guided DAY 45 decision may mint the real mandate seed after the
+       * fixed prologue. It is deliberately supplied by the UI so the reducer
+       * remains deterministic and saved games remain exactly reproducible.
+       */
+      campaignSeed?: number;
     }
   | {
       type: "PROPOSE_SUPPORT";

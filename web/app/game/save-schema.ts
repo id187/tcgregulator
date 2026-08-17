@@ -49,6 +49,7 @@ import type {
   SupportRequest,
   ThemeId,
 } from "./types.ts";
+import { migrateLegacyFutureIdentifier } from "./future-theme-id-migration.ts";
 
 export const MAX_SAVE_BYTES = 4 * 1024 * 1024;
 
@@ -599,6 +600,45 @@ function normalizeSaveVersion(value: unknown): UnknownRecord {
     "$.schemaVersion",
     "must equal 7 or be a migratable schema v3/v4/v5/v6 save",
   );
+}
+
+/**
+ * v0.1.6 replaced the construction-matrix IDs of all 140 future themes with
+ * authored identity slugs without changing the schema shape. Transform exact
+ * theme/card identifiers in both values and object keys before validation so
+ * schema v3-v7 campaigns continue without dropping runtime or history data.
+ */
+function migrateLegacyFutureIdentifiersDeep(
+  value: unknown,
+  path = "$",
+): unknown {
+  if (typeof value === "string") {
+    return migrateLegacyFutureIdentifier(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item, index) =>
+      migrateLegacyFutureIdentifiersDeep(item, `${path}[${index}]`),
+    );
+  }
+  if (typeof value !== "object" || value === null) return value;
+
+  const migratedEntries: Array<[string, unknown]> = [];
+  const migratedKeys = new Set<string>();
+  for (const [key, item] of Object.entries(value as UnknownRecord)) {
+    const migratedKey = migrateLegacyFutureIdentifier(key);
+    if (migratedKeys.has(migratedKey)) {
+      fail(
+        path,
+        `contains colliding legacy/current identifier keys for ${migratedKey}`,
+      );
+    }
+    migratedKeys.add(migratedKey);
+    migratedEntries.push([
+      migratedKey,
+      migrateLegacyFutureIdentifiersDeep(item, `${path}.${migratedKey}`),
+    ]);
+  }
+  return Object.fromEntries(migratedEntries);
 }
 
 function isReleaseDay(day: number): boolean {
@@ -1873,13 +1913,20 @@ function validateHistory(
 
   history.forEach((entryValue, index) => {
     const path = `$.history[${index}]`;
-    const entry = expectRecord(entryValue, path, [
-      "day",
-      "totalUsers",
-      "revenue",
-      "topThemeId",
-      "shares",
-    ]);
+    const entry = expectRecord(
+      entryValue,
+      path,
+      ["day", "totalUsers", "revenue", "topThemeId", "shares"],
+      [
+        "cash",
+        "operatingCash",
+        "environmentHealth",
+        "purchaseTrust",
+        "communitySentiment",
+        "communityPositive",
+        "communityNegative",
+      ],
+    );
     const day = expectNumber(entry.day, `${path}.day`, 0, currentDay, true);
     if (day <= previousDay) fail(`${path}.day`, "must be strictly increasing");
     previousDay = day;
@@ -1890,6 +1937,61 @@ function validateHistory(
       MAX_SAFE_COUNTER,
     );
     expectNumber(entry.revenue, `${path}.revenue`, 0, MAX_FINANCE_VALUE);
+    if (entry.cash !== undefined) {
+      expectNumber(entry.cash, `${path}.cash`, 0, MAX_FINANCE_VALUE);
+    }
+    if (entry.operatingCash !== undefined) {
+      expectNumber(
+        entry.operatingCash,
+        `${path}.operatingCash`,
+        -MAX_FINANCE_VALUE,
+        MAX_FINANCE_VALUE,
+      );
+    }
+    if (entry.environmentHealth !== undefined) {
+      expectNumber(
+        entry.environmentHealth,
+        `${path}.environmentHealth`,
+        0,
+        100,
+      );
+    }
+    if (entry.purchaseTrust !== undefined) {
+      expectNumber(entry.purchaseTrust, `${path}.purchaseTrust`, 0, 100);
+    }
+    if (entry.communitySentiment !== undefined) {
+      expectNumber(
+        entry.communitySentiment,
+        `${path}.communitySentiment`,
+        0,
+        100,
+      );
+    }
+    const communityPositive = entry.communityPositive === undefined
+      ? undefined
+      : expectNumber(
+          entry.communityPositive,
+          `${path}.communityPositive`,
+          0,
+          20,
+          true,
+        );
+    const communityNegative = entry.communityNegative === undefined
+      ? undefined
+      : expectNumber(
+          entry.communityNegative,
+          `${path}.communityNegative`,
+          0,
+          20,
+          true,
+        );
+    if (
+      communityPositive !== undefined &&
+      communityNegative !== undefined &&
+      communityPositive + communityNegative > 20
+    ) {
+      fail(path, "community sentiment post counts must not exceed 20");
+    }
     const topThemeId = expectThemeId(entry.topThemeId, `${path}.topThemeId`);
 
     const shares = expectRecord(entry.shares, `${path}.shares`, [], activeThemeIds);
@@ -1927,7 +2029,9 @@ function validateHistory(
 }
 
 export function parseGameState(value: unknown): GameState {
-  const normalized = normalizeSaveVersion(value);
+  const normalized = migrateLegacyFutureIdentifiersDeep(
+    normalizeSaveVersion(value),
+  ) as UnknownRecord;
   const state = expectRecord(normalized, "$", TOP_LEVEL_KEYS);
   if (state.schemaVersion !== 7) {
     fail("$.schemaVersion", "must equal 7 after migration");

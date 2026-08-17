@@ -48,6 +48,8 @@ import {
   RELEASE_SALES_WINDOW_DAYS,
 } from "./finance.ts";
 import { withKoreanParticle } from "./korean-particles.ts";
+import { getStableThemeRandomIdentifier } from "./future-theme-id-migration.ts";
+import { getDailyCommunitySentiment } from "./community-sentiment.ts";
 import {
   getPublishedRestrictionPolicyProfile,
   getRestrictionPolicyProfile,
@@ -83,6 +85,7 @@ const UNPLEASANTNESS_RUNTIME_SCALE = 0.65;
 const INITIAL_OPERATING_CASH = 2.5;
 const CATALOG_DAILY_SPEND_PER_USER = 350;
 const PACK_ODDS_REVENUE_MULTIPLIER = 1.25;
+const BALANCED_RELEASE_TRUST_RECOVERY = 0.18;
 const STARTING_THEME_IDS = [
   "cycle",
   "white-night",
@@ -336,7 +339,11 @@ function withTopicParticle(value: string): string {
 /** A stateless random value. Adding an unrelated random call cannot change it. */
 function keyedRandom(seed: number, ...keys: Array<string | number>): number {
   let hash = (seed >>> 0) ^ 0x9e3779b9;
-  const text = keys.join("\u001f");
+  const text = keys
+    .map((key) =>
+      typeof key === "string" ? getStableThemeRandomIdentifier(key) : key,
+    )
+    .join("\u001f");
   for (let index = 0; index < text.length; index += 1) {
     hash ^= text.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193);
@@ -1682,6 +1689,16 @@ function updateFinance(state: GameState): void {
           0.04 * (content.appeal / 100) -
           0.08 * (modeledFatigue / 100) -
           0.12 * (1 - state.purchaseTrust / 100) +
+          // A dominant product creates compulsory competitive demand even as
+          // players say they dislike the format. The 90-day chart is meant to
+          // expose this short-term sales / long-term trust contradiction.
+          0.055 *
+            clamp(
+              ((runtime?.power ?? content.basePower) - 64) / 24 +
+                modeledShare * 1.4,
+              0,
+              1,
+            ) +
           buyerRateBonus,
         0.02,
         0.38,
@@ -1938,6 +1955,10 @@ function activateNewTheme(
     powerOffset,
     releaseDay,
   );
+  state.themes[content.id].supportUnpleasantness = round(
+    adjustment >= 0 ? adjustment * 1.6 : adjustment * 0.45,
+    4,
+  );
 
   const ids = state.activeThemeIds;
   const values = [
@@ -2034,7 +2055,7 @@ function applySupportRelease(
   runtime.supportUnpleasantness = round(
     runtime.supportUnpleasantness +
       DIRECTION_UNPLEASANTNESS[direction] +
-      adjustment * 0.75 +
+      adjustment * 1.25 +
       (keyedRandom(state.seed, "support-unpleasant", option.optionId) - 0.5) *
         0.8,
     4,
@@ -2134,6 +2155,7 @@ function applyReleaseEffectsForCurrentDay(state: GameState): void {
     (candidate) => candidate.day === state.day - 1,
   );
   if (!batch) return;
+  let trustDelta = 0;
   for (const product of batch.products) {
     if (product.kind === "new-theme") {
       if (!state.themes[product.themeId]) {
@@ -2163,7 +2185,22 @@ function applyReleaseEffectsForCurrentDay(state: GameState): void {
       value: product.powerAdjustment,
       ...(product.requestId ? { proposalId: product.requestId } : {}),
     });
+
+    if (product.powerAdjustment >= 2) {
+      trustDelta -= product.powerAdjustment === 3 ? 1.8 : 0.85;
+      if (product.expectedTier === "Tier 0") trustDelta -= 0.45;
+    } else if (product.powerAdjustment <= -2) {
+      // Deliberately hollow products are safer for the meta but still make
+      // buyers feel that the release slot was wasted.
+      trustDelta -= product.powerAdjustment === -3 ? 0.5 : 0.2;
+    } else {
+      trustDelta += BALANCED_RELEASE_TRUST_RECOVERY;
+    }
   }
+  state.purchaseTrust = round(
+    clamp(state.purchaseTrust + trustDelta, 0, 100),
+    4,
+  );
 }
 
 function appendRestrictionReactionsForCurrentDay(state: GameState): void {
@@ -2215,9 +2252,58 @@ function recordHistory(state: GameState): void {
     day: state.day,
     totalUsers: round(totalUsers(state), 2),
     revenue: state.finance.today,
+    cash: state.finance.cash,
+    operatingCash: state.finance.todayOperatingCash,
+    environmentHealth: getBusinessEnvironmentHealth(state),
+    purchaseTrust: state.purchaseTrust,
     topThemeId: state.currentTopThemeId,
     shares,
   });
+  // Some daily-board branches consult today's settled history. Snapshot mood
+  // only after that row exists so the stored gauge exactly matches the board
+  // the player can open immediately after settlement.
+  const communitySentiment = getDailyCommunitySentiment(state, state.day);
+  const historyEntry = state.history[state.history.length - 1];
+  historyEntry.communitySentiment = communitySentiment.index;
+  historyEntry.communityPositive = communitySentiment.positive;
+  historyEntry.communityNegative = communitySentiment.negative;
+}
+
+function assignMandateSeed(state: GameState, campaignSeed: number): void {
+  if (
+    !Number.isInteger(campaignSeed) ||
+    campaignSeed < 0 ||
+    campaignSeed > 0xffffffff
+  ) {
+    throw new Error("Campaign seed must be a uint32 integer.");
+  }
+  if (state.day !== FIRST_BAN_DAY || state.handoverComplete) {
+    throw new Error("The mandate seed can only be assigned after the first restriction review.");
+  }
+
+  state.seed = campaignSeed >>> 0;
+
+  // No surprise event can have appeared before the DAY 45 handover, so its
+  // first date and type can safely move to the newly minted mandate timeline.
+  if (
+    state.operations.nextEventId === 1 &&
+    state.operations.eventRecords.length === 0 &&
+    state.operations.pendingEvent === null
+  ) {
+    state.operations.nextEventDay = getInitialBusinessEventDay(state.seed);
+  }
+
+  // Preserve already accumulated counter progress, but make the remaining
+  // discovery threshold part of this mandate rather than the fixed prologue.
+  for (const themeId of state.activeThemeIds) {
+    const runtime = state.themes[themeId];
+    if (runtime.counterDiscoveredDay !== null) continue;
+    runtime.counterThreshold = counterThreshold(
+      state.seed,
+      THEME_BY_ID[themeId],
+      runtime.counterBuild,
+    );
+  }
 }
 
 function assertState(state: GameState): void {
@@ -3155,8 +3241,8 @@ export function createCampaignStart(seed = 0x5eed1234): GameState {
   return state;
 }
 
-/** Replays the fixed onboarding decisions through the first post-ban day. */
-export function createInitialGame(seed = 0x5eed1234): GameState {
+/** Replays the fixed onboarding up to the player's first free restriction list. */
+export function createFirstBanGame(seed = 0x5eed1234): GameState {
   let state = createCampaignStart(seed);
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
   state = reduceGame(state, {
@@ -3169,6 +3255,18 @@ export function createInitialGame(seed = 0x5eed1234): GameState {
     selections: getPrologueReleaseSelections(state),
   });
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
+  if (state.day !== FIRST_BAN_DAY || state.phase !== "ban-edit") {
+    throw new Error("The prologue must stop at the first restriction review.");
+  }
+  return state;
+}
+
+/**
+ * Deterministic convenience state used by engine tests and simulations.
+ * The actual UI now stops at DAY 45 and lets the player author this list.
+ */
+export function createInitialGame(seed = 0x5eed1234): GameState {
+  let state = createFirstBanGame(seed);
   state = reduceGame(state, {
     type: "SUBMIT_BAN",
     changes: getPrologueRestrictionChanges(state),
@@ -3188,6 +3286,9 @@ export function reduceGame(state: GameState, command: GameCommand): GameState {
       break;
     case "SUBMIT_BAN":
       submitBan(next, command.changes);
+      if (command.campaignSeed !== undefined) {
+        assignMandateSeed(next, command.campaignSeed);
+      }
       break;
     case "PROPOSE_SUPPORT":
       proposeSupport(next, command.themeId, command.direction);

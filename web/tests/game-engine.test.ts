@@ -8,6 +8,7 @@ import {
   getBusinessActionDailyGrossRevenue,
   getBusinessActionProjectedDirectCash,
   getBusinessActionProjectedDirectGrossRevenue,
+  getBusinessEnvironmentHealth,
   getChampionshipBacklashRisk,
   getStackedBusinessActionDailyGrossRevenue,
   getStrategicProjectRiskProfile,
@@ -32,6 +33,7 @@ import {
 import { getCommunityHeat } from "../app/game/daily-community.ts";
 import {
   getDailyOperatingCost,
+  getMarketDivergenceLag,
   getMonthlyOperatingCost,
   getOperatingRunwayMonths,
   getRevenueChangeSignal,
@@ -43,6 +45,7 @@ import {
 } from "../app/game/restriction-policy.ts";
 import {
   createCampaignStart,
+  createFirstBanGame,
   createInitialGame,
   canProposeSupport,
   formatCommunityEvent,
@@ -380,8 +383,82 @@ test("creates a fixed DAY 1 campaign start with five themes and 10,000 users", (
   assert.deepEqual(state.history.map((entry) => entry.day), [1]);
   assert.ok(state.history.every((entry) => entry.totalUsers === 10_000));
   assert.deepEqual(state.history.map((entry) => entry.revenue), state.recentRevenue);
+  assert.equal(state.history[0].cash, state.finance.cash);
+  assert.equal(state.history[0].operatingCash, state.finance.todayOperatingCash);
+  assert.equal(
+    state.history[0].environmentHealth,
+    getBusinessEnvironmentHealth(state),
+  );
+  assert.equal(state.history[0].purchaseTrust, state.purchaseTrust);
   assert.deepEqual(state.community, []);
   assert.deepEqual(state.releaseHistory, []);
+});
+
+test("stops the fixed handover at a fully authored first restriction review", () => {
+  const state = createFirstBanGame(1000);
+
+  assert.equal(state.day, 45);
+  assert.equal(state.phase, "ban-edit");
+  assert.equal(state.handoverComplete, false);
+  assert.equal(state.seed, 1000);
+  assert.equal(state.releaseHistory.length, 1);
+
+  const unchanged = reduceGame(state, {
+    type: "SUBMIT_BAN",
+    changes: {},
+  });
+  assert.equal(unchanged.phase, "running");
+  assert.equal(unchanged.seed, 1000);
+});
+
+test("mints and persists a deterministic mandate seed after the first free restriction", () => {
+  const atFirstBan = createFirstBanGame(1000);
+  const campaignSeed = 0xdecafbad;
+  const command = {
+    type: "SUBMIT_BAN" as const,
+    changes: {},
+    campaignSeed,
+  };
+
+  const assigned = reduceGame(atFirstBan, command);
+  const replayed = reduceGame(atFirstBan, command);
+
+  assert.equal(assigned.day, 45);
+  assert.equal(assigned.phase, "running");
+  assert.equal(assigned.seed, campaignSeed);
+  assert.equal(
+    assigned.operations.nextEventDay,
+    getInitialBusinessEventDay(campaignSeed),
+  );
+  assert.deepEqual(assigned, replayed);
+
+  assert.throws(
+    () => reduceGame(atFirstBan, { ...command, campaignSeed: -1 }),
+    /uint32/,
+  );
+  assert.throws(
+    () => reduceGame(createInitialGame(1000), command),
+    /regular restriction day/,
+  );
+});
+
+test("overpowered releases sell harder while immediately damaging health and trust", () => {
+  const atRelease = advanceToFirstRelease(createInitialGame(10_616));
+  const balanced = reduceGame(submitFirstThree(atRelease, [0, 0, 0]), {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
+  const overpowered = reduceGame(submitFirstThree(atRelease, [3, 3, 3]), {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
+
+  assert.ok(overpowered.finance.today > balanced.finance.today);
+  assert.ok(overpowered.purchaseTrust < balanced.purchaseTrust);
+  assert.ok(
+    getBusinessEnvironmentHealth(overpowered) <
+      getBusinessEnvironmentHealth(balanced),
+  );
 });
 
 test("exposes deterministic guided choices that replay through the ordinary reducer", () => {
@@ -1731,6 +1808,13 @@ test("revenue shock alerts discount the normal post-release sales tail", () => {
   assert.equal(getRevenueChangeSignal(residualBoundary, 8), "drop");
   assert.equal(getRevenueChangeSignal(expectedReleaseDrop, 8, 2), "drop");
   assert.equal(getRevenueChangeSignal(-12, 30), "drop");
+});
+
+test("market divergence detects immediate and delayed ecosystem fallout", () => {
+  assert.equal(getMarketDivergenceLag(true, -0.6, 0, 0, 0), 0);
+  assert.equal(getMarketDivergenceLag(true, 0, 0, 1, -6.2), 1);
+  assert.equal(getMarketDivergenceLag(true, 0, 0, 1, -6.2, 2), null);
+  assert.equal(getMarketDivergenceLag(false, -8, -8, -8, -8), null);
 });
 
 test("decision gates charge operating costs once, after the decision is submitted", () => {

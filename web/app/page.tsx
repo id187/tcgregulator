@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarIcon,
   ChevronIcon,
@@ -21,6 +21,7 @@ import {
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
   PLAYER_CONTROL_DAYS,
+  PROLOGUE_SEED,
   SETTLEMENT_START_DAY,
   SETTLEMENT_DAYS,
 } from "./game/campaign";
@@ -32,6 +33,7 @@ import {
   type CampaignEnvironmentBand,
 } from "./game/campaign-ending";
 import {
+  getMarketDivergenceLag,
   getRevenueChangeSignal,
   getMonthlyOperatingCost,
   getOperatingRunwayMonths,
@@ -44,6 +46,7 @@ import {
   getReleaseReactionProfile,
   type ReleaseReactionProfile,
 } from "./game/daily-community";
+import { getDailyCommunitySentiment } from "./game/community-sentiment";
 import {
   BUSINESS_ACTIONS,
   BUSINESS_ACTION_BY_TYPE,
@@ -69,7 +72,7 @@ import {
 import {
   canProposeSupport,
   createCampaignStart,
-  createInitialGame,
+  createFirstBanGame,
   formatCommunityEvent,
   getBanDemand,
   getCommittedSupportCount,
@@ -77,7 +80,6 @@ import {
   getNextBanDay,
   getNextReleaseDay,
   getPrologueReleaseSelections,
-  getPrologueRestrictionChanges,
   isBanDay,
   reduceGame,
 } from "./game/engine";
@@ -125,6 +127,241 @@ const NAV_ITEMS: { id: TabId; label: string }[] = [
   { id: "community", label: "커뮤니티" },
   { id: "finance", label: "재무" },
 ];
+
+type MotionPreference = "system" | "reduced";
+type GameSoundKind = "click" | "release" | "restriction" | "event" | "impact";
+
+type InterfaceSettings = {
+  soundEnabled: boolean;
+  impactEffectsEnabled: boolean;
+  motionPreference: MotionPreference;
+};
+
+const INTERFACE_SETTINGS_KEY = "tcg-regulator-interface-settings-v1";
+const DEFAULT_INTERFACE_SETTINGS: InterfaceSettings = {
+  soundEnabled: true,
+  impactEffectsEnabled: true,
+  motionPreference: "system",
+};
+
+function mintCampaignSeed(previousSeed: number): number {
+  const values = new Uint32Array(1);
+  globalThis.crypto.getRandomValues(values);
+  const candidate = values[0] >>> 0;
+  return candidate === (previousSeed >>> 0)
+    ? (candidate + 0x9e3779b9) >>> 0
+    : candidate;
+}
+
+function emitGameSound(kind: GameSoundKind) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent<GameSoundKind>("tcg-regulator-sound", {
+    detail: kind,
+  }));
+}
+
+function playSynthTone(context: AudioContext, kind: GameSoundKind) {
+  const now = context.currentTime;
+  const master = context.createGain();
+  master.gain.setValueAtTime(0.0001, now);
+  master.gain.exponentialRampToValueAtTime(kind === "click" ? 0.12 : 0.11, now + 0.006);
+  master.gain.exponentialRampToValueAtTime(0.0001, now + (kind === "click" ? 0.11 : 0.42));
+  master.connect(context.destination);
+
+  const notes: Array<{ frequency: number; offset: number; duration: number; type: OscillatorType }> =
+    kind === "release"
+      ? [
+          { frequency: 220, offset: 0, duration: 0.12, type: "triangle" },
+          { frequency: 330, offset: 0.09, duration: 0.14, type: "triangle" },
+          { frequency: 440, offset: 0.18, duration: 0.17, type: "sine" },
+        ]
+      : kind === "restriction"
+        ? [
+            { frequency: 270, offset: 0, duration: 0.16, type: "square" },
+            { frequency: 170, offset: 0.12, duration: 0.2, type: "triangle" },
+          ]
+        : kind === "event"
+          ? [
+              { frequency: 185, offset: 0, duration: 0.11, type: "sawtooth" },
+              { frequency: 245, offset: 0.11, duration: 0.16, type: "triangle" },
+            ]
+          : kind === "impact"
+            ? [
+                { frequency: 392, offset: 0, duration: 0.16, type: "sine" },
+                { frequency: 587, offset: 0.1, duration: 0.22, type: "triangle" },
+              ]
+            : [
+                { frequency: 760, offset: 0, duration: 0.075, type: "triangle" },
+                { frequency: 1120, offset: 0.012, duration: 0.045, type: "sine" },
+              ];
+
+  notes.forEach((note) => {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const start = now + note.offset;
+    oscillator.type = note.type;
+    oscillator.frequency.setValueAtTime(note.frequency, start);
+    if (kind === "click") {
+      oscillator.frequency.exponentialRampToValueAtTime(
+        note.frequency * 0.58,
+        start + note.duration,
+      );
+    }
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.75, start + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + note.duration);
+    oscillator.connect(gain);
+    gain.connect(master);
+    oscillator.start(start);
+    oscillator.stop(start + note.duration + 0.02);
+  });
+}
+
+function loadInterfaceSettings(): InterfaceSettings {
+  if (typeof window === "undefined") return DEFAULT_INTERFACE_SETTINGS;
+  try {
+    const saved = window.localStorage.getItem(INTERFACE_SETTINGS_KEY);
+    if (!saved) return DEFAULT_INTERFACE_SETTINGS;
+    const parsed = JSON.parse(saved) as Partial<InterfaceSettings>;
+    return {
+      soundEnabled:
+        typeof parsed.soundEnabled === "boolean"
+          ? parsed.soundEnabled
+          : DEFAULT_INTERFACE_SETTINGS.soundEnabled,
+      impactEffectsEnabled:
+        typeof parsed.impactEffectsEnabled === "boolean"
+          ? parsed.impactEffectsEnabled
+          : DEFAULT_INTERFACE_SETTINGS.impactEffectsEnabled,
+      motionPreference:
+        parsed.motionPreference === "reduced" ? "reduced" : "system",
+    };
+  } catch {
+    return DEFAULT_INTERFACE_SETTINGS;
+  }
+}
+
+function useInterfaceSettings() {
+  const [settings, setSettings] = useState<InterfaceSettings>(
+    loadInterfaceSettings,
+  );
+  const settingsRef = useRef(settings);
+  const audioContextRef = useRef<AudioContext | null>(null);
+
+  useEffect(() => {
+    settingsRef.current = settings;
+    try {
+      window.localStorage.setItem(INTERFACE_SETTINGS_KEY, JSON.stringify(settings));
+    } catch {
+      // Interface preferences are optional when storage is unavailable.
+    }
+  }, [settings]);
+
+  useEffect(() => {
+    const ensureAudioContext = () => {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new window.AudioContext();
+      }
+      if (audioContextRef.current.state === "suspended") {
+        void audioContextRef.current.resume();
+      }
+      return audioContextRef.current;
+    };
+    const play = (kind: GameSoundKind, fromUserGesture: boolean) => {
+      if (!settingsRef.current.soundEnabled) return;
+      if (!audioContextRef.current && !fromUserGesture) return;
+      try {
+        playSynthTone(ensureAudioContext(), kind);
+      } catch {
+        // Audio support is an enhancement; gameplay remains fully functional.
+      }
+    };
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const button = target.closest<HTMLButtonElement>("button");
+      if (!button || button.disabled || button.dataset.sound === "none") return;
+      const kind = (button.dataset.sound as GameSoundKind | undefined) ?? "click";
+      play(kind, true);
+    };
+    const handleGameSound = (event: Event) => {
+      play((event as CustomEvent<GameSoundKind>).detail, false);
+    };
+    document.addEventListener("click", handleClick, true);
+    window.addEventListener("tcg-regulator-sound", handleGameSound);
+    return () => {
+      document.removeEventListener("click", handleClick, true);
+      window.removeEventListener("tcg-regulator-sound", handleGameSound);
+      void audioContextRef.current?.close();
+      audioContextRef.current = null;
+    };
+  }, []);
+
+  const updateSetting = <Key extends keyof InterfaceSettings>(
+    key: Key,
+    value: InterfaceSettings[Key],
+  ) => setSettings((current) => ({ ...current, [key]: value }));
+
+  return { settings, updateSetting };
+}
+
+function SettingsOptions({
+  settings,
+  updateSetting,
+}: {
+  settings: InterfaceSettings;
+  updateSetting: <Key extends keyof InterfaceSettings>(
+    key: Key,
+    value: InterfaceSettings[Key],
+  ) => void;
+}) {
+  return (
+    <div className="settings-options">
+      <button
+        aria-pressed={settings.soundEnabled}
+        data-sound="none"
+        onClick={() => updateSetting("soundEnabled", !settings.soundEnabled)}
+        type="button"
+      >
+        <span>효과음</span>
+        <strong>{settings.soundEnabled ? "ON" : "OFF"}</strong>
+      </button>
+      <button
+        aria-pressed={settings.impactEffectsEnabled}
+        onClick={() =>
+          updateSetting("impactEffectsEnabled", !settings.impactEffectsEnabled)
+        }
+        type="button"
+      >
+        <span>파급 화면 효과</span>
+        <strong>{settings.impactEffectsEnabled ? "ON" : "OFF"}</strong>
+      </button>
+      <button
+        data-sound="impact"
+        disabled={!settings.soundEnabled}
+        onClick={() => undefined}
+        type="button"
+      >
+        <span>효과음 테스트</span>
+        <strong>{settings.soundEnabled ? "PLAY" : "OFF"}</strong>
+      </button>
+      <button
+        aria-pressed={settings.motionPreference === "reduced"}
+        onClick={() =>
+          updateSetting(
+            "motionPreference",
+            settings.motionPreference === "reduced" ? "system" : "reduced",
+          )
+        }
+        type="button"
+      >
+        <span>모션 감소</span>
+        <strong>
+          {settings.motionPreference === "reduced" ? "강제 감소" : "시스템 설정"}
+        </strong>
+      </button>
+    </div>
+  );
+}
 
 const ROLE_LABELS: Record<PartRole, string> = {
   starter1: "초동 1",
@@ -518,42 +755,27 @@ function getAdvisorBrief(
         message: "환경 압력은 낮아질 수 있지만, 이 테마에 투자한 경쟁층의 이탈 위험도 함께 커집니다.",
       });
     }
-    if (restrictionPolicy.quality === "narrow") {
-      return withActiveTabHint({
-        tone: "critical",
-        kicker: "금제 범위 부족",
-        message: `실효 조정 ${restrictionPolicy.meaningfulCutCount}종입니다. 상위권과 Tier 2를 함께 보지 않은 단일·솜방망이 금제는 운영 불신을 키웁니다.`,
-        submessage:
-          restrictionPolicy.staleEligible > 0
-            ? `90일 이상 장기 제한 ${restrictionPolicy.staleEligible}종 중 완전 해제 ${restrictionPolicy.staleFullyReleased}종입니다.`
-            : "이번 위원회에는 90일 이상 장기 제한 해제 후보가 없습니다.",
-      });
-    }
-    if (restrictionPolicy.quality === "incomplete") {
+    if (restrictionPolicy.changeCount === 0) {
       return withActiveTabHint({
         tone: "caution",
-        kicker: "금제 커버리지 미완료",
-        message: `상위권 ${restrictionPolicy.upperMeaningfulCuts}/2 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts}/2입니다. 두 구간을 각각 여러 장 조정해야 선두만 바뀌는 금제를 피할 수 있습니다.`,
-        submessage: restrictionPolicy.staleReliefComplete
-          ? "장기 제한 검토 요건은 충족했습니다."
-          : `90일 이상 장기 제한 ${restrictionPolicy.staleEligible}종 중 적어도 1종을 완화해야 합니다.`,
+        kicker: "환경 유지안",
+        message: "아무 파츠도 바꾸지 않으면 현재 메타와 구매 흐름이 그대로 이어집니다. 이것도 하나의 운영 결정입니다.",
+        submessage: "점유율·승률·불쾌도와 실제 파츠 의존도를 비교한 뒤 제출하십시오.",
       });
     }
-    if (restrictionPolicy.quality === "balanced") {
+    if (restrictionPolicy.meaningfulCutCount === 0) {
       return withActiveTabHint({
-        tone: "calm",
-        kicker: "금제 커버리지 충족",
-        message: `상위권 ${restrictionPolicy.upperMeaningfulCuts}종 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts}종을 함께 조정했습니다.`,
-        submessage:
-          restrictionPolicy.staleEligible > 0
-            ? `장기 제한 완전 해제 ${restrictionPolicy.staleFullyReleased}/${restrictionPolicy.staleEligible}종을 포함했습니다.`
-            : "이번 위원회에는 90일 이상 장기 제한 해제 후보가 없습니다.",
+        tone: "caution",
+        kicker: "실효성 낮은 조정",
+        message: `${restrictionPolicy.changeCount}건을 바꿨지만 현재 채용 매수 기준으로 환경에 미치는 영향은 작게 예측됩니다.`,
+        submessage: "상징적 조치가 필요한지, 실제 메타 변화가 필요한지는 책임자님의 판단입니다.",
       });
     }
     return withActiveTabHint({
-      tone: "caution",
-      kicker: "금제위원회 진행 중",
-      message: "파츠별 채용률과 현재 피로·신뢰 지표가 고정되었습니다. 최종 허용 매수는 책임자님이 정합니다.",
+      tone: restrictionPolicy.totalImpact >= 45 ? "caution" : "calm",
+      kicker: "금제 파급 예측",
+      message: `실효 조정 ${restrictionPolicy.meaningfulCutCount}종 · 영향 테마 ${restrictionPolicy.affectedThemeCount}개 · 추정 충격 ${Math.round(restrictionPolicy.totalImpact)}입니다.`,
+      submessage: `상위권 ${restrictionPolicy.upperMeaningfulCuts}종 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts}종 · 하위권 ${restrictionPolicy.lowerMeaningfulCuts}종에 영향을 줍니다. 로터스는 결과를 예측할 뿐 정답을 정하지 않습니다.`,
     });
   }
   const releasePublishedToday = game.releaseHistory.some(
@@ -707,6 +929,7 @@ export default function Home() {
   const [boot, setBoot] = useState<BootState>({ status: "loading" });
   const [confirmNewGame, setConfirmNewGame] = useState(false);
   const [titleMessage, setTitleMessage] = useState<string | null>(null);
+  const { settings, updateSetting } = useInterfaceSettings();
 
   useEffect(() => {
     let cancelled = false;
@@ -747,7 +970,7 @@ export default function Home() {
     }
 
     setConfirmNewGame(false);
-    const next = createCampaignStart(1000);
+    const next = createCampaignStart(PROLOGUE_SEED);
     try {
       if (boot.backend.kind === "unavailable") {
         throw new Error(boot.backend.message);
@@ -787,6 +1010,7 @@ export default function Home() {
   if (boot.status === "prologue") {
     return (
       <GameSession
+        interfaceSettings={settings}
         guided
         initialGame={boot.initialGame}
         initialPersistence={boot.backend}
@@ -808,6 +1032,7 @@ export default function Home() {
           });
           setTitleMessage(null);
         }}
+        updateInterfaceSetting={updateSetting}
       />
     );
   }
@@ -818,10 +1043,12 @@ export default function Home() {
     return (
       <PlayScreen
         busy={!ready}
+        interfaceSettings={settings}
         message={titleMessage}
         onContinue={continueGame}
         onNewGame={() => void beginNewGame()}
         savedGame={savedGame}
+        updateInterfaceSetting={updateSetting}
       >
         {confirmNewGame ? (
           <ConfirmNewGameDialog
@@ -835,6 +1062,7 @@ export default function Home() {
 
   return (
     <GameSession
+      interfaceSettings={settings}
       initialGame={boot.initialGame}
       initialPersistence={boot.backend}
       initialWarning={boot.warning}
@@ -844,6 +1072,7 @@ export default function Home() {
           backend.kind === "unavailable" ? backend.message : null,
         );
       }}
+      updateInterfaceSetting={updateSetting}
     />
   );
 }
@@ -911,6 +1140,13 @@ type GuidedRestrictionTarget =
 
 type GuidedDossierTarget = { themeId: ThemeId; partId: string };
 
+function getGuidedRestrictionTarget(): GuidedRestrictionTarget | null {
+  // The first restriction review is intentionally unguided. Keep the nullable
+  // target shape for the shared restriction workspace without letting a
+  // constant `null` narrow its TypeScript branches to `never`.
+  return null;
+}
+
 function getGuidedDossierTarget(game: GameState): GuidedDossierTarget {
   const themeId: ThemeId = "cycle";
   const partId = game.themes[themeId]?.releasedPartIds[0];
@@ -919,12 +1155,12 @@ function getGuidedDossierTarget(game: GameState): GuidedDossierTarget {
 }
 
 function getGuidedRestrictionThemeId(game: GameState): ThemeId {
-  const [partId] = Object.keys(getPrologueRestrictionChanges(game));
-  return (
-    game.activeThemeIds.find((themeId) =>
-      THEME_BY_ID[themeId].parts.some((part) => part.id === partId),
-    ) ?? "cycle"
-  );
+  if (game.activeThemeIds.includes(game.currentTopThemeId)) {
+    return game.currentTopThemeId;
+  }
+  return [...game.activeThemeIds].sort(
+    (left, right) => game.themes[right].share - game.themes[left].share,
+  )[0] ?? "cycle";
 }
 
 type GuidedBrief = {
@@ -933,6 +1169,7 @@ type GuidedBrief = {
   message: string;
   placement?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
   inspection?: boolean;
+  freeInteraction?: boolean;
   confirmLabel?: string;
   actionLabel?: string;
 };
@@ -988,7 +1225,6 @@ function getGuidedBrief(
   step: GuidedStep,
   game: GameState,
   releaseTarget: GuidedReleaseTarget | null,
-  restrictionTarget: GuidedRestrictionTarget | null,
   restrictionPolicy: RestrictionPolicyProfile,
 ): GuidedBrief {
   if (step === "day1-community") {
@@ -1176,24 +1412,15 @@ function getGuidedBrief(
       actionLabel: "DAY 45 금제위원회 열기",
     };
   }
-  if (step === "day45-restriction" && restrictionTarget) {
-    if (restrictionTarget.kind === "submit") {
-      return {
-        kicker: "LOTUS · RESTRICTION BOARD",
-        title: "금제안을 제출해주세요",
-        message: `상위권 ${restrictionPolicy.upperMeaningfulCuts}/2 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts}/2 커버리지를 확인했습니다. 첫 위원회라 90일 장기 제한 해제 후보는 없습니다. 밝게 표시된 제출 버튼으로 확정합니다.`,
-        placement: "top-left",
-      };
-    }
-    const part = THEMES.flatMap((theme) => theme.parts).find(
-      (candidate) => candidate.id === restrictionTarget.partId,
-    );
-    const partName = part?.name ?? "핵심 파츠";
+  if (step === "day45-restriction") {
     return {
-      kicker: "LOTUS · RESTRICTION BOARD",
-      title: `${withKoreanObjectParticle(partName)} ${restrictionTarget.limit}장으로 조정해주세요`,
-      message: `한 장만 찍는 대신 상위권과 Tier 2에서 각각 2종을 얕게 조정합니다. 현재 상위권 ${restrictionPolicy.upperMeaningfulCuts}/2 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts}/2입니다.`,
-      placement: "top-left",
+      kicker: "LOTUS · FIRST MANDATE",
+      title: "첫 금제는 책임자님의 결정입니다",
+      message: restrictionPolicy.changeCount > 0
+        ? `현재 실효 조정 ${restrictionPolicy.meaningfulCutCount}종 · 영향 테마 ${restrictionPolicy.affectedThemeCount}개 · 추정 충격 ${Math.round(restrictionPolicy.totalImpact)}입니다. 점유율·승률·불쾌도와 파츠 의존도를 비교해 자유롭게 수정하거나 그대로 제출하세요.`
+        : "정해진 정답은 없습니다. 점유율·승률·불쾌도와 파츠 의존도를 비교해 자유롭게 제한을 정하거나, 현 환경 유지안을 제출하세요.",
+      placement: "bottom-left",
+      freeInteraction: true,
     };
   }
   if (step === "day46-community") {
@@ -1319,6 +1546,10 @@ function GuidedTutorialOverlay({
     };
     const resizeObserver = new ResizeObserver(measure);
     const connectTarget = () => {
+      if (brief.freeInteraction) {
+        setRect(null);
+        return;
+      }
       target = document.querySelector<HTMLElement>(
         '[data-tutorial-target="active"]',
       );
@@ -1350,6 +1581,7 @@ function GuidedTutorialOverlay({
         setSkipConfirmOpen(false);
         return;
       }
+      if (brief.freeInteraction && !skipDialog) return;
       if (event.key !== "Tab") return;
       const dialogButtons = skipDialog
         ? Array.from(
@@ -1392,6 +1624,7 @@ function GuidedTutorialOverlay({
         event.stopImmediatePropagation();
         return;
       }
+      if (brief.freeInteraction) return;
       const activeTarget = document.querySelector<HTMLElement>(
         '[data-tutorial-target="active"]',
       );
@@ -1421,15 +1654,17 @@ function GuidedTutorialOverlay({
       resizeObserver.disconnect();
       target?.removeAttribute("aria-describedby");
     };
-  }, [targetKey]);
+  }, [brief.freeInteraction, targetKey]);
 
   return (
     <div
       className={`guided-tour-layer${brief.inspection ? " is-inspection" : ""}${
+        brief.freeInteraction ? " is-free-interaction" : ""
+      }${
         skipConfirmOpen ? " is-skip-confirming" : ""
       }`}
     >
-      {rect ? (
+      {brief.freeInteraction ? null : rect ? (
         <>
           <div
             aria-hidden="true"
@@ -1507,15 +1742,17 @@ function GuidedTutorialOverlay({
             >
               PLAY 화면
             </button>
-            <button
-              className="guided-coach-skip"
-              disabled={busy}
-              onClick={() => setSkipConfirmOpen(true)}
-              ref={skipTriggerRef}
-              type="button"
-            >
-              {busy ? "저장 중" : "건너뛰기"}
-            </button>
+            {day < FIRST_BAN_DAY ? (
+              <button
+                className="guided-coach-skip"
+                disabled={busy}
+                onClick={() => setSkipConfirmOpen(true)}
+                ref={skipTriggerRef}
+                type="button"
+              >
+                {busy ? "저장 중" : "건너뛰기"}
+              </button>
+            ) : null}
           </div>
         </div>
       </aside>
@@ -1534,11 +1771,11 @@ function GuidedTutorialOverlay({
               <span>LOTUS · HANDOVER OVERRIDE</span>
               <strong id="guided-skip-title">프롤로그를 건너뛸까요?</strong>
               <p id="guided-skip-description">
-                안내 과정을 종료하고, 동일한 결정이 반영된 DAY 46부터 직접 운영을 시작합니다.
+                고정된 학습 구간만 생략하고 DAY 45 첫 금제위원회에서 직접 결정을 시작합니다.
               </p>
             </div>
             <div className="guided-skip-dialog-note">
-              DAY 1~45의 인수인계 과정만 생략되며 캠페인 결과는 동일합니다.
+              첫 금제안은 자동 적용되지 않습니다. 제출 뒤 새 임기 시드가 배정됩니다.
             </div>
             <div className="guided-skip-dialog-actions">
               <button
@@ -1553,10 +1790,13 @@ function GuidedTutorialOverlay({
               <button
                 className="guided-skip-dialog-confirm"
                 disabled={busy}
-                onClick={onSkip}
+                onClick={() => {
+                  setSkipConfirmOpen(false);
+                  onSkip();
+                }}
                 type="button"
               >
-                {busy ? "DAY 46 준비 중" : "DAY 46부터 시작"}
+                {busy ? "DAY 45 준비 중" : "첫 금제부터 시작"}
               </button>
             </div>
           </section>
@@ -1566,14 +1806,46 @@ function GuidedTutorialOverlay({
   );
 }
 
+function GuidedMandateBar({
+  brief,
+  busy,
+  day,
+  onPause,
+}: {
+  brief: GuidedBrief;
+  busy: boolean;
+  day: number;
+  onPause: () => void;
+}) {
+  return (
+    <aside aria-live="polite" className="guided-mandate-bar">
+      <LotusSymbol tone="info" />
+      <div className="guided-mandate-copy">
+        <span>{brief.kicker}</span>
+        <strong>{brief.title}</strong>
+        <p>{brief.message}</p>
+      </div>
+      <div className="guided-mandate-actions">
+        <span>DAY {day} / 46 · 자유 검토</span>
+        <button disabled={busy} onClick={onPause} type="button">
+          PLAY 화면
+        </button>
+      </div>
+    </aside>
+  );
+}
+
 function GameSession({
+  interfaceSettings,
   initialGame,
   initialPersistence,
   initialWarning,
   guided = false,
   onExit,
   onTutorialComplete,
+  updateInterfaceSetting,
 }: {
+  interfaceSettings: InterfaceSettings;
   initialGame: GameState;
   initialPersistence: PersistenceBackend;
   initialWarning?: string;
@@ -1582,6 +1854,10 @@ function GameSession({
   onTutorialComplete?: (
     game: GameState,
     backend: PersistenceBackend,
+  ) => void;
+  updateInterfaceSetting: <Key extends keyof InterfaceSettings>(
+    key: Key,
+    value: InterfaceSettings[Key],
   ) => void;
 }) {
   const [game, setGame] = useState<GameState>(initialGame);
@@ -1617,6 +1893,10 @@ function GameSession({
   >({});
   const [reactionFlashDay, setReactionFlashDay] = useState<number | null>(null);
   const [impactNotice, setImpactNotice] = useState<ImpactNotice | null>(null);
+  const [impactFx, setImpactFx] = useState<{
+    key: number;
+    tone: "positive" | "negative" | "caution";
+  } | null>(null);
   const [advisorOpen, setAdvisorOpen] = useState(true);
   const [advisorPulseKey, setAdvisorPulseKey] = useState(1);
   const [packOddsConfirmOpen, setPackOddsConfirmOpen] = useState(false);
@@ -1641,6 +1921,24 @@ function GameSession({
   const seenAdvisorTabsRef = useRef(new Set<TabId>([initialTab]));
   const guidedFinishingRef = useRef(false);
   const packOddsCommittedRef = useRef(false);
+  const lastImpactFxDayRef = useRef<number | null>(null);
+
+  const triggerImpactObservation = useCallback((
+    day: number,
+    tone: "positive" | "negative" | "caution",
+  ) => {
+    if (lastImpactFxDayRef.current === day) return;
+    lastImpactFxDayRef.current = day;
+    emitGameSound("impact");
+    if (
+      !interfaceSettings.impactEffectsEnabled ||
+      interfaceSettings.motionPreference === "reduced"
+    ) return;
+    setImpactFx({ key: Date.now(), tone });
+  }, [
+    interfaceSettings.impactEffectsEnabled,
+    interfaceSettings.motionPreference,
+  ]);
 
   useEffect(() => {
     if (
@@ -1677,6 +1975,12 @@ function GameSession({
     const timer = window.setTimeout(() => setImpactNotice(null), 4200);
     return () => window.clearTimeout(timer);
   }, [impactNotice]);
+
+  useEffect(() => {
+    if (!impactFx) return;
+    const timer = window.setTimeout(() => setImpactFx(null), 820);
+    return () => window.clearTimeout(timer);
+  }, [impactFx]);
 
   useEffect(() => {
     if (!supportTarget) return;
@@ -1921,28 +2225,13 @@ function GameSession({
         : { kind: "submit" };
     }
   }
-  const guidedRestrictionPlan = guided && game.day === 45 && game.phase === "ban-edit"
-    ? getPrologueRestrictionChanges(game)
-    : {};
-  let guidedRestrictionTarget: GuidedRestrictionTarget | null = null;
-  if (guided && guidedStep === "day45-restriction") {
-    const unadjusted = Object.entries(guidedRestrictionPlan).find(
-      ([partId, limit]) => banDraft[partId] !== limit,
-    );
-    guidedRestrictionTarget = unadjusted
-      ? {
-          kind: "limit",
-          partId: unadjusted[0],
-          limit: unadjusted[1],
-        }
-      : { kind: "submit" };
-  }
+  // DAY 45 is the first real mandate: no hidden answer key or locked control.
+  const guidedRestrictionTarget = getGuidedRestrictionTarget();
   const guidedBrief = guided
     ? getGuidedBrief(
         guidedStep,
         game,
         guidedReleaseTarget,
-        guidedRestrictionTarget,
         restrictionPolicy,
       )
     : null;
@@ -1971,6 +2260,14 @@ function GameSession({
     if (notice) {
       setImpactNotice(notice);
       setAdvisorPulseKey((current) => current + 1);
+      triggerImpactObservation(
+        next.day,
+        notice.tone === "negative"
+          ? "negative"
+          : notice.tone === "positive"
+            ? "positive"
+            : "caution",
+      );
     }
   }
 
@@ -1995,6 +2292,12 @@ function GameSession({
     const eventArrived =
       !game.operations.pendingEvent && next.operations.pendingEvent;
     showImpact(next);
+    if (reactionFlashDay === next.day) {
+      triggerImpactObservation(next.day, "caution");
+    }
+    if (eventResultToast) {
+      triggerImpactObservation(next.day, "caution");
+    }
     if (eventArrived) {
       const definition = BUSINESS_EVENT_BY_TYPE[eventArrived.type];
       setToast(
@@ -2226,7 +2529,15 @@ function GameSession({
       string,
       RestrictionLimit
     >;
-    const next = dispatch({ type: "SUBMIT_BAN", changes });
+    const isFirstMandate =
+      game.day === FIRST_BAN_DAY && !game.handoverComplete;
+    const next = dispatch({
+      type: "SUBMIT_BAN",
+      changes,
+      ...(isFirstMandate
+        ? { campaignSeed: mintCampaignSeed(game.seed) }
+        : {}),
+    });
     setImpactNotice(null);
     setReactionFlashDay(next.day + 1);
     setToast(
@@ -2239,7 +2550,7 @@ function GameSession({
   }
 
   function handleGuidedNavigation(tab: TabId) {
-    if (!guided) {
+    if (!guided || guidedBrief?.freeInteraction) {
       activateTab(tab);
       return;
     }
@@ -2327,10 +2638,32 @@ function GameSession({
     }
   }
 
-  function skipGuidedTutorial() {
-    if (!guided || guidedBusy) return;
-    const finalGame = createInitialGame(initialGame.seed);
-    void finishGuidedTutorial(finalGame);
+  async function skipGuidedTutorial() {
+    if (!guided || guidedBusy || game.day >= FIRST_BAN_DAY) return;
+    const firstBanGame = createFirstBanGame(initialGame.seed);
+    const targetTheme = getGuidedRestrictionThemeId(firstBanGame);
+    setGuidedBusy(true);
+    lastQueuedGameRef.current = firstBanGame;
+    setGame(firstBanGame);
+    setBanDraft(makeRestrictionDraft(firstBanGame));
+    setGuidedStep("day45-restriction");
+    setSelectedThemeId(targetTheme);
+    setMobileDetail(true);
+    activateTab("restrictions", true);
+    setToast("고정 학습 구간을 건너뛰었습니다. 첫 금제안은 직접 결정해주세요.");
+    try {
+      await saveQueueRef.current;
+      if (persistence.kind === "unavailable") {
+        throw new Error(persistence.message);
+      }
+      await savePersistedGame(persistence, firstBanGame);
+    } catch {
+      setToast(
+        "DAY 45 상태를 저장하지 못했습니다. 현재 결정은 계속할 수 있지만 저장소 상태를 확인해주세요.",
+      );
+    } finally {
+      setGuidedBusy(false);
+    }
   }
 
   async function pauseGuidedTutorial() {
@@ -2355,20 +2688,14 @@ function GameSession({
 
   function openGuidedRestrictionBoard(next: GameState) {
     if (next.day !== 45 || next.phase !== "ban-edit") return false;
-    const changes = getPrologueRestrictionChanges(next);
-    const firstPartId = Object.keys(changes)[0];
-    const targetTheme = next.activeThemeIds.find((themeId) =>
-      THEME_BY_ID[themeId].parts.some((part) => part.id === firstPartId),
-    );
+    const targetTheme = getGuidedRestrictionThemeId(next);
     setBanDraft((current) =>
       Object.keys(current).length > 0 ? current : makeRestrictionDraft(next),
     );
     setGuidedStep("day45-restriction");
     activateTab("restrictions", true);
-    if (targetTheme) {
-      setSelectedThemeId(targetTheme);
-      setMobileDetail(true);
-    }
+    setSelectedThemeId(targetTheme);
+    setMobileDetail(true);
     return true;
   }
 
@@ -2454,7 +2781,7 @@ function GameSession({
   }
 
   function submitGuidedRestriction() {
-    if (!guided || guidedRestrictionTarget?.kind !== "submit") return;
+    if (!guided || guidedStep !== "day45-restriction") return;
     const next = submitRestriction();
     if (next) setGuidedStep("day45-advance");
   }
@@ -2477,9 +2804,20 @@ function GameSession({
 
   return (
     <div
-      className="app-shell"
+      className={`app-shell${
+        interfaceSettings.motionPreference === "reduced"
+          ? " force-reduced-motion"
+          : ""
+      }${impactFx ? ` is-impact-observing impact-${impactFx.tone}` : ""}`}
       data-guided-step={guided ? guidedStep : undefined}
     >
+      {impactFx ? (
+        <div
+          aria-hidden="true"
+          className="impact-screen-flash"
+          key={impactFx.key}
+        />
+      ) : null}
       <header className="topbar">
         <div className="brand-lockup">
           <BrandMark className="brand-mark" />
@@ -2513,7 +2851,13 @@ function GameSession({
               {dailyUserDelta === 0
                 ? "오늘 —"
                 : `오늘 ${dailyUserDelta > 0 ? "+" : ""}${formatUsers(dailyUserDelta)}`}
-            </small>
+              </small>
+          </div>
+          <div className="header-metric header-cash-metric">
+            <RevenueIcon />
+            <span>보유자금</span>
+            <strong>₩{formatRevenue(game.finance.cash)}</strong>
+            <small>약 {getOperatingRunwayMonths(game.finance.cash, total).toFixed(1)}개월</small>
           </div>
           <div className="header-metric">
             <ReleaseIcon />
@@ -2547,8 +2891,32 @@ function GameSession({
                   : game.phase === "ban-edit"
                     ? "진행 중"
                     : `D-${banCountdown}`}
-            </strong>
+              </strong>
           </div>
+        </div>
+        <div className="header-controls">
+          <button
+            aria-label={interfaceSettings.soundEnabled ? "효과음 끄기" : "효과음 켜기"}
+            aria-pressed={!interfaceSettings.soundEnabled}
+            className="header-mute"
+            data-sound="none"
+            onClick={() =>
+              updateInterfaceSetting(
+                "soundEnabled",
+                !interfaceSettings.soundEnabled,
+              )
+            }
+            type="button"
+          >
+            {interfaceSettings.soundEnabled ? "SFX" : "MUTE"}
+          </button>
+          <details className="header-settings">
+            <summary aria-label="화면 및 효과음 설정">설정</summary>
+            <SettingsOptions
+              settings={interfaceSettings}
+              updateSetting={updateInterfaceSetting}
+            />
+          </details>
         </div>
       </header>
 
@@ -2565,7 +2933,9 @@ function GameSession({
               disabled={
                 gameOver ||
                 campaignComplete ||
-                (guided && !isGuidedNavigationTarget(item.id))
+                (guided &&
+                  !guidedBrief?.freeInteraction &&
+                  !isGuidedNavigationTarget(item.id))
               }
               key={item.id}
               onClick={() => handleGuidedNavigation(item.id)}
@@ -2589,8 +2959,14 @@ function GameSession({
         </div>
         <button
           className="reset-button"
-          disabled={guided}
-          onClick={() => onExit(game, persistence)}
+          disabled={guided && !guidedBrief?.freeInteraction}
+          onClick={() => {
+            if (guided) {
+              void pauseGuidedTutorial();
+              return;
+            }
+            onExit(game, persistence);
+          }}
           type="button"
         >
           <span aria-hidden="true">←</span>
@@ -2616,26 +2992,35 @@ function GameSession({
           />
         ) : (
           <>
-        <aside
-          aria-label="로터스 상황 브리핑"
-          className={`advisor-brief ${advisorBrief.tone} ${advisorOpen ? "open" : "collapsed"}`}
-          key={advisorPulseKey}
-        >
-          <LotusSymbol tone={advisorBrief.tone} />
-          <div aria-live="polite" className="advisor-brief-copy" id="advisor-brief-message">
-            <span>LOTUS · {advisorBrief.kicker}</span>
-            <p>{advisorBrief.message}</p>
-            {advisorBrief.submessage ? <small>{advisorBrief.submessage}</small> : null}
-          </div>
-          <button
-            aria-controls="advisor-brief-message"
-            aria-expanded={advisorOpen}
-            onClick={() => setAdvisorOpen((current) => !current)}
-            type="button"
+        {guided && guidedBrief?.freeInteraction ? (
+          <GuidedMandateBar
+            brief={guidedBrief}
+            busy={guidedBusy}
+            day={game.day}
+            onPause={() => void pauseGuidedTutorial()}
+          />
+        ) : (
+          <aside
+            aria-label="로터스 상황 브리핑"
+            className={`advisor-brief ${advisorBrief.tone} ${advisorOpen ? "open" : "collapsed"}`}
+            key={advisorPulseKey}
           >
-            {advisorOpen ? "접기" : "LOTUS"}
-          </button>
-        </aside>
+            <LotusSymbol tone={advisorBrief.tone} />
+            <div aria-live="polite" className="advisor-brief-copy" id="advisor-brief-message">
+              <span>LOTUS · {advisorBrief.kicker}</span>
+              <p>{advisorBrief.message}</p>
+              {advisorBrief.submessage ? <small>{advisorBrief.submessage}</small> : null}
+            </div>
+            <button
+              aria-controls="advisor-brief-message"
+              aria-expanded={advisorOpen}
+              onClick={() => setAdvisorOpen((current) => !current)}
+              type="button"
+            >
+              {advisorOpen ? "접기" : "LOTUS"}
+            </button>
+          </aside>
+        )}
 
         {activeTab === "themes" || activeTab === "restrictions" ? (
           <MetaWorkspace
@@ -2670,7 +3055,7 @@ function GameSession({
             onGuidedThemeConfirm={() => setGuidedStep("day15-part")}
             onDraftChange={(partId, limit) => {
               if (
-                guided &&
+                guidedRestrictionTarget &&
                 (guidedRestrictionTarget?.kind !== "limit" ||
                   guidedRestrictionTarget.partId !== partId ||
                   guidedRestrictionTarget.limit !== limit)
@@ -2679,24 +3064,6 @@ function GameSession({
               }
               const nextDraft = { ...banDraft, [partId]: limit };
               setBanDraft(nextDraft);
-              if (guided && guidedStep === "day45-restriction") {
-                const nextTargetPartId = Object.entries(
-                  guidedRestrictionPlan,
-                ).find(
-                  ([candidatePartId, expectedLimit]) =>
-                    nextDraft[candidatePartId] !== expectedLimit,
-                )?.[0];
-                const nextTargetThemeId = nextTargetPartId
-                  ? game.activeThemeIds.find((themeId) =>
-                      THEME_BY_ID[themeId].parts.some(
-                        (part) => part.id === nextTargetPartId,
-                      ),
-                    )
-                  : undefined;
-                if (nextTargetThemeId && nextTargetThemeId !== selectedTheme.id) {
-                  selectTheme(nextTargetThemeId, nextTargetPartId);
-                }
-              }
             }}
             onOpenSupport={openSupport}
             onResetDraft={() => setBanDraft(makeRestrictionDraft(game))}
@@ -2766,7 +3133,12 @@ function GameSession({
 
         {activeTab === "community" ? (
           <CommunityView
-            flashDay={reactionFlashDay}
+            flashDay={
+              interfaceSettings.impactEffectsEnabled &&
+              interfaceSettings.motionPreference !== "reduced"
+                ? reactionFlashDay
+                : null
+            }
             game={game}
             guidedInspection={
               guided &&
@@ -2936,7 +3308,7 @@ function GameSession({
         </aside>
       ) : null}
 
-      {guided && guidedBrief ? (
+      {guided && guidedBrief && !guidedBrief.freeInteraction ? (
         <GuidedTutorialOverlay
           brief={guidedBrief}
           busy={guidedBusy}
@@ -3033,6 +3405,7 @@ function BusinessEventDialog({
                 </div>
                 <button
                   className="business-event-choose"
+                  data-sound="event"
                   disabled={!affordable}
                   onClick={() => onChoose(choice.id)}
                   ref={index === 0 ? choiceButtonRef : undefined}
@@ -3232,21 +3605,35 @@ function CampaignEndPanel({
 
 function PlayScreen({
   busy,
+  interfaceSettings,
   savedGame,
   message,
   onNewGame,
   onContinue,
   children,
+  updateInterfaceSetting,
 }: {
   busy: boolean;
+  interfaceSettings: InterfaceSettings;
   savedGame: GameState | null;
   message: string | null;
   onNewGame: () => void;
   onContinue: () => void;
   children?: React.ReactNode;
+  updateInterfaceSetting: <Key extends keyof InterfaceSettings>(
+    key: Key,
+    value: InterfaceSettings[Key],
+  ) => void;
 }) {
   return (
-    <main aria-busy={busy} className="play-screen">
+    <main
+      aria-busy={busy}
+      className={`play-screen${
+        interfaceSettings.motionPreference === "reduced"
+          ? " force-reduced-motion"
+          : ""
+      }`}
+    >
       <section className="play-card" aria-labelledby="play-title">
         <div className="play-brand">
           <BrandMark className="play-brand-mark" />
@@ -3255,6 +3642,13 @@ function PlayScreen({
         <div className="play-heading">
           <span>{CAMPAIGN_END_DAY} DAY META MANDATE</span>
           <h1 id="play-title">PLAY</h1>
+        </div>
+        <div className="play-promise">
+          <strong>카드를 뽑는 대신, 금제표를 만드세요.</strong>
+          <p>
+            TCG 운영자가 되어 발매 파워와 금제 수위를 정하고, 메타·여론·매출의
+            연쇄 반응을 책임지세요.
+          </p>
         </div>
         <div className="play-actions" aria-label="게임 시작">
           <button disabled={busy} onClick={onNewGame} type="button">
@@ -3285,6 +3679,16 @@ function PlayScreen({
           </button>
         </div>
         {message ? <p className="play-message" role="status">{message}</p> : null}
+        <details className="play-settings">
+          <summary>
+            <span>SETTINGS</span>
+            <small>효과음 · 파급 화면 · 모션</small>
+          </summary>
+          <SettingsOptions
+            settings={interfaceSettings}
+            updateSetting={updateInterfaceSetting}
+          />
+        </details>
       </section>
       {children}
     </main>
@@ -3987,18 +4391,16 @@ function MetaWorkspace({
             <div>
               <strong>
                 {game.phase === "ban-edit"
-                  ? restrictionPolicy.quality === "balanced"
-                    ? `적정 커버리지 · ${restrictionChanges.length}건 변경`
-                    : restrictionChanges.length > 0
-                      ? `커버리지 미완료 · ${restrictionChanges.length}건 변경 예정`
-                      : "변경 없는 금제안"
+                  ? restrictionChanges.length > 0
+                    ? `실효 조정 ${restrictionPolicy.meaningfulCutCount}종 · ${restrictionPolicy.affectedThemeCount}개 테마 영향`
+                    : "현 환경 유지안"
                   : game.day >= LAST_DECISION_DAY
                     ? `DAY ${CAMPAIGN_END_DAY} 최종 결산 대기`
                   : `다음 금제위원회까지 D-${Math.max(0, nextBanDay - game.day)}`}
               </strong>
               <p>
                 {game.phase === "ban-edit"
-                  ? `상위권 ${restrictionPolicy.upperMeaningfulCuts >= 2 ? "✓" : "○"} ${restrictionPolicy.upperMeaningfulCuts}/2 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts >= 2 ? "✓" : "○"} ${restrictionPolicy.tier2MeaningfulCuts}/2 · ${restrictionPolicy.staleEligible === 0 ? "장기 제한 후보 없음 ✓" : `90일 제한 완전 해제 ${restrictionPolicy.staleReliefComplete ? "✓" : "○"} ${restrictionPolicy.staleFullyReleased}/${restrictionPolicy.staleEligible}`}`
+                  ? `상위권 ${restrictionPolicy.upperMeaningfulCuts}종 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts}종 · 하위권 ${restrictionPolicy.lowerMeaningfulCuts}종 · 추정 충격 ${Math.round(restrictionPolicy.totalImpact)}`
                   : game.day >= LAST_DECISION_DAY
                     ? "최종 금제 이후에는 새 결정을 받지 않고 환경과 시장의 반응만 관측합니다."
                   : "금제는 제출되는 날에만 적용됩니다. 지금 보이는 현행 수치는 공식 환경입니다."}
@@ -4016,6 +4418,7 @@ function MetaWorkspace({
                 </button>
                 <button
                   className="primary-action"
+                  data-sound="restriction"
                   data-tutorial-target={
                     guidedRestrictionTarget?.kind === "submit"
                       ? "active"
@@ -4461,6 +4864,14 @@ function ReleasesView({
                   onClick={() => onToggle(option.id)}
                   type="button"
                 >
+                  <span aria-hidden="true" className="release-option-watermark">
+                    <ThemeEmblem
+                      decorative
+                      detail="full"
+                      size="100%"
+                      themeId={content.id}
+                    />
+                  </span>
                   <span className="release-kind">
                     {option.kind === "new-theme" ? "신테마" : "기존 지원"}
                     {option.requested ? <em>직접 제안</em> : null}
@@ -4527,6 +4938,7 @@ function ReleasesView({
           </div>
           <button
             className="primary-action"
+            data-sound="release"
             data-tutorial-target={
               guidedTarget?.kind === "submit" ? "active" : undefined
             }
@@ -4830,9 +5242,13 @@ function CommunityView({
 type FinanceChartDatum = {
   day: number;
   revenue: number;
-  totalUsers: number;
-  userDelta: number;
-  heat: number;
+  cash: number | null;
+  environmentHealth: number | null;
+  purchaseTrust: number | null;
+  communitySentiment: number | null;
+  communityPositive: number | null;
+  communityNeutral: number | null;
+  communityNegative: number | null;
   release: boolean;
   ban: boolean;
   releaseAge: number | null;
@@ -4844,115 +5260,255 @@ function getFinanceChartData(game: GameState): FinanceChartDatum[] {
   // previous day's value onto an unresolved decision day.
   const rows = game.history
     .filter((entry) => entry.day <= game.day)
-    .slice(-30)
-    .map((entry) => ({
+    .slice(-90);
+  const latestEntry = rows.at(-1);
+  const latestRecordedDay = latestEntry?.day;
+  const liveSentiment =
+    latestRecordedDay === game.day &&
+      typeof latestEntry?.communitySentiment !== "number"
+    ? getDailyCommunitySentiment(game, game.day)
+    : null;
+
+  return rows.map((entry) => {
+    const isLatest = entry.day === latestRecordedDay;
+    const isCurrentDay = entry.day === game.day;
+    const communityPositive = typeof entry.communityPositive === "number"
+      ? entry.communityPositive
+      : isLatest && liveSentiment
+        ? liveSentiment.positive
+        : null;
+    const communityNegative = typeof entry.communityNegative === "number"
+      ? entry.communityNegative
+      : isLatest && liveSentiment
+        ? liveSentiment.negative
+        : null;
+    return {
       day: entry.day,
       revenue: entry.revenue,
-      totalUsers: entry.totalUsers,
-      heat: getCommunityHeat(game, entry.day),
+      cash:
+        typeof entry.cash === "number"
+          ? entry.cash
+          : isCurrentDay
+            ? game.finance.cash
+            : null,
+      environmentHealth:
+        typeof entry.environmentHealth === "number"
+          ? entry.environmentHealth
+          : isCurrentDay
+            ? getBusinessEnvironmentHealth(game)
+            : null,
+      purchaseTrust:
+        typeof entry.purchaseTrust === "number"
+          ? entry.purchaseTrust
+          : isCurrentDay
+            ? game.purchaseTrust
+            : null,
+      communitySentiment: typeof entry.communitySentiment === "number"
+        ? entry.communitySentiment
+        : isLatest && liveSentiment
+          ? liveSentiment.index
+          : null,
+      communityPositive,
+      communityNeutral:
+        communityPositive !== null && communityNegative !== null
+          ? Math.max(0, 20 - communityPositive - communityNegative)
+          : null,
+      communityNegative,
       release: game.releaseHistory.some((batch) => batch.day === entry.day),
       ban: isBanDay(entry.day),
       releaseAge: getReleaseAge(game, entry.day),
-    }));
+    };
+  });
+}
 
-  return rows.map((row, index) => ({
-    ...row,
-    userDelta: index === 0 ? 0 : row.totalUsers - rows[index - 1].totalUsers,
-  }));
+function communitySentimentLabel(index: number): string {
+  if (index >= 80) return "매우 긍정";
+  if (index >= 60) return "긍정";
+  if (index > 40) return "중립";
+  if (index > 20) return "부정";
+  return "매우 부정";
 }
 
 function FinanceMarketChart({ game }: { game: GameState }) {
   const [hoveredDay, setHoveredDay] = useState<number | null>(null);
   const data = useMemo(() => getFinanceChartData(game), [game]);
-  // The wide viewBox matches the real desktop panel. The previous 1000x360
-  // canvas was height-limited at 1366x768, shrinking the whole chart and its
-  // labels into the middle of the card.
   const width = 1200;
-  const height = 300;
-  const left = 88;
-  const right = 30;
-  const top = 34;
-  const revenueBottom = 190;
-  const volumeTop = 218;
-  const volumeBottom = 267;
+  const height = 310;
+  const left = 94;
+  const right = 68;
+  const top = 38;
+  const plotBottom = 266;
   const plotWidth = width - left - right;
-  const revenues = data.map((point) => point.revenue);
-  const rawMin = revenues.length > 0 ? Math.min(...revenues) : 0;
-  const rawMax = revenues.length > 0 ? Math.max(...revenues) : 0.01;
-  const revenueRange = Math.max(0.0001, rawMax - rawMin, rawMax * 0.08);
-  const minRevenue = Math.max(0, rawMin - revenueRange * 0.12);
-  const maxRevenue = rawMax + revenueRange * 0.14;
-  const maxUserDelta = Math.max(1, ...data.map((point) => Math.abs(point.userDelta)));
+  const maxAmount = Math.max(
+    0.1,
+    ...data.flatMap((point) => [point.revenue, point.cash ?? 0]),
+  ) * 1.08;
   const xForIndex = (index: number) =>
-    data.length <= 1 ? left + plotWidth / 2 : left + (index / (data.length - 1)) * plotWidth;
-  const yForRevenue = (value: number) =>
-    top + ((maxRevenue - value) / Math.max(0.001, maxRevenue - minRevenue)) * (revenueBottom - top);
-  const points = data.map((point, index) => ({
-    ...point,
-    x: xForIndex(index),
-    y: yForRevenue(point.revenue),
-    changeRate:
-      index === 0 || data[index - 1].revenue <= 0
+    data.length <= 1
+      ? left + plotWidth / 2
+      : left + (index / (data.length - 1)) * plotWidth;
+  const yForAmount = (value: number) =>
+    top + ((maxAmount - Math.max(0, value)) / maxAmount) * (plotBottom - top);
+  const yForScore = (value: number) =>
+    top + ((100 - Math.max(0, Math.min(100, value))) / 100) * (plotBottom - top);
+  const basePoints = data.map((point, index) => {
+    const previous = index > 0 ? data[index - 1] : null;
+    const revenueChangeRate =
+      !previous || previous.revenue <= 0
         ? 0
-        : ((point.revenue - data[index - 1].revenue) / data[index - 1].revenue) * 100,
-    daySpan: index === 0 ? 0 : point.day - data[index - 1].day,
-  }));
-  const areaPath = points.length
-    ? `M ${points.map((point) => `${point.x} ${point.y}`).join(" L ")} L ${points.at(-1)?.x} ${revenueBottom} L ${points[0].x} ${revenueBottom} Z`
-    : "";
-  const hoveredPoint = points.find((point) => point.day === hoveredDay) ?? null;
-  const gridTicks = Array.from({ length: 4 }, (_, index) => {
-    const ratio = index / 3;
+        : ((point.revenue - previous.revenue) / previous.revenue) * 100;
+    const environmentDelta =
+      previous?.environmentHealth !== null &&
+      previous?.environmentHealth !== undefined &&
+      point.environmentHealth !== null
+        ? point.environmentHealth - previous.environmentHealth
+        : null;
+    const trustDelta =
+      previous?.purchaseTrust !== null &&
+      previous?.purchaseTrust !== undefined &&
+      point.purchaseTrust !== null
+        ? point.purchaseTrust - previous.purchaseTrust
+        : null;
+    const sentimentDelta =
+      previous?.communitySentiment !== null &&
+      previous?.communitySentiment !== undefined &&
+      point.communitySentiment !== null
+        ? point.communitySentiment - previous.communitySentiment
+        : null;
+    const isSurge =
+      getRevenueChangeSignal(
+        revenueChangeRate,
+        point.releaseAge,
+        previous ? point.day - previous.day : 0,
+      ) === "surge";
     return {
-      y: top + ratio * (revenueBottom - top),
-      value: maxRevenue - ratio * (maxRevenue - minRevenue),
+      ...point,
+      x: xForIndex(index),
+      revenueY: yForAmount(point.revenue),
+      revenueChangeRate,
+      environmentDelta,
+      trustDelta,
+      sentimentDelta,
+      isSurge,
     };
   });
-  const eventCandidates = points
-    .map((point) => ({
+  const points = basePoints.map((point, index) => {
+    const next = basePoints[index + 1];
+    const divergenceLag = getMarketDivergenceLag(
+      point.isSurge,
+      point.environmentDelta,
+      point.trustDelta,
+      next?.environmentDelta ?? null,
+      next?.trustDelta ?? null,
+      next ? next.day - point.day : 0,
+    );
+    return {
       ...point,
-      priority: point.release || point.ban
-        ? 3
-        : getRevenueChangeSignal(
-              point.changeRate,
-              point.releaseAge,
-              point.daySpan,
-            ) !== null
-          ? 2
-          : 0,
-    }))
-    .filter((point) => point.priority > 0)
-    .sort((a, b) => b.priority - a.priority || Math.abs(b.changeRate) - Math.abs(a.changeRate));
-  const callouts = eventCandidates.reduce<typeof eventCandidates>((selected, candidate) => {
-    if (selected.length >= 2) return selected;
-    if (selected.some((point) => Math.abs(point.x - candidate.x) < 190)) return selected;
-    return [...selected, candidate];
-  }, []);
+      divergence: divergenceLag !== null,
+      divergenceLag,
+    };
+  });
+  const getSeriesPath = (
+    getValue: (point: (typeof points)[number]) => number | null,
+    getY: (value: number) => number,
+  ) => {
+    let path = "";
+    let drawing = false;
+    for (const point of points) {
+      const value = getValue(point);
+      if (value === null) {
+        drawing = false;
+        continue;
+      }
+      path += `${drawing ? " L" : " M"} ${point.x} ${getY(value)}`;
+      drawing = true;
+    }
+    return path;
+  };
+  const revenueAreaPath = points.length
+    ? `M ${points.map((point) => `${point.x} ${point.revenueY}`).join(" L ")} L ${points.at(-1)?.x} ${plotBottom} L ${points[0].x} ${plotBottom} Z`
+    : "";
+  const environmentPath = getSeriesPath(
+    (point) => point.environmentHealth,
+    yForScore,
+  );
+  const trustPath = getSeriesPath((point) => point.purchaseTrust, yForScore);
+  const cashPath = getSeriesPath((point) => point.cash, yForAmount);
+  const sentimentPath = getSeriesPath(
+    (point) => point.communitySentiment,
+    yForScore,
+  );
+  const hoveredPoint = points.find((point) => point.day === hoveredDay) ?? null;
+  const amountTicks = Array.from({ length: 5 }, (_, index) => {
+    const ratio = index / 4;
+    return {
+      y: top + ratio * (plotBottom - top),
+      value: maxAmount * (1 - ratio),
+    };
+  });
+  const scoreTicks = [100, 75, 50, 25, 0].map((value) => ({
+    value,
+    y: yForScore(value),
+  }));
   const displayedDays = new Set(
-    [points[0], points[Math.floor((points.length - 1) / 2)], points.at(-1)]
+    [0, 0.25, 0.5, 0.75, 1]
+      .map((ratio) => points[Math.round((points.length - 1) * ratio)])
       .filter((point): point is (typeof points)[number] => Boolean(point))
       .map((point) => point.day),
   );
+  const divergencePoints = points.filter((point) => point.divergence);
+  const scoredRows = data.filter(
+    (point) =>
+      point.environmentHealth !== null && point.purchaseTrust !== null,
+  ).length;
+  const lastEnvironmentPoint = [...points]
+    .reverse()
+    .find((point) => point.environmentHealth !== null);
+  const lastTrustPoint = [...points]
+    .reverse()
+    .find((point) => point.purchaseTrust !== null);
+  const lastCashPoint = [...points]
+    .reverse()
+    .find((point) => point.cash !== null);
+  const lastSentimentPoint = [...points]
+    .reverse()
+    .find((point) => point.communitySentiment !== null);
 
   if (points.length === 0) {
-    return <div className="finance-chart-empty">일별 매출 기록을 준비하고 있습니다.</div>;
+    return <div className="finance-chart-empty">일별 시장 기록을 준비하고 있습니다.</div>;
   }
 
   return (
     <section className="finance-chart-card" aria-labelledby="finance-chart-title">
       <header className="finance-chart-toolbar">
         <div>
-          <span>30 DAY MARKET VIEW</span>
-          <strong id="finance-chart-title">일별 매출 흐름</strong>
+          <span>MAX 90 DAY MARKET VIEW · {data.length} DAYS</span>
+          <strong id="finance-chart-title">매출과 시장·여론 신호</strong>
         </div>
         <div className="finance-chart-legend" aria-label="차트 범례">
-          <span className="up">상승</span>
-          <span className="down">하락</span>
-          <span className="user">유저 증감</span>
-          <span className="heat">커뮤니티 열기</span>
+          <span className="revenue">매출 상승/하락</span>
+          <span className="cash">보유자금</span>
+          <span className="health">생태계 건강</span>
+          <span className="trust">구매 신뢰</span>
+          <span className="sentiment">커뮤니티 여론 · 50 중립</span>
+          <span className="divergence">매출·환경 역행</span>
           <span className="event">R 발매 · B 금제</span>
         </div>
       </header>
+
+      <div className={`finance-chart-insight${divergencePoints.length > 0 ? " alert" : ""}`}>
+        <strong>
+          {divergencePoints.length > 0
+            ? `매출 급등과 환경 하락이 겹친 구간 ${divergencePoints.length}곳`
+            : "현재 기록에서는 매출 급등과 환경 하락의 역행이 없습니다."}
+        </strong>
+        <span>
+          {scoredRows >= 2
+            ? `${lastSentimentPoint?.communitySentiment !== null && lastSentimentPoint?.communitySentiment !== undefined ? `현재 여론 ${Math.round(lastSentimentPoint.communitySentiment)}점 · ${communitySentimentLabel(lastSentimentPoint.communitySentiment)}. ` : ""}돈이 오를 때 건강·신뢰·여론이 함께 버티는지 확인하세요.`
+            : "기존 세이브의 건강·신뢰·여론 이력은 오늘부터 누적됩니다."}
+        </span>
+      </div>
+
       <div className="finance-chart-stage" onPointerLeave={() => setHoveredDay(null)}>
         <svg
           aria-describedby="finance-chart-description"
@@ -4960,136 +5516,265 @@ function FinanceMarketChart({ game }: { game: GameState }) {
           role="img"
           viewBox={`0 0 ${width} ${height}`}
         >
-          <title>최근 30일 일별 매출과 유저 증감, 커뮤니티 열기</title>
-          <desc id="finance-chart-description">파란 선은 전일 대비 매출 상승, 빨간 선은 하락을 나타냅니다. 아래 막대는 유저 증감과 커뮤니티 열기입니다.</desc>
+          <title>최대 90일 매출, 보유자금, 생태계 건강, 구매 신뢰, 커뮤니티 여론 비교</title>
+          <desc id="finance-chart-description">
+            왼쪽 금액 축에는 일매출과 보유자금, 오른쪽 0에서 100점 축에는 생태계 건강, 구매 신뢰와 커뮤니티 여론을 표시합니다. 여론은 50점이 중립이며 높을수록 긍정적입니다. 붉은 음영은 매출 급등 당일이나 다음 날 환경 지표가 하락한 구간입니다.
+          </desc>
           <defs>
             <linearGradient id="revenue-area-gradient" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0" stopColor="#2f68ae" stopOpacity="0.23" />
-              <stop offset="1" stopColor="#2f68ae" stopOpacity="0.015" />
+              <stop offset="0" stopColor="#2f68ae" stopOpacity="0.18" />
+              <stop offset="1" stopColor="#2f68ae" stopOpacity="0.01" />
+            </linearGradient>
+            <linearGradient id="divergence-gradient" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0" stopColor="#c9443a" stopOpacity="0.22" />
+              <stop offset="1" stopColor="#c9443a" stopOpacity="0.035" />
+            </linearGradient>
+            <linearGradient
+              gradientUnits="userSpaceOnUse"
+              id="sentiment-line-gradient"
+              x1="0"
+              x2="0"
+              y1={top}
+              y2={plotBottom}
+            >
+              <stop offset="0" stopColor="#25866b" />
+              <stop offset="0.5" stopColor="#707b8c" />
+              <stop offset="1" stopColor="#c9443a" />
             </linearGradient>
           </defs>
 
-          {gridTicks.map((tick) => (
-            <g className="finance-grid-line" key={tick.y}>
+          <text className="finance-axis-title amount" x={left} y={17}>금액 · 억원</text>
+          <text className="finance-axis-title score" textAnchor="end" x={width - right} y={17}>시장·여론 지수 · 0–100</text>
+
+          <g className="finance-sentiment-neutral" aria-hidden="true">
+            <line x1={left} x2={width - right} y1={yForScore(50)} y2={yForScore(50)} />
+            <text textAnchor="end" x={width - right - 7} y={yForScore(50) - 6}>여론 중립 50</text>
+          </g>
+
+          {amountTicks.map((tick) => (
+            <g className="finance-grid-line" key={`amount-${tick.y}`}>
               <line x1={left} x2={width - right} y1={tick.y} y2={tick.y} />
-              <text x={left - 9} y={tick.y + 3}>{formatRevenue(tick.value)}</text>
+              <text x={left - 10} y={tick.y + 4}>{formatRevenue(tick.value)}</text>
             </g>
           ))}
-          <path className="revenue-area" d={areaPath} />
+          {scoreTicks.map((tick) => (
+            <g className="finance-score-tick" key={`score-${tick.value}`}>
+              <line x1={width - right} x2={width - right + 5} y1={tick.y} y2={tick.y} />
+              <text x={width - right + 11} y={tick.y + 4}>{tick.value}</text>
+            </g>
+          ))}
+
+          {divergencePoints.map((point) => {
+            const index = points.indexOf(point);
+            const adjacent = point.divergenceLag === 1
+              ? points[index + 1]
+              : points[Math.max(0, index - 1)];
+            const x = point.divergenceLag === 1
+              ? point.x
+              : (adjacent?.x ?? point.x - 5);
+            const endX = point.divergenceLag === 1
+              ? (adjacent?.x ?? point.x + 5)
+              : point.x;
+            return (
+              <rect
+                className="finance-divergence-band"
+                height={plotBottom - top}
+                key={`divergence-${point.day}`}
+                width={Math.max(6, endX - x)}
+                x={x}
+                y={top}
+              />
+            );
+          })}
+
+          <path className="revenue-area" d={revenueAreaPath} />
           {points.slice(1).map((point, index) => {
             const previous = points[index];
             const rising = point.revenue >= previous.revenue;
             return (
               <line
                 className={`revenue-segment ${rising ? "up" : "down"}`}
-                key={`${previous.day}-${point.day}`}
+                key={`revenue-${previous.day}-${point.day}`}
                 x1={previous.x}
                 x2={point.x}
-                y1={previous.y}
-                y2={point.y}
+                y1={previous.revenueY}
+                y2={point.revenueY}
               />
             );
           })}
-
-          {points.map((point) => {
-            const userHeight = Math.max(1, (Math.abs(point.userDelta) / maxUserDelta) * (volumeBottom - volumeTop));
-            const heatHeight = Math.max(2, (point.heat / 100) * (volumeBottom - volumeTop));
-            return (
-              <g className="finance-volume-pair" key={`volume-${point.day}`}>
-                <rect
-                  className={`user-volume ${point.userDelta >= 0 ? "up" : "down"}`}
-                  height={userHeight}
-                  width={Math.max(3, Math.min(8, plotWidth / Math.max(30, points.length) - 2))}
-                  x={point.x - 7}
-                  y={volumeBottom - userHeight}
-                />
-                <rect
-                  className="community-heat-volume"
-                  height={heatHeight}
-                  width={Math.max(3, Math.min(8, plotWidth / Math.max(30, points.length) - 2))}
-                  x={point.x + 1}
-                  y={volumeBottom - heatHeight}
-                />
-              </g>
-            );
-          })}
-          <line className="volume-baseline" x1={left} x2={width - right} y1={volumeBottom} y2={volumeBottom} />
+          {cashPath ? <path className="finance-series cash-series" d={cashPath} /> : null}
+          {environmentPath ? (
+            <path className="finance-series health-series" d={environmentPath} />
+          ) : null}
+          {trustPath ? <path className="finance-series trust-series" d={trustPath} /> : null}
+          {sentimentPath ? (
+            <path className="finance-series sentiment-series" d={sentimentPath} />
+          ) : null}
 
           {points.filter((point) => point.release || point.ban).map((point) => (
-            <g className={`finance-event-marker ${point.release ? "release" : "ban"}`} key={`event-${point.day}`}>
-              <line x1={point.x} x2={point.x} y1={top} y2={volumeBottom} />
-              <circle cx={point.x} cy={17} r={13} />
-              <text x={point.x} y={21}>{point.release ? "R" : "B"}</text>
+            <g
+              className={`finance-event-marker ${point.release ? "release" : "ban"}`}
+              key={`event-${point.day}`}
+            >
+              <line x1={point.x} x2={point.x} y1={top} y2={plotBottom} />
+              <circle cx={point.x} cy={22} r={12} />
+              <text x={point.x} y={26}>{point.release ? "R" : "B"}</text>
             </g>
           ))}
 
-          {callouts.map((point, index) => {
-            const boxWidth = 158;
-            const boxX = Math.max(left, Math.min(width - right - boxWidth, point.x - boxWidth / 2));
-            const below = point.y < 94;
-            const boxY = below ? point.y + 19 + index * 5 : point.y - 61 - index * 5;
-            const label = point.release
-              ? "발매 공표"
-              : point.ban
-                ? "금제 공표"
-                : point.changeRate >= 0
-                  ? "매출 급등"
-                  : "매출 급락";
-            return (
-              <g className={`finance-auto-callout ${point.changeRate >= 0 ? "up" : "down"}`} key={`callout-${point.day}`}>
-                <line x1={point.x} x2={point.x} y1={point.y} y2={below ? boxY : boxY + 48} />
-                <rect height={48} rx={6} width={boxWidth} x={boxX} y={boxY} />
-                <text x={boxX + 11} y={boxY + 19}>{label}</text>
-                <text className="callout-value" x={boxX + 11} y={boxY + 37}>
-                  {point.changeRate >= 0 ? "+" : ""}{point.changeRate.toFixed(1)}% · DAY {point.day}
-                </text>
-              </g>
-            );
-          })}
+          {divergencePoints.map((point) => (
+            <g className="finance-divergence-marker" key={`warning-${point.day}`}>
+              <circle cx={point.x} cy={top + 14} r={10} />
+              <text x={point.x} y={top + 18}>!</text>
+            </g>
+          ))}
+
+          {lastEnvironmentPoint?.environmentHealth !== null &&
+          lastEnvironmentPoint?.environmentHealth !== undefined ? (
+            <circle
+              className="finance-endpoint health"
+              cx={lastEnvironmentPoint.x}
+              cy={yForScore(lastEnvironmentPoint.environmentHealth)}
+              r={5}
+            />
+          ) : null}
+          {lastCashPoint?.cash !== null && lastCashPoint?.cash !== undefined ? (
+            <circle
+              className="finance-endpoint cash"
+              cx={lastCashPoint.x}
+              cy={yForAmount(lastCashPoint.cash)}
+              r={5}
+            />
+          ) : null}
+          {lastTrustPoint?.purchaseTrust !== null &&
+          lastTrustPoint?.purchaseTrust !== undefined ? (
+            <circle
+              className="finance-endpoint trust"
+              cx={lastTrustPoint.x}
+              cy={yForScore(lastTrustPoint.purchaseTrust)}
+              r={5}
+            />
+          ) : null}
+          {lastSentimentPoint?.communitySentiment !== null &&
+          lastSentimentPoint?.communitySentiment !== undefined ? (
+            <circle
+              className={`finance-endpoint sentiment ${
+                lastSentimentPoint.communitySentiment >= 60
+                  ? "positive"
+                  : lastSentimentPoint.communitySentiment <= 40
+                    ? "negative"
+                    : "neutral"
+              }`}
+              cx={lastSentimentPoint.x}
+              cy={yForScore(lastSentimentPoint.communitySentiment)}
+              r={5}
+            />
+          ) : null}
 
           {points.map((point, index) => (
             <g
-              aria-label={`DAY ${point.day}, 매출 ${formatRevenue(point.revenue)}, 유저 ${point.userDelta >= 0 ? "+" : ""}${formatUsers(point.userDelta)}명, 커뮤니티 열기 ${point.heat}`}
+              aria-label={[
+                `DAY ${point.day}`,
+                `매출 ${formatRevenue(point.revenue)}`,
+                `보유자금 ${point.cash === null ? "기록 없음" : formatRevenue(point.cash)}`,
+                `생태계 건강 ${point.environmentHealth === null ? "기록 없음" : Math.round(point.environmentHealth)}`,
+                `구매 신뢰 ${point.purchaseTrust === null ? "기록 없음" : Math.round(point.purchaseTrust)}`,
+                point.communitySentiment === null
+                  ? "커뮤니티 여론 기록 없음"
+                  : `커뮤니티 여론 ${Math.round(point.communitySentiment)}점, ${communitySentimentLabel(point.communitySentiment)}${point.sentimentDelta === null ? "" : `, 전일 대비 ${point.sentimentDelta >= 0 ? "+" : ""}${point.sentimentDelta.toFixed(0)}점`}${point.communityPositive === null || point.communityNegative === null ? "" : `, 긍정 ${point.communityPositive}개, 부정 ${point.communityNegative}개`}`,
+                point.divergence ? "매출과 환경 역행 감지" : "",
+              ].filter(Boolean).join(", ")}
               className="finance-hit-zone"
               key={`hit-${point.day}`}
-              onBlur={() => setHoveredDay((current) => current === point.day ? null : current)}
+              onBlur={() =>
+                setHoveredDay((current) => current === point.day ? null : current)
+              }
               onFocus={() => setHoveredDay(point.day)}
               onPointerEnter={() => setHoveredDay(point.day)}
               tabIndex={0}
             >
               <rect
-                height={volumeBottom - top + 12}
-                width={Math.max(18, plotWidth / Math.max(1, points.length - 1))}
-                x={point.x - Math.max(9, plotWidth / Math.max(2, points.length * 2))}
+                height={plotBottom - top + 12}
+                width={Math.max(12, plotWidth / Math.max(1, points.length - 1))}
+                x={point.x - Math.max(6, plotWidth / Math.max(2, points.length * 2))}
                 y={top - 6}
               />
-              <circle className={index === 0 || point.revenue >= points[index - 1].revenue ? "up" : "down"} cx={point.x} cy={point.y} r={5.5} />
+              <circle
+                className={
+                  index === 0 || point.revenue >= points[index - 1].revenue
+                    ? "up"
+                    : "down"
+                }
+                cx={point.x}
+                cy={point.revenueY}
+                r={4.5}
+              />
             </g>
           ))}
 
           {points.filter((point) => displayedDays.has(point.day)).map((point) => (
-            <text className="finance-axis-day" key={`axis-${point.day}`} textAnchor="middle" x={point.x} y={292}>DAY {point.day}</text>
+            <text
+              className="finance-axis-day"
+              key={`axis-${point.day}`}
+              textAnchor="middle"
+              x={point.x}
+              y={298}
+            >
+              DAY {point.day}
+            </text>
           ))}
 
           {hoveredPoint ? (() => {
-            const tooltipWidth = 238;
-            const tooltipHeight = 108;
-            const tooltipX = Math.max(left, Math.min(width - right - tooltipWidth, hoveredPoint.x + 12));
-            const rawTooltipY = hoveredPoint.y < 118
-              ? hoveredPoint.y + 17
-              : hoveredPoint.y - tooltipHeight - 14;
+            const tooltipWidth = 390;
+            const tooltipHeight = hoveredPoint.divergence ? 229 : 197;
+            const tooltipX =
+              hoveredPoint.x > width / 2
+                ? Math.max(left, hoveredPoint.x - tooltipWidth - 14)
+                : Math.min(width - right - tooltipWidth, hoveredPoint.x + 14);
             const tooltipY = Math.max(
-              top + 4,
-              Math.min(height - tooltipHeight - 4, rawTooltipY),
+              top + 3,
+              Math.min(height - tooltipHeight - 5, hoveredPoint.revenueY - 44),
             );
             return (
               <g className="finance-chart-tooltip" aria-hidden="true">
-                <line x1={hoveredPoint.x} x2={hoveredPoint.x} y1={top} y2={volumeBottom} />
-                <rect height={tooltipHeight} rx={7} width={tooltipWidth} x={tooltipX} y={tooltipY} />
-                <text className="tooltip-day" x={tooltipX + 15} y={tooltipY + 23}>DAY {hoveredPoint.day}</text>
-                <text x={tooltipX + 15} y={tooltipY + 47}>매출 <tspan>₩{formatRevenue(hoveredPoint.revenue)}</tspan></text>
-                <text x={tooltipX + 15} y={tooltipY + 70}>유저 <tspan>{hoveredPoint.userDelta >= 0 ? "+" : ""}{formatUsers(hoveredPoint.userDelta)}명</tspan></text>
-                <text x={tooltipX + 15} y={tooltipY + 93}>커뮤니티 <tspan>열기 {hoveredPoint.heat}</tspan></text>
+                <line
+                  x1={hoveredPoint.x}
+                  x2={hoveredPoint.x}
+                  y1={top}
+                  y2={plotBottom}
+                />
+                <rect
+                  height={tooltipHeight}
+                  rx={7}
+                  width={tooltipWidth}
+                  x={tooltipX}
+                  y={tooltipY}
+                />
+                <text className="tooltip-day" x={tooltipX + 18} y={tooltipY + 28}>
+                  DAY {hoveredPoint.day}
+                </text>
+                <text x={tooltipX + 18} y={tooltipY + 59}>
+                  매출 <tspan>₩{formatRevenue(hoveredPoint.revenue)}</tspan>
+                </text>
+                <text x={tooltipX + 18} y={tooltipY + 90}>
+                  보유자금 <tspan>{hoveredPoint.cash === null ? "기록 없음" : `₩${formatRevenue(hoveredPoint.cash)}`}</tspan>
+                </text>
+                <text x={tooltipX + 18} y={tooltipY + 121}>
+                  생태계 건강 <tspan>{hoveredPoint.environmentHealth === null ? "기록 없음" : `${Math.round(hoveredPoint.environmentHealth)}점`}</tspan>
+                </text>
+                <text x={tooltipX + 18} y={tooltipY + 152}>
+                  구매 신뢰 <tspan>{hoveredPoint.purchaseTrust === null ? "기록 없음" : `${Math.round(hoveredPoint.purchaseTrust)}점`}</tspan>
+                </text>
+                <text x={tooltipX + 18} y={tooltipY + 183}>
+                  커뮤니티 여론 <tspan>{hoveredPoint.communitySentiment === null
+                    ? "기록 없음"
+                    : `${Math.round(hoveredPoint.communitySentiment)}점 · ${communitySentimentLabel(hoveredPoint.communitySentiment)}${hoveredPoint.communityPositive === null || hoveredPoint.communityNegative === null ? "" : ` · 긍 ${hoveredPoint.communityPositive} / 부 ${hoveredPoint.communityNegative}`}`}</tspan>
+                </text>
+                {hoveredPoint.divergence ? (
+                  <text className="tooltip-alert" x={tooltipX + 18} y={tooltipY + 215}>
+                    매출 +{hoveredPoint.revenueChangeRate.toFixed(1)}% · {hoveredPoint.divergenceLag === 1 ? "D+1 " : ""}환경 지표 하락
+                  </text>
+                ) : null}
               </g>
             );
           })() : null}
@@ -5098,6 +5783,7 @@ function FinanceMarketChart({ game }: { game: GameState }) {
     </section>
   );
 }
+
 
 function OperationsView({
   game,

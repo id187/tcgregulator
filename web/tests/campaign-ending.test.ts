@@ -206,10 +206,9 @@ test("all nine cash and environment combinations produce distinct endings", () =
     for (const environmentHealth of environmentScores) {
       const state = createInitialGame(13);
       state.finance.cash = cash;
-      state.activeThemeIds = [state.currentTopThemeId];
-      state.themes[state.currentTopThemeId].share = 1;
-      state.themes[state.currentTopThemeId].unpleasantness =
-        100 - environmentHealth;
+      for (const themeId of state.activeThemeIds) {
+        state.themes[themeId].unpleasantness = 100 - environmentHealth;
+      }
 
       const ending = evaluateCampaignEnding(state);
 
@@ -224,9 +223,9 @@ test("all nine cash and environment combinations produce distinct endings", () =
 
 test("collapsed purchase trust lowers an otherwise healthy environment ending", () => {
   const state = createInitialGame(19);
-  state.activeThemeIds = [state.currentTopThemeId];
-  state.themes[state.currentTopThemeId].share = 1;
-  state.themes[state.currentTopThemeId].unpleasantness = 1;
+  for (const themeId of state.activeThemeIds) {
+    state.themes[themeId].unpleasantness = 1;
+  }
   state.purchaseTrust = 0;
 
   assert.equal(getCampaignEnvironmentStability(state), 59);

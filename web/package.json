@@ -1,6 +1,6 @@
 {
   "name": "tcg-regulator",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -11,7 +11,7 @@
     "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\build-windows.ps1",
     "start": "vite preview",
     "typecheck": "tsc --noEmit --incremental false",
-    "test": "npm run build && node --experimental-strip-types --test tests/game-engine.test.ts tests/save-schema.test.ts tests/daily-community.test.ts tests/campaign-ending.test.ts tests/campaign-balance.test.ts tests/persistence-client.test.ts tests/theme-emblem.test.ts tests/korean-particles.test.ts",
+    "test": "npm run build && node --experimental-strip-types --test tests/game-engine.test.ts tests/save-schema.test.ts tests/daily-community.test.ts tests/community-sentiment.test.ts tests/campaign-ending.test.ts tests/campaign-balance.test.ts tests/persistence-client.test.ts tests/content-originality.test.ts tests/restriction-considerations.test.ts tests/theme-emblem.test.ts tests/korean-particles.test.ts",
     "lint": "eslint . --ignore-pattern dist"
   },
   "dependencies": {

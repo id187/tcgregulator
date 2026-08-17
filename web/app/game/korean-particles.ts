@@ -44,6 +44,9 @@ const PARTICLE_VALUE_KEYS = new Set([
   "part",
   "newCard",
   "oldCard",
+  "ignoredTheme",
+  "ignoredPart",
+  "relatedPart",
 ]);
 
 function finalConsonantIndex(value: string): number {

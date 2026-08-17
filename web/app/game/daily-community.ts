@@ -26,8 +26,14 @@ import {
   BAN_INTERVAL,
   FIRST_BAN_DAY,
   LAST_DECISION_DAY,
+  PROLOGUE_SEED,
 } from "./campaign.ts";
 import { interpolateKorean } from "./korean-particles.ts";
+import { getStableThemeRandomIdentifier } from "./future-theme-id-migration.ts";
+import { getPublishedRestrictionDecisionSignals } from "./restriction-considerations.ts";
+import type {
+  RestrictionDecisionSignals,
+} from "./restriction-considerations.ts";
 import {
   getPublishedRestrictionPolicyProfile,
   getRestrictionHistoricalOutcome,
@@ -81,6 +87,12 @@ const ROLE_EXPONENT: Record<PartContent["role"], number> = {
   finisher: 0.3,
   recursion: 0.5,
 };
+
+const COMMUNITY_PART_BY_ID = new Map(
+  THEMES.flatMap((theme) =>
+    theme.parts.map((part) => [part.id, part] as const),
+  ),
+);
 
 export type ReleaseReactionProfile = {
   day: number;
@@ -1924,6 +1936,88 @@ const LOWER_ONLY_RESTRICTION_REVIEW_COPY = [
   "하위 구간만 바뀐 금제표면 메타 다양화보다 최고 덱 보호에 가까워 보임",
 ] as const;
 
+const UPPER_IGNORED_TARGET_COMPARISON_COPY = [
+  "아니 지금 최상위권 {ignoredTheme}의 {ignoredPart}는 놔두고 {theme}의 {part}를 자른다고?",
+  "1위권 핵심 {ignoredPart}는 그대로 두고 그 아래 {part}부터 제한한 우선순위가 대체 뭐임?",
+  "현재 상위권 점유율이 {ignoredShare}인 {ignoredTheme}부터 설명해야지 왜 {theme}가 먼저 맞음?",
+  "{ignoredTheme}는 그대로 두고 견제하던 {theme}부터 약하게 만들면 독주를 누가 막냐",
+  "강한 덱을 자른 게 아니라 강한 덱 아래 줄을 잘랐네. {part} 선정은 진짜 이해 안 감",
+  "{part}가 문제일 수는 있어도 {ignoredPart}보다 먼저여야 할 이유는 하나도 안 보인다",
+  "최상위권 본체는 통과, 그 아래 경쟁자만 제한. 이러면 금제표가 티어표를 거꾸로 읽은 거잖아",
+  "{ignoredTheme} 핵심을 살려 두고 {theme} 핵심부터 치는 순간 결과는 1강 강화 아닌가",
+  "지금 잡아야 할 건 {ignoredTheme}인데 발표문에는 {part}가 올라왔다. 기준 공개 좀",
+  "상위권을 그대로 둔 채 {theme}를 먼저 누르는 건 밸런스 조정이 아니라 경쟁자 제거처럼 보임",
+] as const;
+
+const LOW_USAGE_TARGET_RESTRICTION_COPY = [
+  "{part} 채용률 {usage}, 평균 {averageCopies}장인데 이걸 금제 슬롯까지 써서 자른다고?",
+  "실제 덱에 거의 안 들어가는 {part}보다 매판 보이는 핵심부터 봐야 하는 거 아님?",
+  "저채용 카드 숫자만 바꾸면 금제표는 길어져도 환경은 그대로일 텐데",
+  "{theme} 유저도 잘 안 쓰는 {part}를 골랐다는 것부터 데이터 해석이 이상함",
+  "평균 {averageCopies}장 채용 카드를 {limitLabel}으로 만들어서 실제로 몇 장이 빠지는데?",
+  "가끔 사고 치는 카드라는 이유만으로 {part}를 자른 거면 그 매치 로그부터 보여 줘야 납득하지",
+  "채용률 {usage}인 카드가 희생양이 됐네. 진짜 병목은 따로 있는 것 같은데",
+  "예방 금제라 해도 지금 거의 안 쓰이는 {part}가 최우선 대상인 건 설명이 필요함",
+  "이건 사용률 낮은 주변 카드 하나 잘라서 일한 척하는 그림으로 보일 수밖에 없음",
+  "{part} 제한 뒤에도 같은 덱리가 그대로면 이번 대상 선정은 실패로 봐야지",
+] as const;
+
+const LOWER_SHARED_TARGET_DEBATE_COPY = [
+  "순수 {theme}는 하위권인데 출장 채용된다는 이유로 {part}부터 자르는 게 맞나",
+  "테마 순위만 보면 왜 자르냐가 맞지만 {part}는 다른 덱에서 쓰이는 횟수도 봐야 함",
+  "{part} 출장 문제를 잡겠다고 본가 {theme} 생명줄까지 끊는 건 연좌제지",
+  "하위 티어 카드라도 상위 덱이 용병으로 계속 쓰면 제한 후보가 되는 건 이해됨",
+  "문제는 {part} 자체가 아니라 가져다 쓰는 상위권 엔진인데 순수축만 더 아프게 맞겠네",
+  "{theme} 점유율만 보고 무죄라고 하기도 어렵고, 출장 채용만 보고 본가 피해를 무시하기도 어려움",
+  "범용성 때문에 자른 거라면 어느 상위 덱이 얼마나 썼는지 근거를 같이 공개했어야 함",
+  "{part} 제한 명분은 출장 억제, 실제 피해자는 하위권 {theme}. 이 간극이 너무 큼",
+] as const;
+
+const REPLACEMENT_RISK_RESTRICTION_COPY = [
+  "{part} 자리에는 바로 {relatedPart} 넣으면 된다는 얘기 나오는데 이게 환경 조정이 맞나",
+  "핵심을 자른 게 아니라 같은 역할 카드로 갈아타게 한 것뿐이면 점유율은 안 내려갈 듯",
+  "{part} 제한 발표 보자마자 다들 {relatedPart} 매수 중이네. 풍선효과 너무 뻔하다",
+  "대체재가 멀쩡한데 한 카드만 줄이면 덱 파워보다 레시피 한 줄만 바뀌지",
+  "{relatedPart}가 같은 역할을 메우면 이번 금제 효과는 며칠도 못 갈 것 같은데",
+  "교체 가능한 중간다리부터 자른 건 병목을 잘못 짚은 결정으로 보임",
+] as const;
+
+const COUNTER_RESEARCH_PENDING_RESTRICTION_COPY = [
+  "{theme} 카운터가 막 보급되기 시작했는데 결과도 보기 전에 {part}까지 자른 건 너무 빠른 거 아님?",
+  "자연 적응이 진행 중일 때 금제까지 겹치면 뭐가 환경을 고친 건지 나중에 구분 못 함",
+  "카운터 연구가 끝나 가도 대회 점유율이 안 내려갔다면 {part} 제한은 필요한 조치였지",
+  "유저들이 해답을 찾은 직후 본체까지 자르면 사이드 연구한 사람만 바보 되는 느낌",
+  "카운터가 있다는 것과 실제로 모두가 쓸 수 있다는 건 다름. 보급 속도까지 보고 판단해야 함",
+  "일주일만 더 관찰했으면 자연 적응으로 잡히는지 금제가 필요한지 구분됐을 텐데",
+] as const;
+
+const ACCESSIBILITY_RESTRICTION_DEBATE_COPY = [
+  "{part} 필요 매수를 줄여 진입비용이 내려가는 건 반갑지만 금제로 가격 정책을 대신하면 안 되지",
+  "고채용 카드를 제한하면 덱값은 내려가도 기존 구매자는 또 손실을 떠안는다",
+  "접근성 때문에 {part}를 줄였다는 설명이면 재판이나 공급 확대가 먼저였어야 하는 거 아님?",
+  "성능 조정과 구매 부담 완화가 같이 되는 선택일 수는 있는데 어느 쪽이 목적이었는지 애매함",
+  "필수 카드 매수를 낮춰 신규 유저는 편해지고 기존 유저 신뢰는 깎이는 전형적인 양날의 검",
+  "{part}가 너무 많이 필요했던 건 맞다. 그래도 봉입과 공급 문제를 금제표에 떠넘긴 느낌은 남음",
+] as const;
+
+const COLLECTOR_BACKLASH_RESTRICTION_COPY = [
+  "{theme} 얼굴인 {part}를 자르면 성능보다 먼저 컬렉션 가치가 흔들리겠네",
+  "인기 카드라고 금제에서 빼 줄 수는 없지만 산 사람 입장에서는 배신감 클 듯",
+  "{part}가 상징 카드라서 봐주면 특혜고, 그대로 자르면 수집층 신뢰가 박살 나는 어려운 자리네",
+  "환경을 위해 필요한 제한이어도 대표 카드를 건드린 만큼 보상이나 재판 정책은 있어야지",
+  "플레이 가치와 수집 가치가 한 번에 내려가는 카드라 반발이 평소 금제보다 세겠다",
+  "인기 테마 핵심이라 못 자른다는 논리도 이상함. 문제는 왜 이 강도로 바로 갔냐는 거지",
+] as const;
+
+const OVERBROAD_RESTRICTION_DEBATE_COPY = [
+  "이번엔 핵심뿐 아니라 주변 카드까지 너무 넓게 쓸어 담았는데 원인이 뭐였는지 사후 분석 가능함?",
+  "여러 테마를 한꺼번에 자르면 새 환경은 열리겠지만 멀쩡한 덱까지 같이 사라질 수 있음",
+  "광역 금제로 리셋하는 건 시원해 보여도 각 카드가 정말 필요했는지는 따로 봐야지",
+  "범위가 넓다는 것과 정교하다는 건 다르다. 이번 표는 연좌 피해부터 걱정됨",
+  "상위권을 고르게 낮춘 건 좋지만 하위권 카드까지 섞인 순간 과잉 규제 논쟁은 피하기 어렵다",
+  "한 번에 다 자르면 다음 독주가 생겨도 어느 제한을 되돌려야 할지 알 수가 없음",
+] as const;
+
 const MISSING_TIER2_GAP_RESTRICTION_COPY = [
   "최상위와 하위권은 손봤는데 정작 승계 후보인 2티어가 통째로 비었네",
   "1티어를 내린 뒤 올라올 중간 구간을 안 건드리면 하위 조정 수가 많아도 풍선효과는 남는다",
@@ -2258,7 +2352,11 @@ type WeightedTheme = {
 
 function keyedUint(seed: number, ...keys: Array<string | number>): number {
   let hash = (seed >>> 0) ^ 0x9e3779b9;
-  const text = keys.join("\u001f");
+  const text = keys
+    .map((key) =>
+      typeof key === "string" ? getStableThemeRandomIdentifier(key) : key,
+    )
+    .join("\u001f");
   for (let index = 0; index < text.length; index += 1) {
     hash ^= text.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193);
@@ -2931,6 +3029,130 @@ function restrictionPolicyDetailPool(
   return restrictionBreadthPool(context, anchor);
 }
 
+function restrictionDecisionSignalPools(
+  state: GameState,
+  context: RecentRestrictionDecision,
+  anchor: RestrictionAnchor,
+  analysis: RestrictionDecisionSignals,
+): readonly (readonly string[])[] {
+  if (anchor.direction === "loosen" || anchor.assessment === "no-change") {
+    return [];
+  }
+  const target = analysis.targets.find(
+    (candidate) => candidate.partId === anchor.part.id,
+  );
+  const anchorKinds = new Set(
+    analysis.signals
+      .filter((signal) => signal.partId === anchor.part.id)
+      .map((signal) => signal.kind),
+  );
+  const pools: Array<readonly string[]> = [];
+  const add = (pool: readonly string[]) => {
+    if (!pools.includes(pool)) pools.push(pool);
+  };
+
+  // Comparative targeting is the first question players ask: not merely
+  // whether this card is strong, but why it was chosen while a stronger deck
+  // was left untouched. Keep it ahead of generic one/two-card breadth copy.
+  if (
+    analysis.flags.upperIgnored &&
+    target?.direction === "tighten" &&
+    target.tierBand !== "upper"
+  ) {
+    add(UPPER_IGNORED_TARGET_COMPARISON_COPY);
+  }
+  if (analysis.flags.lowerOnly && target?.tierBand === "lower") {
+    add(LOWER_ONLY_RESTRICTION_REVIEW_COPY);
+  }
+  if (
+    target?.tierBand === "lower" &&
+    target.sharedExternalUse &&
+    analysis.flags.upperIgnored
+  ) {
+    add(LOWER_SHARED_TARGET_DEBATE_COPY);
+  }
+  if (anchorKinds.has("low-usage-cut")) {
+    add(LOW_USAGE_TARGET_RESTRICTION_COPY);
+  }
+  if (anchorKinds.has("recent-product-cut")) {
+    const recentProduct = restrictionRecentProduct(
+      state,
+      context.decisionDay,
+      anchor.content.id,
+    );
+    add(
+      recentProduct?.kind === "support"
+        ? RECENT_SUPPORT_RESTRICTION_COPY
+        : RECENT_DEBUT_RESTRICTION_COPY,
+    );
+  }
+  if (anchorKinds.has("shared-external-use")) {
+    add(
+      context.anchors.length === 1
+        ? SINGLE_SHARED_RESTRICTION_COPY
+        : COLLATERAL_RESTRICTION_COPY,
+    );
+  }
+  if (anchor.assessment === "overkill") {
+    add(
+      context.anchors.length === 1
+        ? SINGLE_OVERKILL_RESTRICTION_COPY
+        : OVERKILL_RESTRICTION_COPY,
+    );
+  }
+  if (anchorKinds.has("replacement-risk")) {
+    add(REPLACEMENT_RISK_RESTRICTION_COPY);
+  }
+  if (anchorKinds.has("counter-research-pending")) {
+    add(COUNTER_RESEARCH_PENDING_RESTRICTION_COPY);
+  }
+  if (anchorKinds.has("accessibility-pressure")) {
+    add(ACCESSIBILITY_RESTRICTION_DEBATE_COPY);
+  }
+  if (anchorKinds.has("collector-backlash")) {
+    add(COLLECTOR_BACKLASH_RESTRICTION_COPY);
+  }
+  if (analysis.flags.overbroad) {
+    add(OVERBROAD_RESTRICTION_DEBATE_COPY);
+  }
+  if (analysis.flags.staleIgnored) {
+    add(MISSING_STALE_RELIEF_RESTRICTION_COPY);
+  }
+  if (analysis.flags.balanced) {
+    add(BALANCED_RESTRICTION_REVIEW_COPY);
+  }
+  if (anchorKinds.has("competitive-demand-addressed")) {
+    add(primaryRestrictionPool(anchor));
+  }
+  return pools;
+}
+
+function hasPriorityTargetingSignal(
+  anchor: RestrictionAnchor,
+  analysis: RestrictionDecisionSignals,
+): boolean {
+  const target = analysis.targets.find(
+    (candidate) => candidate.partId === anchor.part.id,
+  );
+  if (
+    analysis.flags.upperIgnored &&
+    target?.direction === "tighten" &&
+    target.tierBand !== "upper"
+  ) {
+    return true;
+  }
+  return analysis.signals.some(
+    (signal) =>
+      signal.partId === anchor.part.id &&
+      (
+        signal.kind === "lower-only" ||
+        signal.kind === "low-usage-cut" ||
+        signal.kind === "recent-product-cut" ||
+        signal.kind === "shared-external-use"
+      ),
+  );
+}
+
 function isBalancedFourCutReview(
   context: RecentRestrictionDecision,
   profile: RestrictionPolicyProfile,
@@ -2996,6 +3218,7 @@ function singleRestrictionCopyPool(
   state: GameState,
   context: RecentRestrictionDecision,
   anchor: RestrictionAnchor,
+  analysis: RestrictionDecisionSignals,
   index: number,
 ): readonly string[] {
   const tone = singlePrimaryRestrictionPool(anchor);
@@ -3024,6 +3247,16 @@ function singleRestrictionCopyPool(
   const detail = anchor.part.tags.includes("외부 사용")
     ? SINGLE_SHARED_RESTRICTION_COPY
     : market;
+  const signalPools = restrictionDecisionSignalPools(
+    state,
+    context,
+    anchor,
+    analysis,
+  );
+  const signal = (offset: number, fallback: readonly string[]) =>
+    signalPools.length > 0
+      ? signalPools[offset % signalPools.length]
+      : fallback;
 
   if (anchor.assessment === "cosmetic") {
     const cosmeticDayOne: readonly (readonly string[])[] = [
@@ -3031,17 +3264,17 @@ function singleRestrictionCopyPool(
       tone,
       shortage,
       tone,
-      shortage,
+      signal(0, tone),
       SINGLE_COSMETIC_CAUTION_COPY,
       tone,
       tone,
     ];
     const cosmeticDayTwo: readonly (readonly string[])[] = [
       tone,
-      shortage,
+      signal(0, shortage),
       tone,
       SINGLE_COSMETIC_CAUTION_COPY,
-      tone,
+      signal(1, tone),
       shortage,
       tone,
     ];
@@ -3061,29 +3294,70 @@ function singleRestrictionCopyPool(
     return cosmeticRouting[index % cosmeticRouting.length];
   }
 
+  const priorityTargeting = context.anchors.some((candidate) =>
+    hasPriorityTargetingSignal(candidate, analysis)
+  );
+  if (!priorityTargeting) {
+    const secondarySignal = signal(0, detail);
+    const ordinaryDayOne: readonly (readonly string[])[] = [
+      shortage,
+      shortage,
+      role,
+      shortage,
+      role,
+      shortage,
+      secondarySignal,
+      shortage,
+    ];
+    const ordinaryDayTwo: readonly (readonly string[])[] = [
+      shortage,
+      shortage,
+      role,
+      tone,
+      product,
+      shortage,
+      role,
+    ];
+    const ordinaryDayThree: readonly (readonly string[])[] = [
+      shortage,
+      role,
+      shortage,
+      shortage,
+      SINGLE_RESTRICTION_MEME_COPY,
+      role,
+    ];
+    const ordinaryRouting = context.age === 1
+      ? ordinaryDayOne
+      : context.age === 2
+        ? ordinaryDayTwo
+        : ordinaryDayThree;
+    return ordinaryRouting[index % ordinaryRouting.length];
+  }
+
   const dayOne: readonly (readonly string[])[] = [
+    signal(0, tone),
     shortage,
+    signal(0, tone),
+    role,
+    signal(1, role),
     shortage,
     role,
-    shortage,
-    role,
-    detail,
-    shortage,
+    signal(2, detail),
   ];
   const dayTwo: readonly (readonly string[])[] = [
     shortage,
-    shortage,
+    signal(0, tone),
     role,
-    tone,
+    signal(1, tone),
     product,
     shortage,
-    role,
+    signal(2, role),
   ];
   const dayThree: readonly (readonly string[])[] = [
     shortage,
-    role,
+    signal(0, role),
     shortage,
-    shortage,
+    signal(1, tone),
     SINGLE_RESTRICTION_MEME_COPY,
     role,
   ];
@@ -3095,6 +3369,7 @@ function narrowRestrictionCopyPool(
   state: GameState,
   context: RecentRestrictionDecision,
   anchor: RestrictionAnchor,
+  analysis: RestrictionDecisionSignals,
   index: number,
 ): readonly string[] {
   const shortage = TWO_CARD_INCOMPLETE_RESTRICTION_COPY;
@@ -3105,11 +3380,39 @@ function narrowRestrictionCopyPool(
     ? primary
     : restrictionBreadthPool(context, anchor);
   const detail = restrictionPolicyDetailPool(state, context, anchor);
-  const routing = context.age === 1
-    ? [shortage, shortage, primary, shortage, breadth, shortage, detail, shortage]
+  const signalPools = restrictionDecisionSignalPools(
+    state,
+    context,
+    anchor,
+    analysis,
+  );
+  const signal = (offset: number, fallback: readonly string[]) =>
+    signalPools.length > 0
+      ? signalPools[offset % signalPools.length]
+      : fallback;
+  const priorityTargeting = context.anchors.some((candidate) =>
+    hasPriorityTargetingSignal(candidate, analysis)
+  );
+  const routing = !priorityTargeting
+    ? context.age === 1
+      ? [shortage, shortage, primary, shortage, breadth, shortage, detail, shortage]
+      : context.age === 2
+        ? [shortage, primary, shortage, detail, shortage, breadth, shortage]
+        : [shortage, breadth, shortage, primary, shortage, detail]
+    : context.age === 1
+    ? [
+        signal(0, primary),
+        shortage,
+        signal(0, primary),
+        breadth,
+        signal(1, detail),
+        shortage,
+        detail,
+        signal(2, shortage),
+      ]
     : context.age === 2
-      ? [shortage, primary, shortage, detail, shortage, breadth, shortage]
-      : [shortage, breadth, shortage, primary, shortage, detail];
+      ? [shortage, signal(0, primary), shortage, detail, signal(1, breadth), breadth, shortage]
+      : [shortage, signal(0, breadth), shortage, primary, signal(1, detail), detail];
   return routing[index % routing.length];
 }
 
@@ -3225,12 +3528,10 @@ function restrictionCopyPool(
   context: RecentRestrictionDecision,
   anchor: RestrictionAnchor,
   index: number,
+  analysis: RestrictionDecisionSignals,
 ): readonly string[] {
   const age = context.age;
-  const profile = getPublishedRestrictionPolicyProfile(
-    state,
-    context.decisionDay,
-  );
+  const profile = analysis.profile;
   if (
     profile.directionMix.tighten === 0 &&
     profile.directionMix.loosen > 0 &&
@@ -3283,16 +3584,22 @@ function restrictionCopyPool(
     return routing[index % routing.length];
   }
   if (isSingleCardTightening(context, anchor)) {
-    return singleRestrictionCopyPool(state, context, anchor, index);
+    return singleRestrictionCopyPool(state, context, anchor, analysis, index);
   }
   if (
     profile.meaningfulCutCount > 0 &&
     profile.meaningfulCutCount <= 2
   ) {
-    return narrowRestrictionCopyPool(state, context, anchor, index);
+    return narrowRestrictionCopyPool(state, context, anchor, analysis, index);
   }
   if (isBalancedFourCutReview(context, profile)) {
-    return balancedFourCutCopyPool(state, context, anchor, profile, index);
+    return balancedFourCutCopyPool(
+      state,
+      context,
+      anchor,
+      profile,
+      index,
+    );
   }
   const primary = anchor.assessment === "unban"
     ? isUnbanCautionSlot(age, index)
@@ -3303,6 +3610,16 @@ function restrictionCopyPool(
   const composition = restrictionCompositionPool(profile);
   const count = restrictionCountPool(profile);
   const detail = restrictionPolicyDetailPool(state, context, anchor);
+  const signalPools = restrictionDecisionSignalPools(
+    state,
+    context,
+    anchor,
+    analysis,
+  );
+  const signal = (offset: number, fallback: readonly string[]) =>
+    signalPools.length > 0
+      ? signalPools[offset % signalPools.length]
+      : fallback;
   const alternate = anchor.direction === "loosen"
     ? primary
     : ALTERNATE_BUILD_RESTRICTION_COPY;
@@ -3318,30 +3635,30 @@ function restrictionCopyPool(
       : RESTRICTION_CAUTION_COPY;
   const dayOne: readonly (readonly string[])[] = [
     coverage,
-    composition,
+    signal(0, composition),
     coverage,
     primary,
-    meme,
+    signal(1, meme),
     coverage,
     detail,
     caution,
   ];
   const dayTwo: readonly (readonly string[])[] = [
     coverage,
-    composition,
+    signal(0, composition),
     alternate,
     primary,
     count,
-    detail,
+    signal(1, detail),
     market,
   ];
   const dayThree: readonly (readonly string[])[] = [
     coverage,
-    composition,
+    signal(0, composition),
     meta,
     alternate,
     caution,
-    detail,
+    signal(1, detail),
   ];
   const routing = age === 1 ? dayOne : age === 2 ? dayTwo : dayThree;
   return routing[index % routing.length];
@@ -3381,6 +3698,7 @@ function makeRestrictionContextPost(
   context: RecentRestrictionDecision,
   outputIndex: number,
   usedBodies: ReadonlySet<string>,
+  decisionSignals: RestrictionDecisionSignals,
   fixedAnchor?: RestrictionAnchor,
 ): CommunityEvent {
   const anchorOffset = keyedIndex(
@@ -3398,15 +3716,38 @@ function makeRestrictionContextPost(
     context,
     anchor,
     outputIndex,
+    decisionSignals,
   );
   const unban =
     anchor.assessment === "unban"
       ? unbanReactionAssessment(state, context, anchor)
       : null;
-  const policy = getPublishedRestrictionPolicyProfile(
-    state,
-    context.decisionDay,
+  const policy = decisionSignals.profile;
+  const target = decisionSignals.targets.find(
+    (candidate) => candidate.partId === anchor.part.id,
   );
+  const ignoredSignal = decisionSignals.signals.find(
+    (signal) => signal.kind === "upper-ignored",
+  );
+  const ignoredContent = ignoredSignal
+    ? THEME_BY_ID[ignoredSignal.themeId]
+    : undefined;
+  const ignoredPart = ignoredSignal
+    ? COMMUNITY_PART_BY_ID.get(ignoredSignal.partId)
+    : undefined;
+  const ignoredShare = ignoredSignal
+    ? historyAtOrBefore(state, context.decisionDay)?.shares[
+        ignoredSignal.themeId
+      ] ?? 0
+    : 0;
+  const replacementSignal = decisionSignals.signals.find(
+    (signal) =>
+      signal.kind === "replacement-risk" &&
+      signal.partId === anchor.part.id,
+  );
+  const relatedPart = replacementSignal?.relatedPartId
+    ? COMMUNITY_PART_BY_ID.get(replacementSignal.relatedPartId)
+    : undefined;
   const values = {
     theme: anchor.content.shortName,
     part: anchor.part.name,
@@ -3430,6 +3771,12 @@ function makeRestrictionContextPost(
     oldUnbanCount: String(policy.staleFullyReleased),
     tierOneCutCount: String(policy.upperMeaningfulCuts),
     tierTwoCutCount: String(policy.tier2MeaningfulCuts),
+    ignoredTheme: ignoredContent?.shortName ?? "최상위 테마",
+    ignoredPart: ignoredPart?.name ?? "최상위권 핵심",
+    ignoredShare: `${(ignoredShare * 100).toFixed(1)}%`,
+    usage: `${((target?.usageRate ?? anchor.part.inclusion) * 100).toFixed(1)}%`,
+    averageCopies: (target?.averageCopies ?? anchor.part.averageCopies).toFixed(1),
+    relatedPart: relatedPart?.name ?? "대체 파츠",
     changeLabel: `${anchor.oldLimit}→${anchor.newLimit}장`,
     limitLabel: anchor.newLimit === 0
       ? "금지"
@@ -4537,6 +4884,13 @@ export function getDailyCommunityPosts(
 ): CommunityEvent[] {
   assertCommunityDay(state, day);
 
+  // DAY 1–45 is a fixed authored handover. Once the first restriction list
+  // mints a random mandate seed, historical prologue boards must not be
+  // silently reshuffled when the player looks back at them.
+  if (day <= FIRST_BAN_DAY && state.seed !== PROLOGUE_SEED) {
+    return getDailyCommunityPosts({ ...state, seed: PROLOGUE_SEED }, day);
+  }
+
   const allSpecialPosts = state.community
     .filter(
       (event) => event.day === day && !isRestrictionDecisionEvent(event),
@@ -4561,6 +4915,10 @@ export function getDailyCommunityPosts(
   if (output.length === POSTS_PER_DAY) return output;
   const businessPostCount = output.length;
   if (restrictionContext) {
+    const restrictionSignals = getPublishedRestrictionDecisionSignals(
+      state,
+      restrictionContext.decisionDay,
+    );
     const target = RESTRICTION_CONTEXT_QUOTA[restrictionContext.age - 1];
     const existingContext = allSpecialPosts
       .filter((event) => isRestrictionContextEvent(event, restrictionContext))
@@ -4579,6 +4937,7 @@ export function getDailyCommunityPosts(
         restrictionContext,
         index,
         usedBodies,
+        restrictionSignals,
         anchor,
       );
       output.push({
@@ -4599,6 +4958,7 @@ export function getDailyCommunityPosts(
         restrictionContext,
         contextualRestrictionCount,
         usedBodies,
+        restrictionSignals,
       );
       output.push(contextual);
       usedBodies.add(contextual.body);

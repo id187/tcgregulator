@@ -31,6 +31,7 @@ import type {
   VentureActionType,
   VentureRiskFactor,
 } from "../app/game/business-community-copy.ts";
+import { PROLOGUE_SEED } from "../app/game/campaign.ts";
 import {
   getCommunityHeat,
   getDailyCommunityPosts,
@@ -41,6 +42,7 @@ import {
   getRestrictionHistoricalOutcome,
 } from "../app/game/restriction-policy.ts";
 import {
+  createFirstBanGame,
   createInitialGame,
   formatCommunityEvent,
   reduceGame,
@@ -63,6 +65,35 @@ function addBusinessRecord(
   state.operations.nextActionId += 1;
   state.operations.records.push({ id, ...record });
 }
+
+test("keeps every DAY 1-45 community board fixed after the mandate seed changes", () => {
+  const atFirstBan = createFirstBanGame(PROLOGUE_SEED);
+  const beforeHandover = new Map(
+    Array.from({ length: 45 }, (_, index) => {
+      const day = index + 1;
+      return [day, getDailyCommunityPosts(atFirstBan, day)] as const;
+    }),
+  );
+  const campaignSeed = 0xdecafbad;
+  const assigned = reduceGame(atFirstBan, {
+    type: "SUBMIT_BAN",
+    changes: {},
+    campaignSeed,
+  });
+
+  assert.notEqual(assigned.seed, PROLOGUE_SEED);
+  assert.equal(assigned.seed, campaignSeed);
+  for (let day = 1; day <= 45; day += 1) {
+    const before = beforeHandover.get(day);
+    assert.ok(before);
+    assert.equal(before.length, 20, `DAY ${day} pre-handover board`);
+    assert.deepEqual(
+      getDailyCommunityPosts(assigned, day),
+      before,
+      `DAY ${day} must keep the fixed prologue board`,
+    );
+  }
+});
 
 test("business reactions provide two hundred distinct community voices", () => {
   const pools = [
@@ -1037,7 +1068,9 @@ test("prologue four-cut reactions use the actual targets, scope, and roles", () 
   );
   assert.ok(
     dayOne.some((post) =>
-      /1티어.*2티어|상위 두 구간|상위권 두 층|현역 두 구간/.test(post.body)
+      /1티어.*2티어|1·2티어|상위 두 구간|상위권 두 층|현역 두 구간/.test(
+        post.body,
+      )
     ),
   );
   for (const decision of decisions) {
@@ -1251,6 +1284,58 @@ test("one-card and two-card D+1 boards make insufficient breadth the majority", 
       !/세 장|서너 장|다섯 장|[3-9]종만|여러 장을 잘랐/.test(post.body)
     ),
   );
+});
+
+test("one-card and two-card cuts below the leaders ask why the top decks were spared", () => {
+  const comparison =
+    /최상위권|1위권 핵심|상위권 점유율|그 아래|경쟁자|강한 덱 아래|핵심을 살려 두고|본체는 통과|독주를 누가 막|상위권을 그대로|지금 잡아야|보다 먼저/;
+  const fixtures: Array<readonly RestrictionFixtureChange[]> = [
+    [
+      {
+        themeId: "ironblood",
+        partId: "ironblood-squire",
+        oldLimit: 3,
+        newLimit: 1,
+      },
+    ],
+    [
+      {
+        themeId: "ironblood",
+        partId: "ironblood-squire",
+        oldLimit: 3,
+        newLimit: 1,
+      },
+      {
+        themeId: "abyss",
+        partId: "abyss-bait",
+        oldLimit: 3,
+        newLimit: 1,
+      },
+    ],
+  ];
+
+  for (const [fixtureIndex, changes] of fixtures.entries()) {
+    for (let seedOffset = 0; seedOffset < 8; seedOffset += 1) {
+      const state = makeScheduledRestrictionReactionState(
+        changes,
+        39_100 + fixtureIndex * 100 + seedOffset,
+      );
+      const posts = restrictionContextPosts(state, 166, 165);
+      const comparativePosts = posts.filter((post) => comparison.test(post.body));
+      assert.ok(
+        comparativePosts.length >= 4,
+        posts.map((post) => post.body).join("\n"),
+      );
+      assert.ok(
+        comparativePosts.some((post) =>
+          post.body.includes("윤회") || post.body.includes("백야") ||
+          post.body.includes("기계혁명")
+        ),
+        "the reaction must compare the chosen target with an actual higher-ranked theme",
+      );
+      assert.ok(posts.every((post) => !/[{}]/.test(post.body)));
+    }
+  }
 });
 
 test("multi-card restriction keeps aggregate and multi-axis reactions", () => {
@@ -1897,22 +1982,29 @@ test("historical no-change debate ignores later runtime pressure", () => {
 test("restriction recency copy uses the latest support product, not theme debut", () => {
   let state = createInitialGame(1000);
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 2 });
-  const announcement = state.community.find(
-    (event) => event.day === 45 && event.type === "restriction-applied",
-  );
-  assert.ok(announcement);
+  const restrictedThemeIds = [
+    ...new Set(
+      state.community
+        .filter(
+          (event) =>
+            event.day === 45 &&
+            (event.type === "restriction-applied" ||
+              event.type === "cosmetic-restriction"),
+        )
+        .map((event) => event.themeId),
+    ),
+  ];
+  assert.ok(restrictedThemeIds.length > 0);
   state.releaseHistory.push({
     day: 40,
-    products: [
-      {
-        optionId: "recent-restricted-support",
-        kind: "support",
-        themeId: announcement.themeId,
-        direction: "recovery",
-        expectedTier: "Tier 1",
-        powerAdjustment: 0,
-      },
-    ],
+    products: restrictedThemeIds.map((themeId, index) => ({
+      optionId: `recent-restricted-support-${index}`,
+      kind: "support",
+      themeId,
+      direction: "recovery",
+      expectedTier: "Tier 1",
+      powerAdjustment: 0,
+    })),
   });
   const recencyPosts = [47, 48].flatMap((day) =>
     getDailyCommunityPosts(state, day)

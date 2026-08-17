@@ -20,6 +20,10 @@ import {
   isGameState,
   parseGameState,
 } from "../app/game/save-schema.ts";
+import {
+  CURRENT_FUTURE_PART_ID_MAP,
+  CURRENT_FUTURE_THEME_ID_MAP,
+} from "../app/game/future-theme-id-migration.ts";
 import type {
   GameState,
   PowerAdjustment,
@@ -28,6 +32,26 @@ import type {
 
 function jsonRoundTrip(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value)) as unknown;
+}
+
+function asLegacyFutureIdentifiers(value: unknown): unknown {
+  if (typeof value === "string") {
+    return (
+      CURRENT_FUTURE_THEME_ID_MAP[value] ??
+      CURRENT_FUTURE_PART_ID_MAP[value] ??
+      value
+    );
+  }
+  if (Array.isArray(value)) return value.map(asLegacyFutureIdentifiers);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      (CURRENT_FUTURE_THEME_ID_MAP[key] ??
+        CURRENT_FUTURE_PART_ID_MAP[key] ??
+        key),
+      asLegacyFutureIdentifiers(item),
+    ]),
+  );
 }
 
 function asLegacyV3(state: GameState): Record<string, unknown> {
@@ -227,6 +251,108 @@ test("accepts schema v7 saves and preserves deterministic continuation", () => {
   const continued = reduceGame(restoredAtGate, command);
   assert.deepEqual(continued, uninterrupted);
   parseGameState(continued);
+});
+
+test("deep-migrates v0.1.5 future theme and part IDs in schema v3-v7 saves", () => {
+  let current = advanceThroughDecisions(createInitialGame(7319), 61);
+  const futureThemeId = current.activeThemeIds.find((id) =>
+    id.startsWith("future-"),
+  );
+  assert.ok(futureThemeId);
+  current = reduceGame(current, {
+    type: "PROPOSE_SUPPORT",
+    themeId: futureThemeId,
+    direction: "recovery",
+  });
+  current = advanceWhileRunning(current, 100);
+  assert.equal(current.phase, "release-edit");
+  assert.ok(
+    current.releaseSlate?.options.some(
+      (option) => option.themeId === futureThemeId && option.requested,
+    ),
+  );
+
+  const legacyThemeId = CURRENT_FUTURE_THEME_ID_MAP[futureThemeId];
+  assert.ok(legacyThemeId);
+  const legacyPartId = CURRENT_FUTURE_PART_ID_MAP[
+    current.themes[futureThemeId].releasedPartIds[0]
+  ];
+  assert.ok(legacyPartId);
+
+  const legacyFactories: ReadonlyArray<{
+    version: 3 | 4 | 5 | 6 | 7;
+    make: (state: GameState) => unknown;
+  }> = [
+    { version: 3, make: asLegacyV3 },
+    { version: 4, make: asLegacyV4 },
+    { version: 5, make: asLegacyV5 },
+    { version: 6, make: asLegacyV6 },
+    { version: 7, make: jsonRoundTrip },
+  ];
+
+  for (const { version, make } of legacyFactories) {
+    const legacy = asLegacyFutureIdentifiers(make(current));
+    const untouched = structuredClone(legacy);
+    const serializedLegacy = JSON.stringify(legacy);
+    assert.match(serializedLegacy, new RegExp(legacyThemeId));
+    assert.match(serializedLegacy, new RegExp(legacyPartId));
+
+    const migrated = parseGameState(legacy);
+    assert.equal(migrated.schemaVersion, 7, `schema v${version}`);
+    assert.ok(migrated.activeThemeIds.includes(futureThemeId));
+    assert.equal(migrated.themes[legacyThemeId], undefined);
+    assert.deepEqual(
+      migrated.themes[futureThemeId].releasedPartIds,
+      current.themes[futureThemeId].releasedPartIds,
+    );
+    assert.deepEqual(
+      migrated.themes[futureThemeId].legalLimits,
+      current.themes[futureThemeId].legalLimits,
+    );
+    assert.deepEqual(
+      migrated.themes[futureThemeId].partStats,
+      current.themes[futureThemeId].partStats,
+    );
+    assert.ok(
+      migrated.releaseHistory.some((batch) =>
+        batch.products.some((product) => product.themeId === futureThemeId),
+      ),
+    );
+    assert.ok(
+      migrated.history.some(
+        (entry) => entry.shares[futureThemeId] !== undefined,
+      ),
+    );
+    assert.ok(
+      migrated.supportRequests.some(
+        (request) => request.themeId === futureThemeId,
+      ),
+    );
+    assert.equal(JSON.stringify(migrated).includes(legacyThemeId), false);
+    assert.equal(JSON.stringify(migrated).includes(legacyPartId), false);
+    assert.deepEqual(legacy, untouched, "migration must not mutate its input");
+    if (version === 7) assert.deepEqual(migrated, current);
+  }
+});
+
+test("rejects legacy/current future-ID key collisions instead of losing data", () => {
+  const current = advanceThroughDecisions(createInitialGame(7320), 61);
+  const futureThemeId = current.activeThemeIds.find((id) =>
+    id.startsWith("future-"),
+  );
+  assert.ok(futureThemeId);
+  const legacyThemeId = CURRENT_FUTURE_THEME_ID_MAP[futureThemeId];
+  assert.ok(legacyThemeId);
+
+  const collision = jsonRoundTrip(current) as GameState;
+  collision.themes[legacyThemeId] = structuredClone(
+    collision.themes[futureThemeId],
+  );
+  assert.throws(
+    () => parseGameState(collision),
+    (error: unknown) =>
+      error instanceof SaveSchemaError && /colliding/.test(error.message),
+  );
 });
 
 test("migrates strict schema v3 saves to v7 finance and event state", () => {
@@ -477,6 +603,44 @@ test("round-trips every guided prologue gate without tutorial-only save data", (
   state = reduceGame(state, { type: "COMPLETE_HANDOVER" });
   state = parseGameState(jsonRoundTrip(state));
   assert.deepEqual(state, createInitialGame(1000));
+});
+
+test("accepts legacy history rows while preserving the new dashboard metrics", () => {
+  const current = jsonRoundTrip(createInitialGame(7302)) as GameState;
+  const restored = parseGameState(current);
+  assert.equal(restored.history.at(-1)?.cash, restored.finance.cash);
+  assert.equal(
+    restored.history.at(-1)?.operatingCash,
+    restored.finance.todayOperatingCash,
+  );
+  assert.equal(
+    restored.history.at(-1)?.purchaseTrust,
+    restored.purchaseTrust,
+  );
+  assert.ok(restored.history.every((entry) => entry.environmentHealth !== undefined));
+  assert.ok(restored.history.every((entry) => entry.communitySentiment !== undefined));
+  assert.ok(
+    restored.history.every(
+      (entry) =>
+        (entry.communityPositive ?? 0) + (entry.communityNegative ?? 0) <= 20,
+    ),
+  );
+
+  const legacy = jsonRoundTrip(current) as GameState;
+  for (const entry of legacy.history) {
+    delete entry.cash;
+    delete entry.operatingCash;
+    delete entry.environmentHealth;
+    delete entry.purchaseTrust;
+    delete entry.communitySentiment;
+    delete entry.communityPositive;
+    delete entry.communityNegative;
+  }
+  const migrated = parseGameState(legacy);
+  assert.equal(migrated.history.length, current.history.length);
+  assert.equal(migrated.history[0].cash, undefined);
+  assert.equal(migrated.history[0].environmentHealth, undefined);
+  assert.equal(migrated.history[0].communitySentiment, undefined);
 });
 
 test("round-trips release editing, support requests, and dynamic theme history", () => {
@@ -1023,6 +1187,26 @@ test("rejects malformed release batches and historical share maps", () => {
   const unknownHistoricalTheme = jsonRoundTrip(released) as GameState;
   (unknownHistoricalTheme.history[0].shares as Record<string, number>).injected = 0;
   assert.throws(() => parseGameState(unknownHistoricalTheme), SaveSchemaError);
+
+  const impossibleHealth = jsonRoundTrip(released) as GameState;
+  impossibleHealth.history[0].environmentHealth = 101;
+  assert.throws(() => parseGameState(impossibleHealth), SaveSchemaError);
+
+  const impossibleTrust = jsonRoundTrip(released) as GameState;
+  impossibleTrust.history[0].purchaseTrust = -1;
+  assert.throws(() => parseGameState(impossibleTrust), SaveSchemaError);
+
+  const impossibleSentiment = jsonRoundTrip(released) as GameState;
+  impossibleSentiment.history[0].communitySentiment = 101;
+  assert.throws(() => parseGameState(impossibleSentiment), SaveSchemaError);
+
+  const impossibleSentimentCounts = jsonRoundTrip(released) as GameState;
+  impossibleSentimentCounts.history[0].communityPositive = 14;
+  impossibleSentimentCounts.history[0].communityNegative = 7;
+  assert.throws(
+    () => parseGameState(impossibleSentimentCounts),
+    SaveSchemaError,
+  );
 });
 
 test("rejects cross-theme parts and impossible decision phases", () => {

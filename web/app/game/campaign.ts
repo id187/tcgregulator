@@ -1,4 +1,5 @@
 /** Fixed campaign calendar shared by the simulation and presentation layers. */
+export const PROLOGUE_SEED = 1000;
 export const RELEASE_INTERVAL = 30;
 export const FIRST_BAN_DAY = 45;
 export const BAN_INTERVAL = 60;

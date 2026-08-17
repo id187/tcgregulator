@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createInitialGame } from "../app/game/engine.ts";
+import { getBusinessEventChoice } from "../app/game/business-events.ts";
+import { createInitialGame, reduceGame } from "../app/game/engine.ts";
+import {
+  CURRENT_FUTURE_PART_ID_MAP,
+  CURRENT_FUTURE_THEME_ID_MAP,
+} from "../app/game/future-theme-id-migration.ts";
 import { loadPersistedGameFromStorage } from "../app/game/persistence-client.ts";
 import { MAX_SAVE_BYTES } from "../app/game/save-schema.ts";
+import type { GameState } from "../app/game/types.ts";
 
 const CURRENT_KEY = "tcg-regulator-save-v2";
 const LEGACY_KEY = "tcg-regulator-save-v1";
@@ -24,6 +30,62 @@ class MemoryStorage {
     this.removed.push(key);
     this.values.delete(key);
   }
+}
+
+function asLegacyFutureIdentifiers(value: unknown): unknown {
+  if (typeof value === "string") {
+    return (
+      CURRENT_FUTURE_THEME_ID_MAP[value] ??
+      CURRENT_FUTURE_PART_ID_MAP[value] ??
+      value
+    );
+  }
+  if (Array.isArray(value)) return value.map(asLegacyFutureIdentifiers);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      CURRENT_FUTURE_THEME_ID_MAP[key] ??
+        CURRENT_FUTURE_PART_ID_MAP[key] ??
+        key,
+      asLegacyFutureIdentifiers(item),
+    ]),
+  );
+}
+
+function reachFutureThemeState(seed: number): GameState {
+  let state = createInitialGame(seed);
+  while (state.day < 61) {
+    if (state.operations.pendingEvent) {
+      const pending = state.operations.pendingEvent;
+      const choice =
+        getBusinessEventChoice(pending.type, "a").cost <=
+        getBusinessEventChoice(pending.type, "b").cost
+          ? "a"
+          : "b";
+      state = reduceGame(state, {
+        type: "CHOOSE_BUSINESS_EVENT",
+        eventId: pending.id,
+        choice,
+      });
+    } else if (state.phase === "release-edit") {
+      state = reduceGame(state, {
+        type: "SUBMIT_RELEASE",
+        selections: state.releaseSlate!.options.slice(0, 3).map((option) => ({
+          optionId: option.id,
+          powerAdjustment: 0,
+        })),
+      });
+    } else if (state.phase === "ban-edit") {
+      state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
+    } else {
+      state = reduceGame(state, {
+        type: "ADVANCE_DAYS",
+        days: 61 - state.day,
+      });
+    }
+  }
+  assert.ok(state.activeThemeIds.some((id) => id.startsWith("future-")));
+  return state;
 }
 
 test("falls back to a preserved legacy save after removing a broken current save", () => {
@@ -66,6 +128,21 @@ test("a valid current save remains authoritative over a legacy save", () => {
   const loaded = loadPersistedGameFromStorage(storage);
 
   assert.equal(loaded.game?.seed, current.seed);
+  assert.deepEqual(storage.removed, []);
+  assert.equal(loaded.warning, undefined);
+});
+
+test("loads a v0.1.5 current-key save through the future-ID migration", () => {
+  const current = reachFutureThemeState(81);
+  const legacyIdentifiers = asLegacyFutureIdentifiers(current);
+  const storage = new MemoryStorage(new Map([
+    [CURRENT_KEY, JSON.stringify(legacyIdentifiers)],
+  ]));
+
+  const loaded = loadPersistedGameFromStorage(storage);
+
+  assert.equal(loaded.backend.kind, "local");
+  assert.deepEqual(loaded.game, current);
   assert.deepEqual(storage.removed, []);
   assert.equal(loaded.warning, undefined);
 });

@@ -11,7 +11,7 @@ TCG REGULATOR의 공개 웹게임 배포 저장소 준비본입니다. 원본은
 1. 이 폴더에서 Git 저장소를 초기화하거나 새 GitHub 저장소를 연결합니다.
 2. 기본 브랜치를 `main`으로 둡니다.
 3. GitHub 저장소의 **Settings → Pages → Source**를 **GitHub Actions**로 설정합니다.
-4. 변경 사항을 `main`에 푸시합니다.
+4. 변경 사항을 `main`에 푸시합니다. 
 
 ## 구성
 

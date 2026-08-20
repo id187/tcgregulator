@@ -532,7 +532,7 @@ export interface GameState {
   nextCommunityId: number;
   currentTopThemeId: ThemeId;
   purchaseTrust: number;
-  /** False while the guided DAY 1-46 handover still needs its final acknowledgement. */
+  /** False while the guided DAY 1-31 handover still needs its final acknowledgement. */
   handoverComplete: boolean;
 }
 
@@ -542,7 +542,7 @@ export type GameCommand =
       type: "SUBMIT_BAN";
       changes: Record<string, RestrictionLimit>;
       /**
-       * The guided DAY 45 decision may mint the real mandate seed after the
+       * The guided DAY 15 decision may mint the real mandate seed after the
        * fixed prologue. It is deliberately supplied by the UI so the reducer
        * remains deterministic and saved games remain exactly reproducible.
        */

@@ -330,7 +330,7 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
   );
   assert.deepEqual(
     publishedPolicies.map((profile) => profile.changeCount),
-    [2, 2, 3, 3, 3, 2, 4],
+    [2, 4, 3, 2, 2, 3, 4],
   );
   assert.equal(
     publishedPolicies.reduce(
@@ -367,7 +367,6 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       "a",
       "b",
       "a",
-      "a",
     ],
   );
   assert.deepEqual(
@@ -382,11 +381,11 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       title: ending.title,
     },
     {
-      cash: 14.7619,
-      endingCash: 14.8,
-      environmentHealth: 77.9,
-      purchaseTrust: 86,
-      userRatio: 1.6038,
+      cash: 15.1263,
+      endingCash: 15.1,
+      environmentHealth: 72.7,
+      purchaseTrust: 87.3,
+      userRatio: 1.5829,
       bands: {
         cash: "reserve",
         environment: "stable",

@@ -78,6 +78,10 @@ import type {
 
 const POSTS_PER_DAY = 20;
 const RELEASE_CONTEXT_QUOTA = [16, 12, 8, 5] as const;
+const HIGH_ILLUSTRATION_MARKET_PRICE = 50_000;
+const HIGH_ILLUSTRATION_COLLECTOR_DEMAND = 80;
+const ILLUSTRATION_DISCUSSION =
+  /일러|풀아트|팬아트|색감|비주얼|설정화|바인더|카드명|고레어 실물|레어도별|프레임|후가공|인쇄 품질|슬리브|플레이매트|판본별 가공|실물 디자인/;
 const RESTRICTION_CONTEXT_QUOTA = [16, 14, 12] as const;
 const GENERIC_RESTRICTION_CONTEXT_QUOTA = [18, 16, 14] as const;
 const BUSINESS_CONTEXT_QUOTA = {
@@ -978,7 +982,7 @@ const REPRINT_PRICE_CRASH_COPY = [
   "{card} 일반판은 {newPrice}, 초판 프리미엄은 버티는지 이제 판본 싸움 시작임",
   "재판 발표 전에 매입한 매장은 {card} 재고 가격 다시 붙이느라 난리겠네",
   "중고 장터 {card} 판매글이 한 시간마다 더 싸지는 중",
-  "{dropRate}% 빠졌으면 기다린 사람이 이겼다. 품귀 카드 추격매수 무섭네",
+  "가격이 {dropRate}% 빠졌으면 기다린 사람이 이겼다. 품귀 카드 추격매수 무섭네",
   "가격 폭락은 아프지만 플레이 카드가 {oldPrice}였던 게 더 이상하긴 했음",
   "{card} 세 장 세트 가격이 어제 한 장 가격이랑 비슷해졌네",
   "재록 발표 한 줄에 되팔이 매물이 한꺼번에 쏟아지는 거 장관이다",
@@ -1001,7 +1005,7 @@ const REPRINT_ACCESSIBILITY_COPY = [
   "재판 목록에 {card} 있는 거 보고 친구 셋이 동시에 덱 견적 짜는 중",
   "{theme} 유저가 지원 카드보다 {card} 재록을 더 반기는 이유가 있었음",
   "구하기도 힘들고 비싸던 필수 파츠를 이렇게 풀어주는 건 잘했다",
-  "{oldPrice} 때문에 망설였는데 {newPrice}면 남는 돈으로 사이드까지 맞추겠네",
+  "{oldPrice} 때문에 망설였는데 {newPrice}이면 남는 돈으로 사이드까지 맞추겠네",
   "재판 물량 넉넉하면 지역 대회에 {theme} 신규 유저 꽤 늘 듯",
   "비싼 한 장 빌리러 다니던 사람들 드디어 자기 {card} 생기겠네",
   "성능은 그대로인데 가격만 내려간 지원이라 모든 유저가 체감함",
@@ -1130,6 +1134,37 @@ const EMERGING_THEME_EARLY_POSITIVE_COPY = [
   "연구 덜 된 상태에서 본선 진출률 {conversion}면 최적화 뒤가 더 기대된다",
 ] as const;
 
+const EMERGING_THEME_EARLY_WIN_POSITIVE_COPY = [
+  "{elapsed} 동안 {theme} 승률 {winRate}면 첫 매치 성적은 기대할 만하다",
+  "아직 초반이지만 {theme}가 승률 {winRate}를 낸 건 분명 좋은 출발이다",
+  "채용률 {adoption} 표본에서 승률 {winRate}면 {theme} 기본 체급은 보이네",
+  "첫 구축들이 승률 {winRate}를 내고 있으면 {theme} 연구가 더 진행될 이유는 충분함",
+  "{elapsed}치 매치 승률 {winRate}는 긍정 신호다. 탑컷 표본은 따로 더 보자",
+] as const;
+
+const EMERGING_THEME_EARLY_PLACEMENT_POSITIVE_COPY = [
+  "나온 지 {elapsed}인데 {theme}가 벌써 입상 {placements}자리면 첫 대회 성적은 좋다",
+  "{theme} 탑컷 점유율 {placementShare}, 본선 진출률 {conversion}면 출발은 확실히 좋네",
+  "초기 표본이어도 입상 {placements}자리를 만든 건 {theme} 실전성이 있다는 신호다",
+  "채용률 {adoption} 대비 탑컷 점유율 {placementShare}면 {theme} 첫 결과는 기대할 만함",
+  "연구가 덜 된 시점에 본선 진출률 {conversion}를 냈다면 다음 대회도 볼 이유가 충분하다",
+] as const;
+
+const EMERGING_THEME_EARLY_NEUTRAL_COPY = [
+  "{theme} 첫 {elapsed} 성적은 승률 {winRate}, 입상 {placements}자리다. 아직 좋다 나쁘다 말할 단계는 아님",
+  "채용률 {adoption}에 탑컷 점유율 {placementShare}면 지금은 강세도 거품도 판단 보류가 맞다",
+  "{elapsed}치 본선 진출률 {conversion}만으로 {theme} 성능 방향을 정하기엔 표본이 너무 작다",
+  "첫 집계에서 입상 {placements}자리였다고 바로 강약을 붙이지 말고 다음 대회를 보자",
+  "승률 {winRate}와 본선 진출률 {conversion} 모두 아직 {theme} 결론을 낼 만큼 선명하지 않다",
+] as const;
+
+const EMERGING_THEME_EARLY_MIXED_COPY = [
+  "{theme} 승률 {winRate}와 탑컷 점유율 {placementShare}가 서로 다른 방향이라 첫 평가는 보류다",
+  "매치 승률은 {winRate}, 본선 진출률은 {conversion}다. {elapsed} 표본으로 한쪽만 골라 말하긴 어렵네",
+  "{theme}는 승률과 입상 {placements}자리 신호가 엇갈린다. 더 쌓이기 전엔 강약 확정 못 함",
+  "채용률 {adoption}에서 나온 매치 성적과 탑컷 성적이 충돌하니 첫인상보다 다음 표본이 중요하다",
+] as const;
+
 const EMERGING_THEME_POSITIVE_COPY = [
   "{elapsed} 봤으면 첫 성적표는 나왔다. {theme} 본선 진출률 {conversion}면 앞으로가 더 기대됨",
   "{theme} 채용률 {adoption}에 탑컷 점유율 {placementShare}면 아직 더 봐도 강할 가능성이 높아 보임",
@@ -1138,6 +1173,37 @@ const EMERGING_THEME_POSITIVE_COPY = [
   "채용률과 본선 점유가 같이 움직이면 {theme}가 강할 가능성도 충분해 보임",
   "입상 {placements}자리면 이제 {theme} 성적표를 결과로 말할 수 있겠네",
   "초반 카운터 연구를 버티고도 승률 {winRate}인 게 다음 성적도 기대되는 부분이다",
+] as const;
+
+const EMERGING_THEME_WIN_POSITIVE_COPY = [
+  "{elapsed} 동안 {theme} 승률 {winRate}면 매치 성적 쪽 기대 근거는 충분하다",
+  "연구 기간을 지나서도 승률 {winRate}면 {theme} 기본 체급은 긍정적으로 봐도 되겠네",
+  "채용률 {adoption} 표본에서 승률 {winRate}가 유지되면 {theme} 강점은 실제로 작동하는 중이다",
+  "{theme}가 카운터 연구 뒤에도 승률 {winRate}를 냈다. 다음 성적도 기대할 만함",
+  "입상 지표는 더 봐야 해도 {elapsed}치 승률 {winRate} 자체는 좋은 성적표다",
+] as const;
+
+const EMERGING_THEME_PLACEMENT_POSITIVE_COPY = [
+  "{elapsed} 동안 {theme} 입상 {placements}자리면 대회 결과 쪽 기대 근거는 충분하다",
+  "{theme} 탑컷 점유율 {placementShare}와 본선 진출률 {conversion}가 같이 받쳐 주네",
+  "공식 표본이 쌓이는 동안 입상 {placements}자리를 지켰으면 {theme} 실전성은 확인됐다",
+  "채용률 {adoption} 대비 탑컷 점유율 {placementShare}면 단순 신제품 관심만으로 보기 어렵다",
+  "본선 진출률 {conversion}가 유지되면 {theme}는 다음 대회에서도 기대할 만하다",
+] as const;
+
+const EMERGING_THEME_NEUTRAL_COPY = [
+  "{elapsed}치 {theme} 승률 {winRate}, 본선 진출률 {conversion}면 아직 강세도 거품도 아니다",
+  "채용률 {adoption}과 탑컷 점유율 {placementShare}만 보면 {theme} 평가는 계속 보류가 맞다",
+  "입상 {placements}자리까지 쌓였지만 지금 수치는 {theme} 방향을 확정할 만큼 선명하지 않네",
+  "{theme} 성적은 평균권에 가깝다. 성공이나 실패를 말하려면 다음 표본이 더 필요함",
+  "승률 {winRate}와 본선 진출률 {conversion} 모두 한쪽 결론을 밀 정도는 아니다",
+] as const;
+
+const EMERGING_THEME_MIXED_COPY = [
+  "{theme} 승률 {winRate}와 탑컷 점유율 {placementShare}가 엇갈려서 한쪽 지표만으로 평가 못 하겠다",
+  "매치 성적은 {winRate}, 본선 진출률은 {conversion}다. 서로 다른 신호라 결론은 보류",
+  "{elapsed} 봤어도 {theme} 승률과 입상 {placements}자리 방향이 다르면 추가 표본이 필요하다",
+  "채용률 {adoption} 표본의 매치 결과와 탑컷 결과가 충돌한다. 강하다 약하다 둘 다 성급함",
 ] as const;
 
 const EMERGING_THEME_EARLY_BUBBLE_COPY = [
@@ -1150,6 +1216,20 @@ const EMERGING_THEME_EARLY_BUBBLE_COPY = [
   "첫 주 프리미엄 뒤 채용률 {adoption} 수요가 거품인지도 중요하겠네",
 ] as const;
 
+const EMERGING_THEME_EARLY_WIN_WEAK_COPY = [
+  "{elapsed} 동안 채용률 {adoption}까지 올랐는데 승률 {winRate}면 {theme} 첫 매치 성적은 불안하다",
+  "{theme}를 많이 잡은 표본에서 승률 {winRate}면 신제품 관심과 성능은 나눠 봐야지",
+  "아직 초반이어도 채용률 {adoption} 대비 승률 {winRate}는 약한 신호다",
+  "첫 구축 문제를 감안해도 {theme} 승률 {winRate}면 다음 연구에서 반등이 필요하다",
+] as const;
+
+const EMERGING_THEME_EARLY_PLACEMENT_WEAK_COPY = [
+  "{elapsed} 동안 {theme} 채용률 {adoption}에 입상 {placements}자리면 첫 대회 결과는 불안하다",
+  "많이 들고 왔는데 탑컷 점유율 {placementShare}면 {theme} 인기에 비해 결과가 약하네",
+  "채용률 {adoption} 표본에서 본선 진출률 {conversion}면 첫 성적은 거품을 의심할 만하다",
+  "신제품 관심은 큰데 입상 {placements}자리라 {theme} 실전성은 아직 못 따라오는 중",
+] as const;
+
 const EMERGING_THEME_BUBBLE_COPY = [
   "{elapsed} 봤으면 충분하다. {theme} 채용률 {adoption}인데 본선 진출률 {conversion}면 거품 쪽임",
   "{theme}를 많이 들고 왔는데 탑컷 점유율은 {placementShare}다. 벌써 흥행만 하고 성적은 망한 느낌",
@@ -1158,6 +1238,20 @@ const EMERGING_THEME_BUBBLE_COPY = [
   "{theme} 판매량은 성공인데 대회 성적표는 성공이라고 부르기 어렵다",
   "카운터가 많아서 그렇다는 설명까지 포함해도 본선 진출률 {conversion}는 낮다",
   "인기 덱이 약하면 지역 매칭에서는 많고 상위 테이블에서는 사라지는 패턴이 바로 보임",
+] as const;
+
+const EMERGING_THEME_WIN_WEAK_COPY = [
+  "{elapsed} 동안 채용률 {adoption}인데 승률 {winRate}면 {theme}는 인기만큼 매치 성적을 못 냈다",
+  "연구 기간을 줬는데도 {theme} 승률 {winRate}면 약체 평가 근거는 충분하다",
+  "채용률 {adoption} 표본에서 승률 {winRate}가 계속 낮으면 구축 문제만으로 돌리기 어렵다",
+  "{theme}를 많이 잡았지만 매치 승률 {winRate}라 성능 쪽 반등이 필요함",
+] as const;
+
+const EMERGING_THEME_PLACEMENT_WEAK_COPY = [
+  "{elapsed} 동안 {theme} 채용률 {adoption}에 입상 {placements}자리면 대회 결과는 약하다",
+  "많이 들고 왔는데 탑컷 점유율 {placementShare}면 {theme} 인기에 비해 실속이 없다",
+  "채용률 {adoption} 표본에서 본선 진출률 {conversion}면 거품 평가가 나올 만하다",
+  "표본이 쌓였는데도 입상 {placements}자리면 {theme} 대회 성적은 실패 쪽에 가깝다",
 ] as const;
 
 const EMERGING_THEME_WEAK_TO_STRONG_COPY = [
@@ -1505,6 +1599,15 @@ const RELEASE_ART_COPY = [
     "{part} 비주얼은 유행 지나도 바인더 첫 장에 둘 만하다",
     "색감 때문에 같은 레어도로 통일한 덱 사진이 진짜 예쁘네",
   ],
+] as const;
+
+const HIGH_ILLUSTRATION_MARKET_COPY = [
+  "하이 일러스트 {part}는 컬렉터 수요가 받쳐서 {marketPrice} 시세를 계속 지키네",
+  "{part}는 플레이 성적이 흔들려도 하이 일러스트 매물이 {marketPrice} 아래로 잘 안 내려온다",
+  "일반판과 달리 {part} 하이 일러스트는 수집 수요 때문에 고가 매물 흐름이 따로 간다",
+  "{part} 시세가 {marketPrice}를 버티는 건 채용률보다 컬렉터 수요 영향이 더 커 보임",
+  "하이 일러스트 {part}는 매물 자체가 적어서 {marketPrice}에도 찾는 사람이 계속 있네",
+  "{part}는 성능용 가격과 수집용 가격이 완전히 갈렸다. 하이 일러스트 시세는 여전히 높음",
 ] as const;
 
 const LOYALTY_COPY = [
@@ -3913,7 +4016,7 @@ function restrictionCoveragePool(
       ? MULTI_COSMETIC_RESTRICTION_REVIEW_COPY
       : UNBAN_ONLY_RESTRICTION_REVIEW_COPY;
   }
-  // DAY 45 retains the authored handover lesson. Later lists are judged from
+  // The first authored restriction retains the handover lesson. Later lists are judged from
   // actual share/win-rate pressure: leaving a threat alive and pre-emptively
   // cutting a non-threat are separate failures, regardless of tier row.
   if (profile.decisionDay === FIRST_BAN_DAY) {
@@ -5749,6 +5852,15 @@ type EmergingThemeEvidence = {
 };
 
 type EmergingPerformanceTone = "strong" | "weak" | "ordinary";
+type EmergingPerformanceBranch =
+  | "strong-combined"
+  | "strong-win"
+  | "strong-placement"
+  | "weak-combined"
+  | "weak-win"
+  | "weak-placement"
+  | "mixed"
+  | "neutral";
 
 function naturalElapsedDays(days: number): string {
   const words = [
@@ -5859,24 +5971,82 @@ function emergingThemeEvidenceAt(
   };
 }
 
+function emergingPerformanceBranch(
+  evidence: EmergingThemeEvidence,
+): EmergingPerformanceBranch {
+  const strongWin = evidence.winRate >= 0.525;
+  const weakWin = evidence.winRate <= 0.495;
+  const strongPlacement =
+    evidence.placement.placements > 0 &&
+    evidence.relativePlacement >= 1.15 &&
+    evidence.relativeConversion >= 1.15;
+  const weakPlacement =
+    evidence.relativePlacement <= 0.8 ||
+    evidence.relativeConversion <= 0.8;
+  const meaningfulWeakPlacement = evidence.highAdoption && weakPlacement;
+
+  if (
+    (strongWin && meaningfulWeakPlacement) ||
+    (strongPlacement && weakWin)
+  ) return "mixed";
+  if (strongWin && strongPlacement) return "strong-combined";
+  if (evidence.highAdoption && weakWin && weakPlacement) {
+    return "weak-combined";
+  }
+  if (evidence.highAdoption && weakWin) return "weak-win";
+  if (meaningfulWeakPlacement) return "weak-placement";
+  if (strongWin) return "strong-win";
+  if (strongPlacement) return "strong-placement";
+  return "neutral";
+}
+
 function emergingPerformanceTone(
   evidence: EmergingThemeEvidence,
 ): EmergingPerformanceTone {
-  const weakResults =
-    evidence.winRate <= 0.495 ||
-    evidence.relativePlacement <= 0.8 ||
-    evidence.relativeConversion <= 0.8;
-  if (evidence.highAdoption && weakResults) return "weak";
-  if (
-    evidence.winRate >= 0.525 ||
-    (
-      evidence.relativePlacement >= 1.15 &&
-      evidence.relativeConversion >= 1.15
-    )
-  ) {
-    return "strong";
-  }
+  const branch = emergingPerformanceBranch(evidence);
+  if (branch.startsWith("strong-")) return "strong";
+  if (branch.startsWith("weak-")) return "weak";
   return "ordinary";
+}
+
+function emergingEvaluationCopyPool(
+  branch: EmergingPerformanceBranch,
+  early: boolean,
+): readonly string[] {
+  switch (branch) {
+    case "strong-combined":
+      return early
+        ? EMERGING_THEME_EARLY_POSITIVE_COPY
+        : EMERGING_THEME_POSITIVE_COPY;
+    case "strong-win":
+      return early
+        ? EMERGING_THEME_EARLY_WIN_POSITIVE_COPY
+        : EMERGING_THEME_WIN_POSITIVE_COPY;
+    case "strong-placement":
+      return early
+        ? EMERGING_THEME_EARLY_PLACEMENT_POSITIVE_COPY
+        : EMERGING_THEME_PLACEMENT_POSITIVE_COPY;
+    case "weak-combined":
+      return early
+        ? EMERGING_THEME_EARLY_BUBBLE_COPY
+        : EMERGING_THEME_BUBBLE_COPY;
+    case "weak-win":
+      return early
+        ? EMERGING_THEME_EARLY_WIN_WEAK_COPY
+        : EMERGING_THEME_WIN_WEAK_COPY;
+    case "weak-placement":
+      return early
+        ? EMERGING_THEME_EARLY_PLACEMENT_WEAK_COPY
+        : EMERGING_THEME_PLACEMENT_WEAK_COPY;
+    case "mixed":
+      return early
+        ? EMERGING_THEME_EARLY_MIXED_COPY
+        : EMERGING_THEME_MIXED_COPY;
+    case "neutral":
+      return early
+        ? EMERGING_THEME_EARLY_NEUTRAL_COPY
+        : EMERGING_THEME_NEUTRAL_COPY;
+  }
 }
 
 function emergingThemeCandidates(
@@ -5943,19 +6113,11 @@ function makeEmergingThemeContextPosts(
         collecting.content.id,
       )
     ];
-    const earlyTone = emergingPerformanceTone(collecting);
-    const bubble = earlyTone === "weak" || (
-      earlyTone === "ordinary" &&
-      collecting.highAdoption &&
-      collecting.winRate < 0.5
+    const performanceBranch = emergingPerformanceBranch(collecting);
+    const evaluationPool = emergingEvaluationCopyPool(
+      performanceBranch,
+      collecting.observedDays < EMERGING_THEME_PERFORMANCE_SAMPLE_DAYS,
     );
-    const evaluationPool = bubble
-      ? collecting.observedDays < EMERGING_THEME_PERFORMANCE_SAMPLE_DAYS
-        ? EMERGING_THEME_EARLY_BUBBLE_COPY
-        : EMERGING_THEME_BUBBLE_COPY
-      : collecting.observedDays < EMERGING_THEME_PERFORMANCE_SAMPLE_DAYS
-        ? EMERGING_THEME_EARLY_POSITIVE_COPY
-        : EMERGING_THEME_POSITIVE_COPY;
     const evaluationCopy = evaluationPool[
       keyedIndex(
         evaluationPool.length,
@@ -5963,7 +6125,7 @@ function makeEmergingThemeContextPosts(
         "emerging-theme-evaluation",
         day,
         collecting.content.id,
-        bubble ? "bubble" : "positive",
+        performanceBranch,
       )
     ];
     return [
@@ -6601,6 +6763,59 @@ function reprintReactionContext(
   };
 }
 
+function isHighIllustrationMarketPart(
+  state: GameState,
+  day: number,
+  themeId: ThemeId,
+  part: PartContent,
+): boolean {
+  const collector = getCollectorCardProfile(part.id);
+  if (!collector || collector.collectorAppeal < HIGH_ILLUSTRATION_COLLECTOR_DEMAND) {
+    return false;
+  }
+  const quote = getThemeCardMarketQuoteAtDay(
+    state,
+    themeId,
+    part.id,
+    day,
+    1,
+  );
+  return Boolean(
+    quote &&
+      quote.collectorLabel === "하이 일러스트" &&
+      quote.price >= HIGH_ILLUSTRATION_MARKET_PRICE &&
+      quote.collectorDemandScore >= HIGH_ILLUSTRATION_COLLECTOR_DEMAND,
+  );
+}
+
+type HighIllustrationMarketSelection = { part: PartContent | null };
+
+function highIllustrationMarketPartForProduct(
+  state: GameState,
+  day: number,
+  product: ReleasedProduct,
+  reprintContext: ReprintReactionContext | null = reprintReactionContext(
+    state,
+    day,
+    product,
+  ),
+): HighIllustrationMarketSelection | null {
+  if (product.kind === "generic") return null;
+  if (reprintContext) {
+    const collector = getCollectorCardProfile(reprintContext.cardId);
+    return collector &&
+        collector.collectorAppeal >= HIGH_ILLUSTRATION_COLLECTOR_DEMAND &&
+        reprintContext.currentPrice >= HIGH_ILLUSTRATION_MARKET_PRICE
+      ? { part: null }
+      : null;
+  }
+  const parts = partsAvailableByDay(state, product.themeId, day);
+  const part = parts.find((candidate) =>
+    isHighIllustrationMarketPart(state, day, product.themeId, candidate)
+  );
+  return part ? { part } : null;
+}
+
 function fillReactionCopy(
   text: string,
   state: GameState,
@@ -6610,6 +6825,7 @@ function fillReactionCopy(
   daysSinceRestriction: number | null,
   supportContext: SupportReactionContext | null,
   reprintContext: ReprintReactionContext | null,
+  preferredPart: PartContent | null = null,
 ): { body: string; partId?: string } {
   if (reprintContext) {
     return {
@@ -6619,6 +6835,7 @@ function fillReactionCopy(
         theme: reprintContext.themeName,
         oldPrice: `${Math.round(reprintContext.referencePrice).toLocaleString("ko-KR")}원`,
         newPrice: `${Math.round(reprintContext.currentPrice).toLocaleString("ko-KR")}원`,
+        marketPrice: `${Math.round(reprintContext.currentPrice).toLocaleString("ko-KR")}원`,
         dropRate: reprintContext.dropRate.toFixed(1),
         reprintCount: String(reprintContext.reprintCount),
         userGain: reprintContext.accessibilityUserGain.toLocaleString("ko-KR"),
@@ -6678,9 +6895,18 @@ function fillReactionCopy(
         )
       ]
     : null;
-  const part = newPart ?? fallbackPart;
+  const part = preferredPart ?? newPart ?? fallbackPart;
   const newCard = newPart?.name ?? part.name;
   const oldCard = oldPart?.name ?? fallbackPart.name;
+  const marketQuote = preferredPart
+    ? getThemeCardMarketQuoteAtDay(
+        state,
+        product.themeId,
+        preferredPart.id,
+        day,
+        1,
+      )
+    : null;
   return {
     body: fillCommunityCopy(text, {
       theme: content.shortName,
@@ -6690,6 +6916,9 @@ function fillReactionCopy(
       supportNo: String(supportContext?.supportNumber ?? 1),
       newCard,
       oldCard,
+      marketPrice: marketQuote
+        ? `${marketQuote.price.toLocaleString("ko-KR")}원`
+        : `${HIGH_ILLUSTRATION_MARKET_PRICE.toLocaleString("ko-KR")}원대`,
     }),
     partId: part.id,
   };
@@ -6706,6 +6935,7 @@ function reactionCopyPool(
   reprintContext: ReprintReactionContext | null,
 ): readonly string[] {
   const lifecycleIndex = age - 1;
+  if (preferArt) return HIGH_ILLUSTRATION_MARKET_COPY;
   if (reprintContext) {
     if (preferArt) return REPRINT_ART_COPY;
     const price = reprintContext.dropRate >= 25
@@ -6792,16 +7022,36 @@ function makeReleaseContextPost(
   );
   const supportContext = supportReactionContext(state, releaseDay, product);
   const reprintContext = reprintReactionContext(state, day, product);
-  const pool = reactionCopyPool(
+  const artSelection = preferArt
+    ? highIllustrationMarketPartForProduct(
+        state,
+        day,
+        product,
+        reprintContext,
+      )
+    : null;
+  const useArt = artSelection !== null;
+  const routedPool = reactionCopyPool(
     product,
     age,
     daysSinceRestriction,
-    preferArt,
+    useArt,
     outputIndex,
     forceProductTone,
     supportContext,
     reprintContext,
   );
+  const nonIllustrationPool = routedPool.filter(
+    (copy) => !ILLUSTRATION_DISCUSSION.test(copy),
+  );
+  const fallbackPool = RELEASE_LIFECYCLE_COPY[age - 1].filter(
+    (copy) => !ILLUSTRATION_DISCUSSION.test(copy),
+  );
+  const pool = useArt
+    ? routedPool
+    : nonIllustrationPool.length > 0
+      ? nonIllustrationPool
+      : fallbackPool;
   const keyedStart = keyedIndex(
     pool.length,
     state.seed,
@@ -6809,7 +7059,7 @@ function makeReleaseContextPost(
     day,
     outputIndex,
     product.optionId,
-    preferArt ? "art" : "play",
+    useArt ? "art" : "play",
   );
   const start =
     daysSinceRestriction !== null && forceProductTone ? 0 : keyedStart;
@@ -6822,6 +7072,7 @@ function makeReleaseContextPost(
     daysSinceRestriction,
     supportContext,
     reprintContext,
+    artSelection?.part ?? null,
   );
   for (let offset = 1; offset < pool.length; offset += 1) {
     if (!usedBodies.has(selected.body)) break;
@@ -6834,13 +7085,14 @@ function makeReleaseContextPost(
       daysSinceRestriction,
       supportContext,
       reprintContext,
+      artSelection?.part ?? null,
     );
   }
 
   return {
     id: `daily-release-${day - age}-${product.optionId}-${age}-${String(
       outputIndex + 1,
-    ).padStart(2, "0")}-${preferArt ? "art" : "play"}`,
+    ).padStart(2, "0")}-${useArt ? "art" : "play"}`,
     day,
     category: "release",
     type: product.kind === "support" ? "support-released" : "release-reaction",
@@ -7240,7 +7492,7 @@ export function getDailyCommunityPosts(
       POSTS_PER_DAY - output.length,
       Math.max(0, target - existingContext.length),
     );
-    const artTargets = [6, 4, 3, 2] as const;
+    let highIllustrationPostAdded = false;
     const productOffset = keyedIndex(
       recentRelease.batch.products.length,
       state.seed,
@@ -7253,17 +7505,20 @@ export function getDailyCommunityPosts(
         recentRelease.batch.products[
           (productOffset + index) % recentRelease.batch.products.length
         ];
+      const preferArt = !highIllustrationPostAdded &&
+        highIllustrationMarketPartForProduct(state, day, product) !== null;
       const post = makeReleaseContextPost(
         state,
         day,
         recentRelease.age,
         product,
         output.length,
-        index < artTargets[lifecycleIndex],
+        preferArt,
         usedBodies,
       );
       output.push(post);
       usedBodies.add(post.body);
+      if (post.id.endsWith("-art")) highIllustrationPostAdded = true;
     }
   }
 
@@ -7298,6 +7553,7 @@ export function getDailyCommunityPosts(
   for (let index = 0; index < missing; index += 1) {
     const outputIndex = output.length;
     let template = templateFor(state.seed, day, outputIndex);
+    const templateKey = template.key;
     const chosen = chooseTheme(
       pool,
       state.seed,
@@ -7351,12 +7607,36 @@ export function getDailyCommunityPosts(
         }
       }
     }
+    if (ILLUSTRATION_DISCUSSION.test(template.text)) {
+      const collecting =
+        isCollectingNewThemeAtDay(state, chosen.id, day) ||
+        isCollectingNewThemeAtDay(state, related.id, day);
+      const isSafeFallback = (candidate: DailyTemplate) =>
+        !ILLUSTRATION_DISCUSSION.test(candidate.text) &&
+        (!collecting || !containsOfficialTierNumberClaim(candidate.text));
+      const sameConversation = DAILY_TEMPLATES.filter(
+        (candidate) => candidate.group === template.group && isSafeFallback(candidate),
+      );
+      const fallbackCandidates = sameConversation.length > 0
+        ? sameConversation
+        : DAILY_TEMPLATES.filter(isSafeFallback);
+      template = fallbackCandidates[
+        keyedIndex(
+          fallbackCandidates.length,
+          state.seed,
+          "non-illustration-template-fallback",
+          day,
+          outputIndex,
+          templateKey,
+        )
+      ];
+    }
     const share = `${((chosen.weight / poolTotal) * 100).toFixed(1)}%`;
 
     output.push({
       id: `daily-generated-${(state.seed >>> 0).toString(16)}-${day}-${String(
         outputIndex + 1,
-      ).padStart(2, "0")}-${template.key}`,
+      ).padStart(2, "0")}-${templateKey}`,
       day,
       category: template.category,
       // Ordinary board copy may debate a future restriction, but only the

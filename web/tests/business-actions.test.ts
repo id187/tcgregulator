@@ -55,6 +55,12 @@ function completedAction(
   };
 }
 
+function submitFirstRestriction(state: GameState): GameState {
+  assert.equal(state.day, 15);
+  assert.equal(state.phase, "ban-edit");
+  return reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
+}
+
 test("low-risk action families saturate for a quarter and recover after it", () => {
   const recentCommunity = makeState([
     completedAction(1, "store-tour", 130, 14, 0.35),
@@ -251,7 +257,9 @@ test("the engine applies family saturation to audience acquisition", () => {
         action: "tv-cm",
       });
     }
-    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 29 });
+    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
+    state = submitFirstRestriction(state);
+    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
     state = reduceGame(state, {
       type: "SUBMIT_RELEASE",
       selections: getPrologueReleaseSelections(state),
@@ -283,6 +291,9 @@ test("ordinary D+1 outcomes are deterministic and chunk-independent", () => {
   let state = createCampaignStart(21_098);
   state.finance.cash = 100;
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
+  state = submitFirstRestriction(state);
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 7 });
+  assert.equal(state.day, 22);
   const launched = reduceGame(state, {
     type: "RUN_BUSINESS_ACTION",
     action: "tv-cm",
@@ -300,7 +311,7 @@ test("ordinary D+1 outcomes are deterministic and chunk-independent", () => {
     jumped.operations.records[0].outcome === "success" ||
       jumped.operations.records[0].outcome === "backlash",
   );
-  assert.equal(jumped.operations.records[0].resolvedDay, 16);
+  assert.equal(jumped.operations.records[0].resolvedDay, 23);
 });
 
 test("successful strategic infrastructure has distinct benefits through the end of the mandate", () => {

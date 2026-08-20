@@ -4,6 +4,7 @@ import test from "node:test";
 import { getGenericCardMarketQuote } from "../app/game/card-market.ts";
 import {
   createCampaignStart,
+  getPrologueRestrictionChanges,
   getCurrentGenericMetaModel,
   reduceGame,
 } from "../app/game/engine.ts";
@@ -68,9 +69,19 @@ test("DAY 1 generics survive save/load and remain visible on DAY 15", () => {
 });
 
 test("the DAY 30 slate never reoffers baseline cards or consumes Vol.1 ids", () => {
-  const state = reduceGame(createCampaignStart(0x31415926), {
+  let state = reduceGame(createCampaignStart(0x31415926), {
     type: "ADVANCE_DAYS",
-    days: 29,
+    days: 14,
+  });
+  assert.equal(state.day, 15);
+  assert.equal(state.phase, "ban-edit");
+  state = reduceGame(state, {
+    type: "SUBMIT_BAN",
+    changes: getPrologueRestrictionChanges(state),
+  });
+  state = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: 15,
   });
 
   assert.equal(state.day, 30);

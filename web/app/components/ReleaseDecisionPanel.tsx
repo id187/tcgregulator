@@ -2,6 +2,11 @@ import { useState } from "react";
 
 import { THEME_BY_ID } from "../game/content.ts";
 import { getGenericCard } from "../game/generic-card-catalog.ts";
+import {
+  canToggleReleaseOption,
+  getDirectReleaseSelectionCount,
+  isCompleteReleaseSelection,
+} from "../game/release-selection.ts";
 import type {
   GameState,
   PowerAdjustment,
@@ -35,37 +40,6 @@ function optionRole(option: ReleaseOption): string {
   if (option.kind === "support") return "지원";
   if (option.kind === "generic") return "범용";
   return "예약 재판";
-}
-
-function getDirectSelectionCount(options: readonly ReleaseOption[]): number {
-  const hasGenericRules = options.some((option) => option.kind === "generic");
-  if (!hasGenericRules) return 3;
-  return options.some((option) => option.kind === "reprint" && option.locked)
-    ? 3
-    : 4;
-}
-
-function isCompleteSelection(
-  options: readonly ReleaseOption[],
-  selectedOptionIds: readonly string[],
-): boolean {
-  const selected = options.filter((option) =>
-    selectedOptionIds.includes(option.id),
-  );
-  const expectedCount = getDirectSelectionCount(options);
-  if (selected.length !== expectedCount) return false;
-  if (selected.filter((option) => option.kind === "new-theme").length < 1) {
-    return false;
-  }
-  if (!options.some((option) => option.kind === "generic")) {
-    return selected.every((option) =>
-      option.kind === "new-theme" || option.kind === "support"
-    );
-  }
-  return (
-    selected.some((option) => option.kind === "support") &&
-    selected.some((option) => option.kind === "generic")
-  );
 }
 
 export function ReleaseDecisionPanel({
@@ -104,11 +78,14 @@ export function ReleaseDecisionPanel({
   const lockedReprint = options.find(
     (option) => option.kind === "reprint" && option.locked,
   );
-  const expectedCount = getDirectSelectionCount(options);
+  const expectedCount = getDirectReleaseSelectionCount(options);
   const hasGenericRules = directOptions.some(
     (option) => option.kind === "generic",
   );
-  const complete = isCompleteSelection(options, effectiveSelectedOptionIds);
+  const complete = isCompleteReleaseSelection(
+    options,
+    effectiveSelectedOptionIds,
+  );
   const selectedCount = directOptions.filter((option) =>
     effectiveSelectedOptionIds.includes(option.id),
   ).length;
@@ -124,9 +101,14 @@ export function ReleaseDecisionPanel({
       return;
     }
 
-    const next = [...effectiveSelectedOptionIds];
-    if (next.length >= expectedCount) return;
-    onChange([...next, option.id]);
+    if (
+      !canToggleReleaseOption(
+        options,
+        effectiveSelectedOptionIds,
+        option.id,
+      )
+    ) return;
+    onChange([...effectiveSelectedOptionIds, option.id]);
   };
 
   const groups: Array<{
@@ -172,14 +154,31 @@ export function ReleaseDecisionPanel({
                 .map((option) => {
                   const selected = effectiveSelectedOptionIds.includes(option.id);
                   const atCapacity = !selected && selectedCount >= expectedCount;
+                  const preservesRequiredMix = canToggleReleaseOption(
+                    options,
+                    effectiveSelectedOptionIds,
+                    option.id,
+                  );
+                  const selectionBlocked = !selected && !preservesRequiredMix;
                   return (
                     <button
                       aria-pressed={selected}
                       className={selected ? "is-selected" : undefined}
                       data-tutorial-control={`release-core-${group.kind}`}
-                      disabled={disabled || Boolean(fixedSelections) || atCapacity}
+                      disabled={
+                        disabled ||
+                        Boolean(fixedSelections) ||
+                        selectionBlocked
+                      }
                       key={option.id}
                       onClick={() => toggleOption(option)}
+                      title={
+                        selectionBlocked
+                          ? atCapacity
+                            ? "선택한 카드 하나를 먼저 해제하세요."
+                            : "남은 칸은 아직 선택하지 않은 필수 종류를 위해 남겨두세요."
+                          : undefined
+                      }
                       type="button"
                     >
                       <span>{optionRole(option)}</span>
@@ -259,7 +258,7 @@ export function ReleaseDecisionPanel({
           {complete
             ? fixedSelections
               ? "이번 발매 시안이 준비됐습니다. 발매 확정을 눌러 기록에 반영하세요."
-              : "필수 구성이 완성됐습니다. 제출하면 DAY 30 발매 기록에 즉시 반영됩니다."
+              : `필수 구성이 완성됐습니다. 제출하면 DAY ${game.day} 발매 기록에 즉시 반영됩니다.`
             : hasGenericRules
               ? "신테마·지원·범용을 각각 1종 이상 선택해주세요."
               : "신테마가 1종 이상 필요합니다."}

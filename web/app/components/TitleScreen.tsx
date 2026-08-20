@@ -14,6 +14,7 @@ export type TitleScreenSettings = {
   soundEnabled: boolean;
   impactEffectsEnabled: boolean;
   motionPreference: TitleScreenMotionPreference;
+  tutorialGuidanceEnabled: boolean;
 };
 
 export type TitleScreenSettingsUpdate = <
@@ -226,6 +227,23 @@ export function TitleScreen({
                 {settings.motionPreference === "reduced"
                   ? "강제 감소"
                   : "시스템 설정"}
+              </strong>
+            </button>
+            <button
+              aria-pressed={settings.tutorialGuidanceEnabled}
+              className="settings-screen__option settings-screen__option--tutorial"
+              onClick={() =>
+                onSettingsChange(
+                  "tutorialGuidanceEnabled",
+                  !settings.tutorialGuidanceEnabled,
+                )
+              }
+              title="ON으로 설정한 뒤 새 임기를 시작하면 튜토리얼을 다시 진행합니다."
+              type="button"
+            >
+              <span className="settings-screen__option-label">튜토리얼</span>
+              <strong className="settings-screen__option-value">
+                {settings.tutorialGuidanceEnabled ? "ON" : "OFF"}
               </strong>
             </button>
             {onSoundTest ? (

@@ -6,12 +6,13 @@ import {
   getDailyNewsRange,
   getImpactNewsRange,
 } from "../app/game/daily-news.ts";
+import { FIRST_BAN_DAY, PLAYER_START_DAY } from "../app/game/campaign.ts";
 import { THEME_BY_ID } from "../app/game/content.ts";
 import { createInitialGame } from "../app/game/engine.ts";
 import { parseGameState } from "../app/game/save-schema.ts";
 import type { DailyHistory, GameState, ThemeId } from "../app/game/types.ts";
 
-const NEWS_DAY = 46;
+const NEWS_DAY = PLAYER_START_DAY;
 const PREVIOUS_NEWS_DAY = NEWS_DAY - 1;
 const ROLLING_WINDOW_START_DAY = NEWS_DAY - 14;
 
@@ -103,10 +104,12 @@ function metaLeaderNews(state: GameState, day: number) {
 
 test("range collection preserves every intermediate day in stable order", () => {
   const state = createInitialGame(0x5eed1234);
-  const range = getDailyNewsRange(state, 39, 46);
-  const daily = Array.from({ length: 7 }, (_, index) => 40 + index).flatMap(
-    (day) => getDailyNews(state, day),
-  );
+  const rangeStartDay = NEWS_DAY - 7;
+  const range = getDailyNewsRange(state, rangeStartDay, NEWS_DAY);
+  const daily = Array.from(
+    { length: 7 },
+    (_, index) => rangeStartDay + index + 1,
+  ).flatMap((day) => getDailyNews(state, day));
 
   assert.deepEqual(range, daily);
   assert.equal(new Set(range.map((item) => item.id)).size, range.length);
@@ -166,14 +169,15 @@ test("a rolling top-cut leader change produces one correctly named notice", () =
 test("meta-leader news is stable across save and news-range chunks", () => {
   const { state } = placementLeaderChangeFixture();
   const restored = parseGameState(JSON.parse(JSON.stringify(state)));
+  const rangeStartDay = NEWS_DAY - 2;
 
   assert.deepEqual(
     metaLeaderNews(restored, NEWS_DAY),
     metaLeaderNews(state, NEWS_DAY),
   );
-  const wholeRange = getDailyNewsRange(restored, 44, NEWS_DAY);
+  const wholeRange = getDailyNewsRange(restored, rangeStartDay, NEWS_DAY);
   const chunkedRange = [
-    ...getDailyNewsRange(restored, 44, PREVIOUS_NEWS_DAY),
+    ...getDailyNewsRange(restored, rangeStartDay, PREVIOUS_NEWS_DAY),
     ...getDailyNewsRange(restored, PREVIOUS_NEWS_DAY, NEWS_DAY),
   ];
   assert.deepEqual(chunkedRange, wholeRange);
@@ -189,15 +193,20 @@ test("meta-leader news is stable across save and news-range chunks", () => {
 
 test("keeps restriction, next-day top-cut shock, and price shock as rapid separate notices", () => {
   const state = createInitialGame(0x5eed1234);
-  const impact = getImpactNewsRange(state, 44, 46);
+  const impactDay = FIRST_BAN_DAY + 1;
+  const impact = getImpactNewsRange(
+    state,
+    FIRST_BAN_DAY - 1,
+    impactDay,
+  );
   const restriction = impact.find(
-    (item) => item.day === 45 && item.kind === "restriction",
+    (item) => item.day === FIRST_BAN_DAY && item.kind === "restriction",
   );
   const topCut = impact.find(
-    (item) => item.day === 46 && /탑컷이 급하강/.test(item.headline),
+    (item) => item.day === impactDay && /탑컷이 급하강/.test(item.headline),
   );
   const price = impact.find(
-    (item) => item.day === 46 && /시세가 폭락/.test(item.headline),
+    (item) => item.day === impactDay && /시세가 폭락/.test(item.headline),
   );
 
   assert.ok(restriction);

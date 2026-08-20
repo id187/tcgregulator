@@ -10,6 +10,7 @@ import {
   getCampaignTrustBand,
   getCampaignUserBand,
 } from "../app/game/campaign-ending.ts";
+import { PLAYER_START_DAY } from "../app/game/campaign.ts";
 import { createInitialGame } from "../app/game/engine.ts";
 import type { GameState } from "../app/game/types.ts";
 
@@ -26,7 +27,9 @@ function setEnvironment(
 }
 
 function handoverUsers(state: GameState): number {
-  const baseline = state.history.find((entry) => entry.day === 46)?.totalUsers;
+  const baseline = state.history.find(
+    (entry) => entry.day === PLAYER_START_DAY,
+  )?.totalUsers;
   assert.ok(baseline && baseline > 0);
   return baseline;
 }
@@ -82,7 +85,7 @@ test("purchase trust is an independent axis and no longer lowers environment hea
   assert.equal(evaluateCampaignEnding(lowTrust).bands.trust, "low");
 });
 
-test("DAY 46 active users define the audience ratio and delta", () => {
+test("handover-day active users define the audience ratio and delta", () => {
   const state = makeStableFoundation();
   const baseline = handoverUsers(state);
   setUserRatio(state, 1.25);

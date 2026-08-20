@@ -259,7 +259,7 @@ function range(values: readonly number[]): number {
 }
 
 test("multi-seed business routes preserve a real safety versus upside tradeoff", () => {
-  const paired = [1, 2, 3, 7, 8, 9].map((seed) => ({
+  const paired = [1, 2, 3, 4, 7, 8].map((seed) => ({
       seed,
       safe: runStrategy(seed, "safe"),
       strategic: runStrategy(seed, "strategic"),

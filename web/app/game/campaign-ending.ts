@@ -25,9 +25,9 @@ export type CampaignEndingEvaluation = {
     cash: number;
     environmentHealth: number;
     purchaseTrust: number;
-    /** Final active users divided by active users at the DAY 46 handover. */
+    /** Final active users divided by active users at the DAY 31 handover. */
     userRatio: number;
-    /** Final active users minus the DAY 46 handover baseline. */
+    /** Final active users minus the DAY 31 handover baseline. */
     userDelta: number;
   };
   bands: {
@@ -36,7 +36,7 @@ export type CampaignEndingEvaluation = {
     trust: CampaignTrustBand;
     users: CampaignUserBand;
   };
-  /** DAY 46 active users used as the audience-growth baseline. */
+  /** DAY 31 active users used as the audience-growth baseline. */
   handoverUsers: number;
   totalUsers: number;
   /** Derived only from the four final result axes, never from action counts. */
@@ -298,7 +298,7 @@ export function getCampaignEndingHints(
     hints.push({
       id: "users",
       title: "남은 유저 기반",
-      body: "활성 유저가 DAY 46 인수 시점보다 줄어 리그의 실질적인 저변이 좁아졌습니다.",
+      body: `활성 유저가 DAY ${PLAYER_START_DAY} 인수 시점보다 줄어 리그의 실질적인 저변이 좁아졌습니다.`,
     });
   }
   return hints;

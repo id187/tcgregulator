@@ -3249,6 +3249,10 @@ input:focus-visible,
 }
 
 .header-reference-buttons > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   min-height: 34px;
   padding: 7px 10px;
   color: var(--navy);
@@ -3257,6 +3261,15 @@ input:focus-visible,
   font-size: 9px;
   font-weight: 850;
   white-space: nowrap;
+}
+
+.header-reference-info-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: currentcolor;
+  font-size: 11px;
+  line-height: 1;
 }
 
 .header-reference-buttons > button:hover,
@@ -6407,13 +6420,17 @@ body {
   }
 }
 
-/* Guided DAY 1–45 handover --------------------------------------------- */
+/* Guided DAY 1–31 handover --------------------------------------------- */
 
 .guided-tour-layer {
   position: fixed;
   inset: 0;
-  z-index: 210;
+  z-index: 85;
   pointer-events: none;
+}
+
+.guided-tour-layer.is-skip-confirming {
+  z-index: 210;
 }
 
 .app-shell[data-guided-step] .impact-float {
@@ -8556,7 +8573,7 @@ body {
 .card-release-request-actions {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: repeat(4, minmax(42px, 1fr));
+  grid-template-columns: 31px repeat(4, minmax(42px, 1fr));
   gap: 4px;
 }
 
@@ -8581,6 +8598,34 @@ body {
 .card-release-request-actions > button:disabled {
   color: #70899d;
   border-color: #36546a;
+}
+
+.card-release-request-actions > .card-release-request-info {
+  min-width: 31px;
+  width: 31px;
+  padding-inline: 0;
+  color: #8fd8dc;
+  font-size: 12px;
+}
+
+.card-release-request-help {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 10px;
+  max-width: 420px;
+  padding: 8px 9px;
+  color: #b9ceda;
+  background: rgb(2 15 26 / 0.9);
+  border: 1px solid #456b82;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.22);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.card-release-request-help strong {
+  margin-right: 4px;
+  color: #e6fbfb;
 }
 
 .meta-workspace .theme-metrics {
@@ -10505,6 +10550,10 @@ body {
   .card-release-request-actions {
     width: 100%;
   }
+
+  .card-release-request-help {
+    max-width: none;
+  }
 }
 
 @media (max-height: 520px) {
@@ -10836,5 +10885,289 @@ body {
 
   .card-registry-table th:nth-child(4) {
     width: 30%;
+  }
+}
+
+/* Event-driven tutorial prompts anchor to the control they explain. The
+   bottom card is only a fallback for narrow viewports or missing targets. */
+.app-shell[data-guided-step] .workspace {
+  padding-top: 12px;
+}
+
+.guided-tutorial-bar {
+  top: auto;
+  right: 18px;
+  bottom: 74px;
+  left: auto;
+  width: min(430px, calc(100vw - 32px));
+  height: auto;
+  min-height: 0;
+  max-height: min(280px, calc(100dvh - 32px));
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px 10px;
+  padding: 11px 38px 10px 12px;
+  overflow: visible;
+  border-radius: 10px;
+}
+
+.guided-close-button {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0 0 2px;
+  color: #b8c9da;
+  background: rgb(255 255 255 / 0.055);
+  border: 1px solid rgb(255 255 255 / 0.17);
+  border-radius: 4px;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1;
+  pointer-events: auto;
+}
+
+.guided-close-button:hover:not(:disabled),
+.guided-close-button:focus-visible {
+  color: #fff;
+  background: rgb(255 255 255 / 0.14);
+  border-color: rgb(255 255 255 / 0.42);
+}
+
+.guided-tutorial-bar.is-anchored::after {
+  position: absolute;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  content: "";
+  background: #07182b;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.guided-tutorial-bar.is-anchored.is-above::after {
+  bottom: -7px;
+  border-right: 1px solid rgb(241 217 142 / 0.78);
+  border-bottom: 1px solid rgb(241 217 142 / 0.78);
+}
+
+.guided-tutorial-bar.is-anchored.is-below::after {
+  top: -7px;
+  border-top: 1px solid rgb(241 217 142 / 0.78);
+  border-left: 1px solid rgb(241 217 142 / 0.78);
+}
+
+.guided-tutorial-bar > .lotus-symbol {
+  width: 30px;
+  height: 30px;
+}
+
+.guided-tutorial-copy {
+  gap: 3px;
+}
+
+.guided-tutorial-copy > strong {
+  display: block;
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.guided-tutorial-copy > p {
+  color: #c2d1e1;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.guided-tutorial-progress,
+.guided-tutorial-actions {
+  grid-column: 1 / -1;
+}
+
+.guided-tutorial-progress {
+  display: grid;
+  grid-template-columns: auto minmax(80px, 1fr);
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+}
+
+.guided-tutorial-actions {
+  justify-content: flex-end;
+  padding-top: 7px;
+  border-top: 1px solid rgb(255 255 255 / 0.1);
+}
+
+.guided-tutorial-actions > button {
+  min-height: 28px;
+  padding: 5px 8px;
+  font-size: 9px;
+}
+
+@media (max-width: 720px), (max-height: 520px) {
+  .app-shell[data-guided-step] .workspace {
+    padding-top: 4px;
+  }
+
+  .guided-tutorial-bar,
+  .guided-tutorial-bar.is-anchored {
+    top: auto;
+    right: 8px;
+    bottom: calc(54px + env(safe-area-inset-bottom));
+    left: 8px;
+    width: auto;
+    height: auto;
+    min-height: 0;
+    max-height: min(210px, calc(100dvh - 112px));
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    gap: 6px;
+    padding: 8px 36px 8px 8px;
+    overflow-y: auto;
+    transform: none !important;
+  }
+
+  .guided-tutorial-bar.is-anchored::after,
+  .guided-tutorial-bar > .lotus-symbol,
+  .guided-tutorial-progress {
+    display: none;
+  }
+
+  .guided-tutorial-actions {
+    grid-column: 1;
+    display: flex;
+    flex-wrap: wrap;
+  }
+}
+
+.guided-tutorial-bar.is-compact {
+  display: none;
+}
+
+.guided-tutorial-bar.is-compact > .lotus-symbol,
+.guided-tutorial-bar.is-compact > .guided-tutorial-copy,
+.guided-tutorial-bar.is-compact > .guided-tutorial-progress,
+.guided-tutorial-bar.is-compact .guided-info-button,
+.guided-tutorial-bar.is-compact .is-next {
+  display: none;
+}
+
+.guided-tutorial-bar.is-compact .guided-tutorial-actions {
+  gap: 3px;
+  padding: 0;
+  border: 0;
+}
+
+.guided-tutorial-bar.is-compact .guided-tutorial-actions > button {
+  min-height: 24px;
+  padding: 3px 6px;
+  font-size: 8px;
+}
+
+.guided-tutorial-bar .guided-tutorial-actions > [data-tutorial-term="tutorial-skip"],
+.guided-tutorial-bar .guided-tutorial-actions > [data-tutorial-term="tutorial-home"] {
+  display: none;
+}
+
+.guided-status-rail {
+  min-height: 42px;
+  flex: 0 0 42px !important;
+  display: grid;
+  grid-template-columns: 28px auto minmax(90px, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 8px;
+  padding: 6px 9px;
+  color: #eaf3fc;
+  background:
+    linear-gradient(110deg, rgb(35 76 114 / 0.48), transparent 42%),
+    #06182a;
+  border: 1px solid rgb(241 217 142 / 0.7);
+  box-shadow: 0 10px 24px rgb(4 17 31 / 0.13);
+}
+
+.guided-status-rail > .lotus-symbol {
+  width: 26px;
+  height: 26px;
+}
+
+.guided-status-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.guided-status-copy > span {
+  color: #d5b86c;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+}
+
+.guided-status-copy > strong {
+  font-size: 10px;
+}
+
+.guided-status-rail > i {
+  height: 2px;
+  overflow: hidden;
+  background: rgb(255 255 255 / 0.14);
+}
+
+.guided-status-rail > i > b {
+  display: block;
+  height: 100%;
+  background: #f1d98e;
+}
+
+.guided-status-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.guided-status-actions > button {
+  min-height: 25px;
+  padding: 4px 7px;
+  color: #bdccdc;
+  background: rgb(255 255 255 / 0.06);
+  border: 1px solid rgb(255 255 255 / 0.16);
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.guided-status-actions > button:hover:not(:disabled),
+.guided-status-actions > button:focus-visible {
+  color: #fff;
+  background: rgb(255 255 255 / 0.14);
+  border-color: rgb(255 255 255 / 0.36);
+}
+
+@media (max-width: 720px) {
+  .guided-status-rail {
+    min-height: 36px;
+    flex-basis: 36px !important;
+    grid-template-columns: 22px auto 1fr auto;
+    gap: 5px;
+    margin-bottom: 4px;
+    padding: 4px 5px;
+  }
+
+  .guided-status-rail > .lotus-symbol {
+    width: 20px;
+    height: 20px;
+  }
+
+  .guided-status-copy > span,
+  .guided-status-rail > i {
+    display: none;
+  }
+
+  .guided-status-actions > button {
+    min-height: 22px;
+    padding: 2px 4px;
+    font-size: 7px;
   }
 }

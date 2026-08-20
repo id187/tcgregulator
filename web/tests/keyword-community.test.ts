@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { RELEASE_INTERVAL, TUTORIAL_END_DAY } from "../app/game/campaign.ts";
 import { THEME_BY_ID } from "../app/game/content.ts";
 import { getDailyCommunityPosts } from "../app/game/daily-community.ts";
-import { createFirstBanGame } from "../app/game/engine.ts";
+import { createInitialGame } from "../app/game/engine.ts";
 import { getKeywordCommunitySignal } from "../app/game/keyword-community.ts";
 import { getKeywordMatchupEdgeScore } from "../app/game/play-keywords.ts";
 
 test("community hints at a favorable matchup that cannot cover a raw-power deficit", () => {
-  const state = createFirstBanGame(73_811);
-  const first = getKeywordCommunitySignal(state, 45);
-  const second = getKeywordCommunitySignal(state, 45);
+  const state = createInitialGame(73_811);
+  const signalDay = TUTORIAL_END_DAY + 2;
+  const first = getKeywordCommunitySignal(state, signalDay);
+  const second = getKeywordCommunitySignal(state, signalDay);
 
   assert.deepEqual(second, first);
   assert.ok(first);
@@ -26,7 +28,7 @@ test("community hints at a favorable matchup that cannot cover a raw-power defic
   assert.match(first.body, /체급/);
   assert.doesNotMatch(first.body, /상성표|우위\s*\d|열위\s*\d|edge|logit/i);
 
-  const board = getDailyCommunityPosts(state, 45);
+  const board = getDailyCommunityPosts(state, TUTORIAL_END_DAY);
   assert.equal(board.length, 20);
   assert.equal(
     board.filter((post) => post.id.startsWith("daily-keyword-")).length,
@@ -35,17 +37,17 @@ test("community hints at a favorable matchup that cannot cover a raw-power defic
 });
 
 test("counterplay support produces a qualitative clue about its release-day target", () => {
-  const state = createFirstBanGame(73_812);
+  const state = createInitialGame(73_812);
   const latest = state.history.at(-1);
   assert.ok(latest);
   const shares = Object.fromEntries(
     state.activeThemeIds.map((themeId) => [themeId, latest.shares[themeId] ?? 0.05]),
   );
-  state.day = 61;
+  state.day = RELEASE_INTERVAL * 2 + 1;
   state.phase = "running";
   state.history.push({
     ...latest,
-    day: 60,
+    day: RELEASE_INTERVAL * 2,
     topThemeId: "machine-revolution",
     shares,
     winRates: Object.fromEntries(
@@ -53,7 +55,7 @@ test("counterplay support produces a qualitative clue about its release-day targ
     ),
   });
   state.releaseHistory.push({
-    day: 60,
+    day: RELEASE_INTERVAL * 2,
     products: [
       {
         optionId: "counterplay-community-fixture",
@@ -66,7 +68,7 @@ test("counterplay support produces a qualitative clue about its release-day targ
     ],
   });
 
-  const signal = getKeywordCommunitySignal(state, 61);
+  const signal = getKeywordCommunitySignal(state, RELEASE_INTERVAL * 2 + 1);
   assert.ok(signal);
   assert.match(signal.id, /^daily-keyword-counterplay-/);
   assert.equal(signal.themeId, "cycle");
@@ -74,7 +76,7 @@ test("counterplay support produces a qualitative clue about its release-day targ
   assert.match(signal.body, /카운터|눌러|끊는/);
   assert.doesNotMatch(signal.body, /상성표|우위\s*\d|열위\s*\d|edge|logit/i);
 
-  const board = getDailyCommunityPosts(state, 61);
+  const board = getDailyCommunityPosts(state, RELEASE_INTERVAL * 2 + 1);
   assert.equal(board.length, 20);
   assert.ok(board.some((post) => post.id === signal.id));
 });

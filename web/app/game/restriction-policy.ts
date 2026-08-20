@@ -574,7 +574,7 @@ function buildProfile(
   const threatCoverageComplete =
     unaddressedThreatThemeIds.length === 0 &&
     preemptiveCutThemeIds.length === 0;
-  // DAY 45 is an authored tutorial contract: its fixed two-upper/two-chaser
+  // The first restriction is an authored tutorial contract: its fixed two-upper/two-chaser
   // shallow list teaches the editing surface before threat snapshots exist.
   const coverageComplete = decisionDay === FIRST_BAN_DAY
     ? upperMeaningfulCuts >= 2 && tier2MeaningfulCuts >= 2

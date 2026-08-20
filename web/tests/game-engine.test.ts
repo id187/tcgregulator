@@ -25,9 +25,15 @@ import {
   getInitialBusinessEventDay,
 } from "../app/game/business-events.ts";
 import {
+  BAN_INTERVAL,
   CAMPAIGN_END_DAY,
+  FIRST_BAN_DAY,
+  LAST_BAN_DAY,
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
+  RELEASE_INTERVAL,
+  SETTLEMENT_START_DAY,
+  TUTORIAL_END_DAY,
 } from "../app/game/campaign.ts";
 import { getCommunityHeat } from "../app/game/daily-community.ts";
 import { ENVIRONMENT_HEALTH_MODEL } from "../app/game/environment-health.ts";
@@ -42,6 +48,7 @@ import {
   getMonthlyOperatingCost,
   getOperatingRunwayMonths,
   getRevenueChangeSignal,
+  OPERATING_COST_START_DAY,
 } from "../app/game/finance.ts";
 import {
   getPublishedRestrictionPolicyProfile,
@@ -72,6 +79,7 @@ import {
 
 type State = ReturnType<typeof createInitialGame>;
 type Adjustment = -3 | -2 | -1 | 0 | 1 | 2 | 3;
+const SECOND_BAN_DAY = FIRST_BAN_DAY + BAN_INTERVAL;
 type ReleaseOptionFixture = NonNullable<
   State["releaseSlate"]
 >["options"][number];
@@ -227,11 +235,8 @@ function advanceToFirstRelease(state: State): State {
 }
 
 function advanceRawToFirstBan(seed: number): State {
-  let state = createCampaignStart(seed);
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 29 });
-  state = submitFirstThree(state);
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
-  assert.equal(state.day, 45);
+  const state = createFirstBanGame(seed);
+  assert.equal(state.day, FIRST_BAN_DAY);
   assert.equal(state.phase, "ban-edit");
   return state;
 }
@@ -348,7 +353,7 @@ function tuneRestrictionTarget(
   return tuned;
 }
 
-test("uses releases through DAY 450 and 60-day restriction reviews through DAY 465", () => {
+test("uses releases through DAY 450 and 60-day restriction reviews through DAY 435", () => {
   const releaseDays = Array.from(
     { length: CAMPAIGN_END_DAY },
     (_, index) => index + 1,
@@ -360,20 +365,20 @@ test("uses releases through DAY 450 and 60-day restriction reviews through DAY 4
   assert.equal(releaseDays.length, 15);
   assert.equal(releaseDays[0], 30);
   assert.equal(releaseDays.at(-1), LAST_RELEASE_DAY);
-  assert.deepEqual(banDays, [
-    45,
-    105,
-    165,
-    225,
-    285,
-    345,
-    405,
-    LAST_DECISION_DAY,
-  ]);
+  assert.deepEqual(
+    banDays,
+    Array.from(
+      { length: (LAST_BAN_DAY - FIRST_BAN_DAY) / BAN_INTERVAL + 1 },
+      (_, index) => FIRST_BAN_DAY + index * BAN_INTERVAL,
+    ),
+  );
+  assert.equal(banDays.at(-1), LAST_BAN_DAY);
+  assert.equal(LAST_DECISION_DAY, LAST_RELEASE_DAY);
+  assert.equal(SETTLEMENT_START_DAY, 451);
   assert.equal(getNextReleaseDay(42), 60);
   assert.equal(getNextReleaseDay(60), 90);
-  assert.equal(getNextBanDay(42), 45);
-  assert.equal(getNextBanDay(45), 105);
+  assert.equal(getNextBanDay(FIRST_BAN_DAY - 1), FIRST_BAN_DAY);
+  assert.equal(getNextBanDay(FIRST_BAN_DAY), FIRST_BAN_DAY + BAN_INTERVAL);
   assert.equal(releaseDays.some((day) => isBanDay(day)), false);
 });
 
@@ -474,13 +479,13 @@ test("creates a fixed DAY 1 campaign start with five themes and 10,000 users", (
 test("stops the fixed handover at a fully authored first restriction review", () => {
   const state = createFirstBanGame(1000);
 
-  assert.equal(state.day, 45);
+  assert.equal(state.day, FIRST_BAN_DAY);
   assert.equal(state.phase, "ban-edit");
   assert.equal(state.handoverComplete, false);
   assert.equal(state.seed, 1000);
   assert.equal(
     state.releaseHistory.filter((batch) => !batch.baseline).length,
-    1,
+    0,
   );
 
   const unchanged = reduceGame(state, {
@@ -491,27 +496,47 @@ test("stops the fixed handover at a fully authored first restriction review", ()
   assert.equal(unchanged.seed, 1000);
 });
 
-test("DAY 45 handover completes only after the first restriction is published", () => {
+test("DAY 31 handover requires the restriction, release, and D+1 review", () => {
   const review = createFirstBanGame(1_001);
   assert.throws(
     () => reduceGame(review, { type: "COMPLETE_HANDOVER" }),
-    /published DAY 45 restriction/,
+    /DAY 15 restriction, DAY 30 release, and DAY 31 impact review/,
   );
 
-  const published = reduceGame(review, { type: "SUBMIT_BAN", changes: {} });
+  let published = reduceGame(review, { type: "SUBMIT_BAN", changes: {} });
+  assert.throws(
+    () => reduceGame(published, { type: "COMPLETE_HANDOVER" }),
+    /DAY 30 release/,
+  );
+  published = reduceGame(published, { type: "ADVANCE_DAYS", days: 7 });
+  assert.equal(published.day, 22);
+  published = reduceGame(published, {
+    type: "RUN_BUSINESS_ACTION",
+    action: "tv-cm",
+  });
+  published = reduceGame(published, { type: "ADVANCE_DAYS", days: 8 });
+  published = reduceGame(published, {
+    type: "SUBMIT_RELEASE",
+    selections: getPrologueReleaseSelections(published),
+  });
+  assert.throws(
+    () => reduceGame(published, { type: "COMPLETE_HANDOVER" }),
+    /DAY 31 impact review/,
+  );
+  published = reduceGame(published, { type: "ADVANCE_DAYS", days: 1 });
   const completed = reduceGame(published, { type: "COMPLETE_HANDOVER" });
-  assert.equal(completed.day, 45);
+  assert.equal(completed.day, TUTORIAL_END_DAY);
   assert.equal(completed.phase, "running");
   assert.equal(completed.handoverComplete, true);
   assert.throws(
     () => reduceGame(completed, { type: "COMPLETE_HANDOVER" }),
-    /published DAY 45 restriction/,
+    /DAY 15 restriction, DAY 30 release, and DAY 31 impact review/,
   );
 });
 
 test("soft restriction reviews preserve purchase trust until severe neglect persists", () => {
   const state = createCampaignStart(60_225);
-  state.day = 225;
+  state.day = 195;
   const themeId = state.currentTopThemeId;
   const partId = THEMES.find((theme) => theme.id === themeId)?.parts[0]?.id;
   assert.ok(partId);
@@ -526,7 +551,7 @@ test("soft restriction reviews preserve purchase trust until severe neglect pers
   assert.equal(profile.quality, "narrow");
   assert.equal(getProlongedSoftPolicyTrustLoss(state, profile), 0);
 
-  for (const day of [105, 165]) {
+  for (const day of [75, 135]) {
     state.community.push({
       id: `soft-policy-${day}`,
       day,
@@ -561,7 +586,7 @@ test("mints and persists a deterministic mandate seed after the first free restr
   const assigned = reduceGame(atFirstBan, command);
   const replayed = reduceGame(atFirstBan, command);
 
-  assert.equal(assigned.day, 45);
+  assert.equal(assigned.day, FIRST_BAN_DAY);
   assert.equal(assigned.phase, "running");
   assert.equal(assigned.seed, campaignSeed);
   assert.equal(
@@ -606,12 +631,41 @@ test("exposes deterministic guided choices that replay through the ordinary redu
     /DAY 30 review/,
   );
   guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 14 });
-  assert.equal(guided.day, 15);
+  assert.equal(guided.day, FIRST_BAN_DAY);
+  assert.equal(guided.phase, "ban-edit");
+  const changes = getPrologueRestrictionChanges(guided);
+  const restrictionEntries = Object.entries(changes);
+  assert.equal(restrictionEntries.length, 4);
+  assert.ok(
+    restrictionEntries.every(([, limit]) => limit === 1 || limit === 2),
+  );
+  const guidedProfile = getRestrictionPolicyProfile(guided, changes);
+  assert.equal(guidedProfile.quality, "balanced");
+  assert.equal(guidedProfile.upperMeaningfulCuts, 2);
+  assert.equal(guidedProfile.tier2MeaningfulCuts, 2);
+  assert.equal(guidedProfile.staleEligible, 0);
+  const [guidedPartId, guidedLimit] = restrictionEntries[0];
+  assert.equal(
+    isPrologueRestrictionChange(guided, guidedPartId, guidedLimit),
+    true,
+  );
+  assert.equal(
+    isPrologueRestrictionChange(
+      guided,
+      guidedPartId,
+      guidedLimit === 2 ? 1 : 2,
+    ),
+    false,
+  );
+
+  guided = reduceGame(guided, { type: "SUBMIT_BAN", changes });
+  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 7 });
+  assert.equal(guided.day, 22);
   guided = reduceGame(guided, {
     type: "RUN_BUSINESS_ACTION",
     action: "tv-cm",
   });
-  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 15 });
+  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 8 });
   const selections = getPrologueReleaseSelections(guided);
   assert.equal(selections.length, 4);
   assert.ok(
@@ -630,57 +684,21 @@ test("exposes deterministic guided choices that replay through the ordinary redu
   );
 
   guided = reduceGame(guided, { type: "SUBMIT_RELEASE", selections });
-  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 8 });
-  assert.equal(guided.day, 38);
-  assert.equal(guided.phase, "running");
-  assert.equal(guided.operations.pendingEvent, null);
-  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 7 });
-  assert.equal(guided.day, 45);
-  assert.equal(guided.phase, "ban-edit");
-  const changes = getPrologueRestrictionChanges(guided);
-  const restrictionEntries = Object.entries(changes);
-  assert.equal(restrictionEntries.length, 4);
-  assert.ok(
-    restrictionEntries.every(([, limit]) => limit === 1 || limit === 2),
-  );
-  const guidedProfile = getRestrictionPolicyProfile(guided, changes);
-  assert.equal(guidedProfile.quality, "balanced");
-  assert.equal(guidedProfile.upperMeaningfulCuts, 2);
-  assert.equal(guidedProfile.tier2MeaningfulCuts, 2);
-  assert.equal(guidedProfile.staleEligible, 0);
-  const [guidedPartId, guidedLimit] = restrictionEntries[0];
-  assert.equal(
-    isPrologueRestrictionChange(
-      guided,
-      guidedPartId,
-      guidedLimit,
-    ),
-    true,
-  );
-  assert.equal(
-    isPrologueRestrictionChange(
-      guided,
-      guidedPartId,
-      guidedLimit === 2 ? 1 : 2,
-    ),
-    false,
-  );
-
-  guided = reduceGame(guided, { type: "SUBMIT_BAN", changes });
   guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(guided.day, TUTORIAL_END_DAY);
   assert.equal(guided.handoverComplete, false);
   guided = reduceGame(guided, { type: "COMPLETE_HANDOVER" });
   assert.deepEqual(guided, expected);
 });
 
-test("replays the fixed DAY 30 release and DAY 45 restriction into DAY 46", () => {
+test("replays the DAY 15 restriction, DAY 22 TV-CM, and DAY 30 release into DAY 31", () => {
   const raw = createCampaignStart(1000);
   const fullPrologue = createInitialGame(1000);
   const skippedPrologue = createInitialGame(1000);
 
   assert.deepEqual(fullPrologue, skippedPrologue);
   assert.equal(raw.day, 1);
-  assert.equal(fullPrologue.day, 46);
+  assert.equal(fullPrologue.day, TUTORIAL_END_DAY);
   assert.equal(fullPrologue.phase, "running");
   assert.equal(fullPrologue.releaseSlate, null);
   assert.deepEqual(
@@ -689,7 +707,7 @@ test("replays the fixed DAY 30 release and DAY 45 restriction into DAY 46", () =
       startedDay: record.startedDay,
       outcome: record.outcome,
     })),
-    [{ type: "tv-cm", startedDay: 15, outcome: "backlash" }],
+    [{ type: "tv-cm", startedDay: 22, outcome: "success" }],
   );
   assert.equal(fullPrologue.finance.cumulativeExpenses, 0.6);
   assert.equal(fullPrologue.activeThemeIds.length, 7);
@@ -743,7 +761,7 @@ test("replays the fixed DAY 30 release and DAY 45 restriction into DAY 46", () =
   assert.equal(fullPrologue.handoverComplete, true);
   const prologueRestrictionEvents = fullPrologue.community.filter(
     (event) =>
-      event.day === 45 &&
+      event.day === FIRST_BAN_DAY &&
       (event.type === "restriction-applied" ||
         event.type === "cosmetic-restriction"),
   );
@@ -760,21 +778,21 @@ test("replays the fixed DAY 30 release and DAY 45 restriction into DAY 46", () =
   );
   const prologueProfile = getPublishedRestrictionPolicyProfile(
     fullPrologue,
-    45,
+    FIRST_BAN_DAY,
   );
   assert.equal(prologueProfile.quality, "balanced");
   assert.equal(prologueProfile.upperMeaningfulCuts, 2);
   assert.equal(prologueProfile.tier2MeaningfulCuts, 2);
   assert.deepEqual(
     fullPrologue.history.map((entry) => entry.day),
-    Array.from({ length: 46 }, (_, index) => index + 1),
+    Array.from({ length: TUTORIAL_END_DAY }, (_, index) => index + 1),
   );
   assert.equal(
     fullPrologue.history.filter((entry) => entry.day === 30).length,
     1,
   );
   assert.equal(
-    fullPrologue.history.filter((entry) => entry.day === 45).length,
+    fullPrologue.history.filter((entry) => entry.day === FIRST_BAN_DAY).length,
     1,
   );
   const historyByDay = new Map(
@@ -783,9 +801,18 @@ test("replays the fixed DAY 30 release and DAY 45 restriction into DAY 46", () =
   assert.deepEqual(historyByDay.get(30)?.shares, historyByDay.get(29)?.shares);
   assert.equal(historyByDay.get(30)?.totalUsers, historyByDay.get(29)?.totalUsers);
   assert.notDeepEqual(historyByDay.get(31)?.shares, historyByDay.get(30)?.shares);
-  assert.deepEqual(historyByDay.get(45)?.shares, historyByDay.get(44)?.shares);
-  assert.equal(historyByDay.get(45)?.totalUsers, historyByDay.get(44)?.totalUsers);
-  assert.notDeepEqual(historyByDay.get(46)?.shares, historyByDay.get(45)?.shares);
+  assert.deepEqual(
+    historyByDay.get(FIRST_BAN_DAY)?.shares,
+    historyByDay.get(FIRST_BAN_DAY - 1)?.shares,
+  );
+  assert.equal(
+    historyByDay.get(FIRST_BAN_DAY)?.totalUsers,
+    historyByDay.get(FIRST_BAN_DAY - 1)?.totalUsers,
+  );
+  assert.notDeepEqual(
+    historyByDay.get(FIRST_BAN_DAY + 1)?.shares,
+    historyByDay.get(FIRST_BAN_DAY)?.shares,
+  );
   assert.deepEqual(
     fullPrologue.history.slice(-30).map((entry) => entry.revenue),
     fullPrologue.recentRevenue,
@@ -849,7 +876,10 @@ test("high fatigue lowers theme adoption, tier and casual users, and daily sales
 });
 
 test("community chatter and display heat do not directly change simulation results", () => {
-  const control = createInitialGame(7120);
+  const control = reduceGame(createInitialGame(7120), {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
   const noisy = structuredClone(control);
   const themeId = noisy.activeThemeIds[0];
   for (const event of noisy.community) event.body = `과장된 반응 ${event.id}`;
@@ -878,29 +908,31 @@ test("stops at restriction and release gates until each review is submitted", ()
   const initial = createInitialGame(101);
   let state = initial;
 
-  assert.equal(initial.day, 46, "the reducer must not mutate its input");
+  assert.equal(initial.day, TUTORIAL_END_DAY, "the reducer must not mutate its input");
   assert.equal(initial.phase, "running");
 
-  for (const releaseDay of [60, 90]) {
-    state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, releaseDay);
-    assert.equal(state.day, releaseDay);
-    assert.equal(state.phase, "release-edit");
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 60);
+  assert.equal(state.day, 60);
+  assert.equal(state.phase, "release-edit");
+  const releaseBlocked = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: 100,
+  });
+  assert.equal(releaseBlocked.day, 60);
+  assert.equal(releaseBlocked.phase, "release-edit");
+  state = submitFirstThree(releaseBlocked);
 
-    const releaseBlocked = reduceGame(state, {
-      type: "ADVANCE_DAYS",
-      days: 100,
-    });
-    assert.equal(releaseBlocked.day, releaseDay);
-    assert.equal(releaseBlocked.phase, "release-edit");
-    state = submitFirstThree(releaseBlocked);
-  }
-
-  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 105);
-  assert.equal(state.day, 105);
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, SECOND_BAN_DAY);
+  assert.equal(state.day, SECOND_BAN_DAY);
   assert.equal(state.phase, "ban-edit");
   const banBlocked = reduceGame(state, { type: "ADVANCE_DAYS", days: 100 });
-  assert.equal(banBlocked.day, 105);
+  assert.equal(banBlocked.day, SECOND_BAN_DAY);
   state = reduceGame(banBlocked, { type: "SUBMIT_BAN", changes: {} });
+
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 90);
+  assert.equal(state.day, 90);
+  assert.equal(state.phase, "release-edit");
+  state = submitFirstThree(state);
 
   state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 120);
   assert.equal(state.day, 120);
@@ -927,6 +959,12 @@ test("is deterministic for the same seed and release command log", () => {
         powerAdjustment: ([-1, 0, 1, 0] as const)[index],
       })),
     });
+    state = advanceUntilDayOrDecisionHandlingBusinessEvents(
+      state,
+      SECOND_BAN_DAY,
+    );
+    assert.equal(state.phase, "ban-edit");
+    state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
     state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 90);
     assert.equal(state.day, 90);
     assert.equal(state.phase, "release-edit");
@@ -994,14 +1032,14 @@ test("a one-copy finisher restriction is cosmetic but a three-copy starter restr
   assert.ok(
     starterObserved.community.some(
       (event) =>
-        event.day === 46 &&
+        event.day === FIRST_BAN_DAY + 1 &&
         event.type === "restriction-demand" &&
         event.partId === starter.id,
     ),
   );
 });
 
-test("hands over a stable DAY 46 environment and continues normalizing on DAY 47", () => {
+test("hands over a stable DAY 31 environment and continues normalizing on DAY 32", () => {
   const state = createInitialGame(1000);
   const runtimes = state.activeThemeIds.map((themeId) => state.themes[themeId]);
   const totalUsers = Object.values(state.users).reduce(
@@ -1016,7 +1054,7 @@ test("hands over a stable DAY 46 environment and continues normalizing on DAY 47
       0,
     );
 
-  assert.equal(state.day, 46);
+  assert.equal(state.day, TUTORIAL_END_DAY);
   assert.equal(state.phase, "running");
   assert.equal(state.handoverComplete, true);
   assert.ok(totalUsers >= 9_500);
@@ -1038,13 +1076,13 @@ test("ends immediately at zero users while one remaining user can continue", () 
   const oneUser = createInitialGame(303);
   oneUser.users = { tier: 1, casual: 0, collector: 0 };
   const continued = reduceGame(oneUser, { type: "ADVANCE_DAYS", days: 1 });
-  assert.equal(continued.day, 47);
+  assert.equal(continued.day, TUTORIAL_END_DAY + 1);
   assert.equal(continued.phase, "running");
 
   const zeroUsers = createInitialGame(303);
   zeroUsers.users = { tier: 0, casual: 0, collector: 0 };
   const ended = reduceGame(zeroUsers, { type: "ADVANCE_DAYS", days: 1 });
-  assert.equal(ended.day, 47);
+  assert.equal(ended.day, TUTORIAL_END_DAY + 1);
   assert.equal(ended.phase, "ended");
   assert.equal(ended.history.at(-1)?.totalUsers, 0);
 });
@@ -1075,7 +1113,7 @@ test("restriction shock is delayed, dependency-weighted, bounded, and partly con
   assert.ok(
     noChangeDecision.community.some(
       (event) =>
-        event.day === 45 &&
+        event.day === FIRST_BAN_DAY &&
         event.type === "restriction-no-change" &&
         event.themeId === targetId &&
         event.previousValue === event.value,
@@ -1085,13 +1123,13 @@ test("restriction shock is delayed, dependency-weighted, bounded, and partly con
   const coreWithoutShock = structuredClone(coreDecision);
   for (const event of coreWithoutShock.community) {
     if (
-      event.day === 45 &&
+      event.day === FIRST_BAN_DAY &&
       event.themeId === targetId &&
       event.partId === "cycle-gate" &&
       (event.type === "restriction-applied" ||
         event.type === "cosmetic-restriction")
     ) {
-      event.day = 44;
+      event.day = FIRST_BAN_DAY - 1;
     }
   }
   const coreObserved = reduceGame(coreDecision, {
@@ -1149,7 +1187,7 @@ test("relief from an oppressive restriction offsets part of the tier-user shock"
 
 test("threat coverage requires impact proportionate to decision-day pressure", () => {
   const state = createInitialGame(13_504);
-  state.day = 105;
+  state.day = SECOND_BAN_DAY;
   state.phase = "ban-edit";
   const threatThemeId = "machine-revolution";
   const otherThemeIds = state.activeThemeIds.filter(
@@ -1197,7 +1235,7 @@ test("threat coverage requires impact proportionate to decision-day pressure", (
 
 test("healthy no-change and complete threat coverage reject chaser pre-cuts", () => {
   const state = createInitialGame(13_505);
-  state.day = 105;
+  state.day = SECOND_BAN_DAY;
   state.phase = "ban-edit";
   const fixedShares: Partial<Record<string, number>> = {
     cycle: 0.24,
@@ -1268,7 +1306,7 @@ test("restriction quality covers every clear threat without preemptive chaser cu
   while (
     !(
       atGate.phase === "ban-edit" &&
-      atGate.day - 45 >= 90
+      atGate.day - FIRST_BAN_DAY >= 90
     )
   ) {
     if (atGate.operations.pendingEvent) {
@@ -1280,7 +1318,10 @@ test("restriction quality covers every clear threat without preemptive chaser cu
       atGate = choosePendingBusinessEvent(atGate);
     } else if (atGate.phase === "release-edit") {
       atGate = submitFirstThree(atGate);
-    } else if (atGate.phase === "ban-edit" && atGate.day - 45 < 90) {
+    } else if (
+      atGate.phase === "ban-edit" &&
+      atGate.day - FIRST_BAN_DAY < 90
+    ) {
       atGate = reduceGame(atGate, { type: "SUBMIT_BAN", changes: {} });
     }
   }
@@ -1359,7 +1400,7 @@ test("restriction quality covers every clear threat without preemptive chaser cu
 
   const oldRestriction = atGate.community.find(
     (event) =>
-      event.day === 45 &&
+      event.day === FIRST_BAN_DAY &&
       (event.type === "restriction-applied" ||
         event.type === "cosmetic-restriction") &&
       event.partId !== undefined &&
@@ -1629,11 +1670,11 @@ test("restriction outcome labels require real target movement and a healthy foll
     followupUsers = 100_000,
   ) => {
     const state = structuredClone(base);
-    state.day = 49;
+    state.day = FIRST_BAN_DAY + 4;
     state.phase = "running";
     state.community = state.community.filter(
       (event) =>
-        event.day !== 45 ||
+        event.day !== FIRST_BAN_DAY ||
         !(
           event.type === "restriction-applied" ||
           event.type === "cosmetic-restriction" ||
@@ -1642,7 +1683,7 @@ test("restriction outcome labels require real target movement and a healthy foll
     );
     state.community.push({
       id: "restriction-outcome-fixture",
-      day: 45,
+      day: FIRST_BAN_DAY,
       category: "restriction",
       type: "restriction-applied",
       themeId: targetThemeId,
@@ -1656,17 +1697,20 @@ test("restriction outcome labels require real target movement and a healthy foll
         themeIds.map((themeId, index) => [themeId, values[index] ?? 0]),
       );
     state.history = state.history
-      .filter((entry) => entry.day !== 45 && entry.day !== 49)
+      .filter(
+        (entry) =>
+          entry.day !== FIRST_BAN_DAY && entry.day !== FIRST_BAN_DAY + 4,
+      )
       .concat([
         {
-          day: 45,
+          day: FIRST_BAN_DAY,
           totalUsers: 100_000,
           revenue: 1,
           topThemeId: themeIds[0],
           shares: sharesFor(decisionShares),
         },
         {
-          day: 49,
+          day: FIRST_BAN_DAY + 4,
           totalUsers: followupUsers,
           revenue: 1,
           topThemeId: themeIds[0],
@@ -1674,7 +1718,11 @@ test("restriction outcome labels require real target movement and a healthy foll
         },
       ])
       .sort((left, right) => left.day - right.day);
-    return getRestrictionHistoricalOutcome(state, 45, 49);
+    return getRestrictionHistoricalOutcome(
+      state,
+      FIRST_BAN_DAY,
+      FIRST_BAN_DAY + 4,
+    );
   };
 
   const stillDominated = outcomeFor(
@@ -1720,7 +1768,10 @@ function makeRestrictionOutcomeConsequenceFixture(
   seed = 13_507,
   decisionShares: readonly number[] = RESTRICTION_OUTCOME_DECISION_SHARES,
 ): State {
-  const state = createInitialGame(seed);
+  const state = advanceThroughDecisions(
+    createInitialGame(seed),
+    SECOND_BAN_DAY + 3,
+  );
   const themeIds = state.activeThemeIds.slice(0, 7);
   assert.equal(themeIds.length, 7);
   assert.equal(followupShares.length, themeIds.length);
@@ -1739,14 +1790,14 @@ function makeRestrictionOutcomeConsequenceFixture(
   );
   assert.ok(targetPart);
   const isDecisionEvent = (event: State["community"][number]) =>
-    event.day === 45 &&
+    event.day === SECOND_BAN_DAY &&
     (event.type === "restriction-applied" ||
       event.type === "cosmetic-restriction" ||
       event.type === "restriction-no-change");
   state.community = state.community.filter((event) => !isDecisionEvent(event));
   state.community.push({
     id: "restriction-outcome-consequence-fixture",
-    day: 45,
+    day: SECOND_BAN_DAY,
     category: "restriction",
     type: "restriction-applied",
     themeId: targetThemeId,
@@ -1758,17 +1809,24 @@ function makeRestrictionOutcomeConsequenceFixture(
 
   const sharesFor = (values: readonly number[]) =>
     Object.fromEntries(
-      themeIds.map((themeId, index) => [themeId, values[index]]),
+      state.activeThemeIds.map((themeId, index) => [
+        themeId,
+        values[index] ?? 0,
+      ]),
     );
-  const decisionSnapshot = state.history.find((entry) => entry.day === 45);
+  const decisionSnapshot = state.history.find(
+    (entry) => entry.day === SECOND_BAN_DAY,
+  );
   assert.ok(decisionSnapshot);
   decisionSnapshot.shares = sharesFor(decisionShares);
   decisionSnapshot.topThemeId = targetThemeId;
-  state.day = 48;
+  delete decisionSnapshot.topCutPlacements;
+  assert.equal(state.day, SECOND_BAN_DAY + 3);
   state.purchaseTrust = 60;
-  for (const [index, themeId] of themeIds.entries()) {
-    state.themes[themeId].share = followupShares[index];
-    state.themes[themeId].previousWeekShare = followupShares[index];
+  for (const [index, themeId] of state.activeThemeIds.entries()) {
+    const share = followupShares[index] ?? 0;
+    state.themes[themeId].share = share;
+    state.themes[themeId].previousWeekShare = share;
   }
   state.currentTopThemeId = themeIds.reduce((topThemeId, themeId) =>
     state.themes[themeId].share > state.themes[topThemeId].share
@@ -1783,6 +1841,9 @@ test("D+4 restriction outcomes apply each ownership consequence once and update 
   const naturalShares = naturalState.activeThemeIds
     .slice(0, 7)
     .map((themeId) => naturalState.themes[themeId].share);
+  const ineffectiveShares = [...naturalShares];
+  ineffectiveShares[0] += 0.015;
+  ineffectiveShares[1] -= 0.015;
   const fixtures = [
     {
       classification: "stabilized",
@@ -1801,7 +1862,7 @@ test("D+4 restriction outcomes apply each ownership consequence once and update 
     },
     {
       classification: "ineffective",
-      shares: naturalShares,
+      shares: ineffectiveShares,
       decisionShares: naturalShares,
       trustDelta: 0,
     },
@@ -1821,6 +1882,23 @@ test("D+4 restriction outcomes apply each ownership consequence once and update 
         ? fixture.decisionShares
         : RESTRICTION_OUTCOME_DECISION_SHARES,
     );
+    if (fixture.classification === "ineffective") {
+      const probe = reduceGame(structuredClone(input), {
+        type: "ADVANCE_DAYS",
+        days: 1,
+      });
+      const probeSnapshot = probe.history.find(
+        (entry) => entry.day === SECOND_BAN_DAY + 4,
+      );
+      const decisionSnapshot = input.history.find(
+        (entry) => entry.day === SECOND_BAN_DAY,
+      );
+      assert.ok(probeSnapshot);
+      assert.ok(decisionSnapshot);
+      decisionSnapshot.shares = { ...probeSnapshot.shares };
+      decisionSnapshot.topThemeId = probeSnapshot.topThemeId;
+      delete decisionSnapshot.topCutPlacements;
+    }
     const controlInput = structuredClone(input);
     controlInput.community = controlInput.community.filter(
       (event) => event.id !== "restriction-outcome-consequence-fixture",
@@ -1830,7 +1908,11 @@ test("D+4 restriction outcomes apply each ownership consequence once and update 
       days: 1,
     });
     const resolved = reduceGame(input, { type: "ADVANCE_DAYS", days: 1 });
-    const outcome = getRestrictionHistoricalOutcome(resolved, 45, 49);
+    const outcome = getRestrictionHistoricalOutcome(
+      resolved,
+      SECOND_BAN_DAY,
+      SECOND_BAN_DAY + 4,
+    );
     assert.equal(
       outcome.classification,
       fixture.classification,
@@ -1842,7 +1924,8 @@ test("D+4 restriction outcomes apply each ownership consequence once and update 
         10_000,
     );
     assert.equal(
-      resolved.history.find((entry) => entry.day === 49)?.purchaseTrust,
+      resolved.history.find((entry) => entry.day === SECOND_BAN_DAY + 4)
+        ?.purchaseTrust,
       resolved.purchaseTrust,
     );
     assert.deepEqual(
@@ -1902,8 +1985,11 @@ test("D+4 restriction outcomes apply each ownership consequence once and update 
 });
 
 test("a first ineffective review is trust-neutral while a repeated miss erodes trust and raises risk", () => {
-  const base = advanceThroughDecisions(createInitialGame(13_508), 108);
-  assert.equal(base.day, 108);
+  const base = advanceThroughDecisions(
+    createInitialGame(13_508),
+    SECOND_BAN_DAY + 3,
+  );
+  assert.equal(base.day, SECOND_BAN_DAY + 3);
   assert.equal(base.phase, "running");
   const themeIds = base.activeThemeIds.slice(0, 8);
   const targetThemeId = themeIds[0];
@@ -1918,7 +2004,9 @@ test("a first ineffective review is trust-neutral while a repeated miss erodes t
     event.type === "cosmetic-restriction" ||
     event.type === "restriction-no-change";
   base.community = base.community.filter(
-    (event) => !([45, 105].includes(event.day) && decisionType(event)),
+    (event) =>
+      !([FIRST_BAN_DAY, SECOND_BAN_DAY].includes(event.day) &&
+        decisionType(event)),
   );
   const makeDecisionEvent = (day: number) => ({
     id: `repeated-ineffective-${day}`,
@@ -1931,11 +2019,18 @@ test("a first ineffective review is trust-neutral while a repeated miss erodes t
     value: 1,
     body: "fixture",
   });
-  base.community.push(makeDecisionEvent(45), makeDecisionEvent(105));
-  const firstDecisionSnapshot = base.history.find((entry) => entry.day === 45);
-  const firstFollowupSnapshot = base.history.find((entry) => entry.day === 49);
+  base.community.push(
+    makeDecisionEvent(FIRST_BAN_DAY),
+    makeDecisionEvent(SECOND_BAN_DAY),
+  );
+  const firstDecisionSnapshot = base.history.find(
+    (entry) => entry.day === FIRST_BAN_DAY,
+  );
+  const firstFollowupSnapshot = base.history.find(
+    (entry) => entry.day === FIRST_BAN_DAY + 4,
+  );
   const currentDecisionSnapshot = base.history.find(
-    (entry) => entry.day === 105,
+    (entry) => entry.day === SECOND_BAN_DAY,
   );
   assert.ok(firstDecisionSnapshot);
   assert.ok(firstFollowupSnapshot);
@@ -1953,25 +2048,38 @@ test("a first ineffective review is trust-neutral while a repeated miss erodes t
 
   const firstInput = structuredClone(base);
   firstInput.community = firstInput.community.filter(
-    (event) => event.id !== "repeated-ineffective-45",
+    (event) => event.id !== `repeated-ineffective-${FIRST_BAN_DAY}`,
   );
   const first = reduceGame(firstInput, { type: "ADVANCE_DAYS", days: 1 });
   const repeated = reduceGame(base, { type: "ADVANCE_DAYS", days: 1 });
   assert.equal(
-    getRestrictionHistoricalOutcome(first, 105, 109).classification,
+    getRestrictionHistoricalOutcome(
+      first,
+      SECOND_BAN_DAY,
+      SECOND_BAN_DAY + 4,
+    ).classification,
     "ineffective",
   );
   assert.equal(
-    getRestrictionHistoricalOutcome(repeated, 45, 49).classification,
+    getRestrictionHistoricalOutcome(
+      repeated,
+      FIRST_BAN_DAY,
+      FIRST_BAN_DAY + 4,
+    ).classification,
     "ineffective",
   );
   assert.equal(
-    getRestrictionHistoricalOutcome(repeated, 105, 109).classification,
+    getRestrictionHistoricalOutcome(
+      repeated,
+      SECOND_BAN_DAY,
+      SECOND_BAN_DAY + 4,
+    ).classification,
     "ineffective",
   );
   assert.equal(repeated.purchaseTrust, first.purchaseTrust - 1.5);
   assert.equal(
-    repeated.history.find((entry) => entry.day === 109)?.purchaseTrust,
+    repeated.history.find((entry) => entry.day === SECOND_BAN_DAY + 4)
+      ?.purchaseTrust,
     repeated.purchaseTrust,
   );
 
@@ -2002,7 +2110,7 @@ test("support requests replace their lane and the latest request reaches the nex
 
   assert.equal(state.supportRequests.length, 1);
   const firstRequest = state.supportRequests[0];
-  assert.equal(firstRequest.proposedDay, 46);
+  assert.equal(firstRequest.proposedDay, TUTORIAL_END_DAY);
   assert.equal(firstRequest.eligibleReleaseDay, 60);
   assert.equal(firstRequest.status, "queued");
   const replacementThemeId = state.activeThemeIds[1];
@@ -2045,6 +2153,8 @@ test("support requests replace their lane and the latest request reaches the nex
 
   state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 75);
   assert.equal(state.day, 75);
+  assert.equal(state.phase, "ban-edit");
+  state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
   state = reduceGame(state, {
     type: "PROPOSE_SUPPORT",
     themeId: state.activeThemeIds[1],
@@ -2179,7 +2289,7 @@ test("support releases unlock exactly three prepared cards and stop after three 
         state.day + 15,
       );
       if (state.phase === "ban-edit") {
-        assert.equal(state.day, 105);
+        assert.equal(state.day, SECOND_BAN_DAY);
         state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
         state = advanceUntilDayOrDecisionHandlingBusinessEvents(
           state,
@@ -2662,13 +2772,20 @@ test("keeps nine choices when a support-heavy strategy exhausts eligible themes"
   assert.equal(releaseReviews, 14);
 });
 
-test("charges scaled operating costs every day after the DAY 46 handover", () => {
+test("keeps the DAY 31 handover free and charges operating costs from DAY 47", () => {
   const handover = createInitialGame(20_999);
-  assert.equal(handover.day, 46);
+  assert.equal(handover.day, TUTORIAL_END_DAY);
   assert.equal(handover.finance.todayOperatingCost, 0);
   assert.equal(handover.finance.cumulativeOperatingCosts, 0);
 
-  const next = reduceGame(handover, { type: "ADVANCE_DAYS", days: 1 });
+  const graceEnd = reduceGame(handover, {
+    type: "ADVANCE_DAYS",
+    days: OPERATING_COST_START_DAY - 1 - handover.day,
+  });
+  assert.equal(graceEnd.day, OPERATING_COST_START_DAY - 1);
+  assert.equal(graceEnd.finance.todayOperatingCost, 0);
+  assert.equal(graceEnd.finance.cumulativeOperatingCosts, 0);
+  const next = reduceGame(graceEnd, { type: "ADVANCE_DAYS", days: 1 });
   const activeUsers =
     next.users.tier + next.users.casual + next.users.collector;
   const expectedCost = getDailyOperatingCost(next.day, activeUsers);
@@ -2677,14 +2794,14 @@ test("charges scaled operating costs every day after the DAY 46 handover", () =>
       (next.finance.today * 0.32 - expectedCost + Number.EPSILON) * 10_000,
     ) / 10_000;
 
-  assert.equal(next.day, 47);
+  assert.equal(next.day, OPERATING_COST_START_DAY);
   assert.ok(expectedCost > 0);
   assert.equal(next.finance.todayOperatingCost, expectedCost);
   assert.equal(next.finance.cumulativeOperatingCosts, expectedCost);
   assert.equal(next.finance.todayOperatingCash, expectedNet);
   assert.equal(getMonthlyOperatingCost(10_000), 1.7);
-  assert.equal(getDailyOperatingCost(46, 10_000), 0);
-  assert.equal(getDailyOperatingCost(47, 10_000), 0.0567);
+  assert.equal(getDailyOperatingCost(OPERATING_COST_START_DAY - 1, 10_000), 0);
+  assert.equal(getDailyOperatingCost(OPERATING_COST_START_DAY, 10_000), 0.0567);
   assert.equal(getOperatingRunwayMonths(10, 10_000), 5.9);
 });
 
@@ -2837,7 +2954,15 @@ test("business cooldowns reopen on the exact boundary day", () => {
     type: "RUN_BUSINESS_ACTION",
     action: "tv-cm",
   });
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 29 });
+  state = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: FIRST_BAN_DAY - state.day,
+  });
+  state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
+  state = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: RELEASE_INTERVAL - state.day,
+  });
   assert.equal(state.day, 30);
   state = submitFirstThree(state);
   assert.equal(getBusinessActionAvailability(state, "tv-cm").cooldownRemaining, 1);
@@ -2996,10 +3121,10 @@ test("recurring business events generate revenue and grow their intended audienc
     const launchedRecord = launched.operations.records.at(-1)!;
     assert.equal(launchedRecord.id, "business-action-2");
     assert.equal(launchedRecord.type, fixture.type);
-    assert.equal(launchedRecord.startedDay, 46);
+    assert.equal(launchedRecord.startedDay, TUTORIAL_END_DAY);
     assert.equal(
       launchedRecord.endsDay,
-      46 +
+      TUTORIAL_END_DAY +
         (fixture.type === "local-league"
           ? 21
           : fixture.type === "reprint-campaign"
@@ -3035,7 +3160,15 @@ test("championships turn a healthy environment into growth and a hostile one int
   function prepare(seed: number, hostile: boolean): State {
     let state = createCampaignStart(seed);
     state.finance.cash = 10;
-    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 29 });
+    state = reduceGame(state, {
+      type: "ADVANCE_DAYS",
+      days: FIRST_BAN_DAY - state.day,
+    });
+    state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
+    state = reduceGame(state, {
+      type: "ADVANCE_DAYS",
+      days: RELEASE_INTERVAL - state.day,
+    });
     state = reduceGame(state, {
       type: "SUBMIT_RELEASE",
       selections: getPrologueReleaseSelections(state),
@@ -3147,7 +3280,7 @@ test("pack odds boost a release, then detection deterministically ends the boost
         type: "RUN_BUSINESS_ACTION",
         action: "pack-odds",
       }),
-    /regular release|정기 발매/i,
+    /settlement|결산/i,
   );
 });
 
@@ -3283,7 +3416,7 @@ test("first-print expansion unlocks only after a regular release is submitted", 
 test("business dilemmas stop advancement without stealing scheduled decision gates", () => {
   const seed = 31_001;
   const initial = createInitialGame(seed);
-  assert.equal(initial.day, 46);
+  assert.equal(initial.day, TUTORIAL_END_DAY);
   assert.equal(initial.operations.pendingEvent, null);
   assert.deepEqual(initial.operations.eventRecords, []);
 

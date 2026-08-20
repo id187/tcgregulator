@@ -5,6 +5,7 @@ import { THEME_BY_ID } from "../app/game/content.ts";
 import {
   SUPPORT_DIRECTION_MATCHUP_LOGIT_CAP,
   createCampaignStart,
+  getPrologueRestrictionChanges,
   getCurrentPairWinProbability,
   getEffectiveThemePlayKeywords,
   getProspectiveSupportKeyword,
@@ -27,7 +28,17 @@ function reachFreshTheme(seed = 70_091): {
 } {
   let state = reduceGame(createCampaignStart(seed), {
     type: "ADVANCE_DAYS",
-    days: 29,
+    days: 14,
+  });
+  assert.equal(state.day, 15);
+  assert.equal(state.phase, "ban-edit");
+  state = reduceGame(state, {
+    type: "SUBMIT_BAN",
+    changes: getPrologueRestrictionChanges(state),
+  });
+  state = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: 15,
   });
   assert.equal(state.phase, "release-edit");
   const newThemeOptions = state.releaseSlate?.options.filter(

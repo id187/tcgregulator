@@ -31,7 +31,14 @@ import type {
   VentureActionType,
   VentureRiskFactor,
 } from "../app/game/business-community-copy.ts";
-import { FIRST_BAN_DAY, PROLOGUE_SEED } from "../app/game/campaign.ts";
+import { getThemeCardMarketQuoteAtDay } from "../app/game/card-market.ts";
+import {
+  BAN_INTERVAL,
+  FIRST_BAN_DAY,
+  PLAYER_START_DAY,
+  PROLOGUE_SEED,
+  RELEASE_INTERVAL,
+} from "../app/game/campaign.ts";
 import { getAutomaticReleaseSelections } from "../app/game/automatic-release.ts";
 import {
   getCommunityHeat,
@@ -61,19 +68,65 @@ import type {
   ThemeId,
 } from "../app/game/types.ts";
 
+const FIRST_RESTRICTION_REACTION_DAY = FIRST_BAN_DAY + 1;
+const FIRST_RESTRICTION_AFTERMATH_DAYS = [
+  FIRST_RESTRICTION_REACTION_DAY,
+  FIRST_RESTRICTION_REACTION_DAY + 1,
+  FIRST_RESTRICTION_REACTION_DAY + 2,
+] as const;
+const TUTORIAL_BUSINESS_DAY = 22;
+const SECOND_RESTRICTION_DAY = FIRST_BAN_DAY + BAN_INTERVAL;
+const SECOND_RESTRICTION_REACTION_DAY = SECOND_RESTRICTION_DAY + 1;
+const REGULAR_RESTRICTION_DAY = FIRST_BAN_DAY + BAN_INTERVAL * 2;
+const REGULAR_RESTRICTION_REACTION_DAY = REGULAR_RESTRICTION_DAY + 1;
+const REGULAR_RESTRICTION_FOLLOWUP_DAY = REGULAR_RESTRICTION_DAY + 4;
+const NEXT_REGULAR_RESTRICTION_DAY = REGULAR_RESTRICTION_DAY + BAN_INTERVAL;
+
 function getPlannedReleaseOptions(state: GameState) {
   const options = state.releaseSlate?.options;
   assert.ok(options, "release-edit must expose a release slate");
-  const byKind = [
-    ...options.filter((option) => option.kind === "new-theme").slice(0, 2),
-    ...options.filter((option) => option.kind === "support").slice(0, 1),
-    ...options.filter((option) => option.kind === "generic").slice(0, 1),
-  ];
-  assert.equal(byKind.length, 4);
-  const requested = byKind.find((option) => option.requested);
-  return requested
-    ? [requested, ...byKind.filter((option) => option.id !== requested.id)]
-    : byKind;
+  const requested = options.find((option) => option.requested);
+  const selected = requested ? [requested] : [];
+  for (const kind of ["new-theme", "support", "generic"] as const) {
+    if (selected.some((option) => option.kind === kind)) continue;
+    const option = options.find((candidate) => candidate.kind === kind);
+    assert.ok(option, `release slate must expose a ${kind} option`);
+    selected.push(option);
+  }
+  for (const option of options) {
+    if (selected.length === 4) break;
+    if (!selected.some((candidate) => candidate.id === option.id)) {
+      selected.push(option);
+    }
+  }
+  assert.equal(selected.length, 4);
+  return selected;
+}
+
+function advanceToFirstReleaseThroughTutorial(state: GameState): GameState {
+  let next = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: FIRST_BAN_DAY - state.day,
+  });
+  assert.equal(next.day, FIRST_BAN_DAY);
+  assert.equal(next.phase, "ban-edit");
+  next = reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
+  next = reduceGame(next, {
+    type: "ADVANCE_DAYS",
+    days: TUTORIAL_BUSINESS_DAY - next.day,
+  });
+  assert.equal(next.day, TUTORIAL_BUSINESS_DAY);
+  next = reduceGame(next, {
+    type: "RUN_BUSINESS_ACTION",
+    action: "tv-cm",
+  });
+  next = reduceGame(next, {
+    type: "ADVANCE_DAYS",
+    days: RELEASE_INTERVAL - next.day,
+  });
+  assert.equal(next.day, RELEASE_INTERVAL);
+  assert.equal(next.phase, "release-edit");
+  return next;
 }
 
 function addBusinessRecord(
@@ -85,10 +138,10 @@ function addBusinessRecord(
   state.operations.records.push({ id, ...record });
 }
 
-test("keeps every DAY 1-45 community board fixed after the mandate seed changes", () => {
+test("keeps every pre-mandate community board fixed after the seed changes", () => {
   const atFirstBan = createFirstBanGame(PROLOGUE_SEED);
   const beforeHandover = new Map(
-    Array.from({ length: 45 }, (_, index) => {
+    Array.from({ length: FIRST_BAN_DAY }, (_, index) => {
       const day = index + 1;
       return [day, getDailyCommunityPosts(atFirstBan, day)] as const;
     }),
@@ -102,7 +155,7 @@ test("keeps every DAY 1-45 community board fixed after the mandate seed changes"
 
   assert.notEqual(assigned.seed, PROLOGUE_SEED);
   assert.equal(assigned.seed, campaignSeed);
-  for (let day = 1; day <= 45; day += 1) {
+  for (let day = 1; day <= FIRST_BAN_DAY; day += 1) {
     const before = beforeHandover.get(day);
     assert.ok(before);
     assert.equal(before.length, 20, `DAY ${day} pre-handover board`);
@@ -268,7 +321,7 @@ function makeRestrictionReactionState(
   seed = 34_001,
 ): GameState {
   const state = makeState(seed);
-  state.day = 48;
+  state.day = FIRST_RESTRICTION_REACTION_DAY + 2;
   state.phase = "running";
   state.community = changes.map((change, index) => {
     const content = THEME_BY_ID[change.themeId];
@@ -277,7 +330,7 @@ function makeRestrictionReactionState(
     state.themes[change.themeId].legalLimits[change.partId] = change.newLimit;
     return {
       id: `fixture-restriction-${index + 1}`,
-      day: 45,
+      day: FIRST_BAN_DAY,
       category: "restriction" as const,
       type: change.type ?? "restriction-applied",
       themeId: change.themeId,
@@ -290,7 +343,10 @@ function makeRestrictionReactionState(
   const shares = Object.fromEntries(
     state.activeThemeIds.map((themeId) => [themeId, state.themes[themeId].share]),
   );
-  state.history = [45, 46, 47, 48].map((day) => ({
+  state.history = [
+    FIRST_BAN_DAY,
+    ...FIRST_RESTRICTION_AFTERMATH_DAYS,
+  ].map((day) => ({
     day,
     totalUsers: 100_000,
     revenue: 0.5,
@@ -303,7 +359,7 @@ function makeRestrictionReactionState(
 function restrictionContextPosts(
   state: GameState,
   day: number,
-  decisionDay = 45,
+  decisionDay = FIRST_BAN_DAY,
 ): CommunityEvent[] {
   const anchorKeys = new Set(
     state.community
@@ -331,7 +387,7 @@ function restrictionContextPosts(
 function makeScheduledRestrictionReactionState(
   changes: readonly RestrictionFixtureChange[],
   seed = 34_501,
-  decisionDay = 165,
+  decisionDay = REGULAR_RESTRICTION_DAY,
 ): GameState {
   const state = makeState(seed);
   state.day = decisionDay + 7;
@@ -441,7 +497,7 @@ function releaseWithMixedReactions(seed = 9191): GameState {
   state.operations.nextEventDay = null;
   const restriction = state.community.find(
     (event) =>
-      event.day === 45 &&
+      event.day === FIRST_BAN_DAY &&
       (event.type === "restriction-applied" || event.type === "cosmetic-restriction"),
   );
   assert.ok(restriction);
@@ -451,8 +507,11 @@ function releaseWithMixedReactions(seed = 9191): GameState {
     themeId: restrictedThemeId,
     direction: "consistency",
   });
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
-  assert.equal(state.day, 60);
+  state = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: RELEASE_INTERVAL * 2 - state.day,
+  });
+  assert.equal(state.day, RELEASE_INTERVAL * 2);
   assert.equal(state.phase, "release-edit");
   assert.ok(state.releaseSlate);
   const selected = getPlannedReleaseOptions(state);
@@ -630,12 +689,12 @@ function unbanReactionState(
       ]),
     );
   };
-  state.day = 168;
+  state.day = REGULAR_RESTRICTION_DAY + 3;
   state.phase = "running";
   state.community = [
     {
       id: "old-restriction-start",
-      day: 45,
+      day: FIRST_BAN_DAY,
       category: "restriction",
       type: "restriction-applied",
       themeId: targetId,
@@ -646,7 +705,7 @@ function unbanReactionState(
     },
     {
       id: "long-restriction-unban",
-      day: 165,
+      day: REGULAR_RESTRICTION_DAY,
       category: "restriction",
       type: "restriction-applied",
       themeId: targetId,
@@ -658,7 +717,7 @@ function unbanReactionState(
   ];
   const shares = pathByTone[tone];
   state.history = shares.map((targetShare, index) => {
-    const day = 165 + index;
+    const day = REGULAR_RESTRICTION_DAY + index;
     const dayShares = sharesFor(targetShare);
     const topThemeId = [...state.activeThemeIds].sort(
       (left, right) => dayShares[right] - dayShares[left],
@@ -696,12 +755,12 @@ function staleRestrictionState(
       themeId === targetId ? targetShare : otherShare,
     ]),
   );
-  state.day = 170;
+  state.day = REGULAR_RESTRICTION_DAY + 35;
   state.phase = "running";
   state.community = [
     {
       id: "stale-restriction-start",
-      day: 45,
+      day: FIRST_BAN_DAY,
       category: "restriction",
       type: "restriction-applied",
       themeId: targetId,
@@ -716,7 +775,7 @@ function staleRestrictionState(
     const topPart = THEME_BY_ID[topId].parts[0];
     state.community.push({
       id: "stale-no-change",
-      day: 165,
+      day: REGULAR_RESTRICTION_DAY,
       category: "restriction",
       type: "restriction-no-change",
       themeId: topId,
@@ -726,7 +785,13 @@ function staleRestrictionState(
       body: "[운영 공지] 금제 변경 없음",
     });
   }
-  state.history = [135, 136, 137, 165, 170].map((day) => ({
+  state.history = [
+    REGULAR_RESTRICTION_DAY - 30,
+    REGULAR_RESTRICTION_DAY - 29,
+    REGULAR_RESTRICTION_DAY - 28,
+    REGULAR_RESTRICTION_DAY,
+    REGULAR_RESTRICTION_DAY + 35,
+  ].map((day) => ({
     day,
     totalUsers: 10_000,
     revenue: 0.5,
@@ -749,17 +814,17 @@ function makeNoChangeRestrictionState(seed = 2208): GameState {
   state.community = state.community.filter(
     (event) =>
       !(
-        (event.day === 45 &&
+        (event.day === FIRST_BAN_DAY &&
           (event.type === "restriction-applied" ||
             event.type === "cosmetic-restriction")) ||
-        (event.day === 46 &&
+        (event.day === FIRST_RESTRICTION_REACTION_DAY &&
           event.type === "restriction-demand" &&
           event.partId === "cycle-gate")
       ),
   );
   state.community.push({
     id: "no-change-announcement",
-    day: 45,
+    day: FIRST_BAN_DAY,
     category: "restriction",
     type: "restriction-no-change",
     themeId: "cycle",
@@ -784,11 +849,22 @@ function setNoChangeMetaHealth(state: GameState, unhealthy: boolean): void {
       runtime.topStreakDays = unhealthy ? 90 : 4;
     }
   }
-  const decisionHistory = state.history.find((entry) => entry.day === 45);
-  assert.ok(decisionHistory);
-  decisionHistory.shares = Object.fromEntries(
-    state.activeThemeIds.map((themeId) => [themeId, state.themes[themeId].share]),
+  const decisionHistory = state.history.find(
+    (entry) => entry.day === FIRST_BAN_DAY,
   );
+  assert.ok(decisionHistory);
+  const decisionThemeIds = Object.keys(decisionHistory.shares) as ThemeId[];
+  decisionHistory.shares = Object.fromEntries(
+    decisionThemeIds.map((themeId) => [themeId, state.themes[themeId].share]),
+  );
+  if (decisionHistory.topCutPlacements) {
+    decisionHistory.topCutPlacements = Object.fromEntries(
+      decisionThemeIds.map((themeId) => [
+        themeId,
+        decisionHistory.topCutPlacements?.[themeId] ?? 0,
+      ]),
+    );
+  }
   decisionHistory.topThemeId = "cycle";
 }
 
@@ -980,13 +1056,58 @@ test("places stored special events first and returns defensive copies", () => {
   assert.equal(state.community[0].body, "실전에서 새 카운터가 발견됐다");
 });
 
-test("bursts for four release days with strong, weak, art, and ban-support reactions", () => {
+test("bursts for four release days without ordinary illustration chatter", () => {
   let state = releaseWithMixedReactions();
   const expectedContextCounts = [16, 12, 8, 5];
+  const supportProduct = state.releaseHistory
+    .find((batch) => batch.day === RELEASE_INTERVAL * 2)
+    ?.products.find((product) => product.kind === "support");
+  assert.ok(supportProduct && supportProduct.kind === "support");
+  const restrictedPartId = state.themes[supportProduct.themeId].releasedPartIds.find(
+    (partId) => state.themes[supportProduct.themeId].legalLimits[partId] === 3,
+  );
+  assert.ok(restrictedPartId);
+  state = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: SECOND_RESTRICTION_DAY - state.day,
+  });
+  assert.equal(state.day, SECOND_RESTRICTION_DAY);
+  assert.equal(state.phase, "ban-edit");
+  state = reduceGame(state, {
+    type: "SUBMIT_BAN",
+    changes: { [restrictedPartId]: 1 },
+  });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+  state = reduceGame(state, {
+    type: "PROPOSE_SUPPORT",
+    themeId: supportProduct.themeId,
+    direction: "consistency",
+  });
+  state = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: RELEASE_INTERVAL * 3 - state.day,
+  });
+  assert.equal(state.day, RELEASE_INTERVAL * 3);
+  assert.equal(state.phase, "release-edit");
+  const selected = getPlannedReleaseOptions(state);
+  const selectedNewThemes = selected.filter((option) => option.kind === "new-theme");
+  assert.equal(selectedNewThemes.length, 2);
+  state = reduceGame(state, {
+    type: "SUBMIT_RELEASE",
+    selections: selected.map((option) => ({
+      optionId: option.id,
+      powerAdjustment: option.id === selectedNewThemes[0].id
+        ? 3
+        : option.id === selectedNewThemes[1].id
+          ? -3
+          : 0,
+    })),
+  });
+  const releaseDay = RELEASE_INTERVAL * 3;
 
-  assert.equal(getReleaseReactionProfile(state, 60).surge, false);
+  assert.equal(getReleaseReactionProfile(state, releaseDay).surge, false);
   assert.equal(
-    getDailyCommunityPosts(state, 60).some((post) =>
+    getDailyCommunityPosts(state, releaseDay).some((post) =>
       post.id.startsWith("daily-release-"),
     ),
     false,
@@ -995,7 +1116,7 @@ test("bursts for four release days with strong, weak, art, and ban-support react
   const before = JSON.stringify(state);
   for (let lifecycleIndex = 0; lifecycleIndex < 4; lifecycleIndex += 1) {
     const age = lifecycleIndex + 1;
-    const day = 60 + age;
+    const day = releaseDay + age;
     const profile = getReleaseReactionProfile(state, day);
     const posts = getDailyCommunityPosts(state, day);
     const storedReleaseCount = posts.filter(
@@ -1006,6 +1127,12 @@ test("bursts for four release days with strong, weak, art, and ban-support react
     const generatedReleaseCount = posts.filter((post) =>
       post.id.startsWith("daily-release-"),
     ).length;
+    const contextualReleasePosts = posts.filter(
+      (post) =>
+        post.id.startsWith("daily-release-") ||
+        (post.id.startsWith("community-") &&
+          (post.type === "release-reaction" || post.type === "support-released")),
+    );
 
     assert.equal(posts.length, 20);
     assert.equal(profile.surge, true);
@@ -1018,13 +1145,25 @@ test("bursts for four release days with strong, weak, art, and ban-support react
       expectedContextCounts[lifecycleIndex],
       `DAY +${age}`,
     );
+    assert.equal(
+      contextualReleasePosts.filter((post) => post.id.endsWith("-art")).length,
+      0,
+      `ordinary DAY +${age} release must not allocate an illustration slot`,
+    );
+    assert.equal(
+      posts.filter((post) =>
+        /일러|색감|팬아트|비주얼|풀아트|카드명/.test(post.body)
+      ).length,
+      0,
+      `ordinary DAY +${age} board must stay focused on play and market results`,
+    );
     assert.ok(
       posts.every((post) => !post.body.includes("발매 다음 날인데")),
     );
     assert.ok(getCommunityHeat(state, day) >= profile.heat);
   }
 
-  const launchPosts = getDailyCommunityPosts(state, 61);
+  const launchPosts = getDailyCommunityPosts(state, releaseDay + 1);
   assert.ok(
     launchPosts.some((post) => post.body.includes("이럴 거면 금제 왜 함")),
   );
@@ -1037,17 +1176,70 @@ test("bursts for four release days with strong, weak, art, and ban-support react
   );
   assert.ok(
     launchPosts.some((post) =>
-      /누가 사냐|돈 주고 맞추라고|너무 약함|약하게|반쪽 설계|매물 글|최소한 굴러가게/.test(
+      /누가 사냐|돈 주고 맞추라고|너무 약함|약하게|반쪽 설계|매물 글|최소한 굴러가게|상대가 효과를 안 읽고도|너무 슬프다/.test(
         post.body,
       ),
     ),
   );
-  assert.ok(
-    launchPosts.filter((post) =>
-      /일러|색감|팬아트|비주얼|풀아트|카드명/.test(post.body),
-    ).length >= 4,
-  );
   assert.equal(JSON.stringify(state), before);
+});
+
+test("keeps one illustration reaction only for a high-priced high-illustration listing", () => {
+  const state = makeState(9_190);
+  const themeId = "white-night" as ThemeId;
+  const cardId = "white-night-saint";
+  const reference = getThemeCardMarketQuoteAtDay(
+    state,
+    themeId,
+    cardId,
+    59,
+    1,
+  );
+  assert.ok(reference);
+  state.releaseHistory.push({
+    day: 59,
+    products: [
+      {
+        optionId: "collector-premium-reprint",
+        kind: "reprint",
+        cardId,
+        themeId,
+        requestId: "collector-premium-request",
+        expectedTier: "Tier 2",
+        powerAdjustment: 0,
+        referencePrice: reference.price,
+        trustDelta: -1,
+        accessibilityUserGain: 0,
+        collectorUserLoss: 0,
+        releaseRevenueBoost: 0,
+      },
+    ],
+  });
+
+  const quote = getThemeCardMarketQuoteAtDay(state, themeId, cardId, 60, 1);
+  assert.ok(quote);
+  assert.equal(quote.collectorLabel, "하이 일러스트");
+  assert.ok(quote.price >= 50_000);
+  assert.ok(quote.collectorDemandScore >= 80);
+
+  const board = getDailyCommunityPosts(state, 60);
+  const contextual = board.filter((post) =>
+    post.id.startsWith("daily-release-59-collector-premium-reprint-")
+  );
+  const illustration = contextual.filter((post) => post.id.endsWith("-art"));
+  assert.equal(illustration.length, 1);
+  assert.equal(illustration[0].partId, cardId);
+  assert.match(
+    illustration[0].body,
+    /하이 일러스트|일러|비주얼|풀아트|색감|수집|컬렉터/,
+  );
+  assert.match(illustration[0].body, /시세|가격|매물|고가|프리미엄|원/);
+  assert.equal(
+    board.filter((post) =>
+      /일러|색감|팬아트|비주얼|풀아트|카드명/.test(post.body)
+    ).length,
+    1,
+  );
 });
 
 test("emerging themes keep cautious and data-led voices together without reading the UI badge aloud", () => {
@@ -1088,7 +1280,10 @@ test("emerging themes keep cautious and data-led voices together without reading
   assert.ok(earlyEvaluation);
   assert.ok(laterEvaluation);
   assert.match(earlyEvaluation.body, /거품|불안|채용만 높은/);
-  assert.match(laterEvaluation.body, /기대|시작은 좋|강할 가능성|성적표/);
+  assert.match(
+    laterEvaluation.body,
+    /기대|시작은 좋|강할 가능성|성적표|긍정|좋은 출발|기본 체급|좋은 성적/,
+  );
   for (let day = 61; day <= 73; day += 1) {
     const aboutEmergingTheme = getDailyCommunityPosts(state, day).filter(
       (post) => post.themeId === themeId || post.relatedThemeId === themeId,
@@ -1099,6 +1294,68 @@ test("emerging themes keep cautious and data-led voices together without reading
         !/(?:[0-3]티어|Tier\s*[0-3])/.test(post.body)
       ),
       `DAY ${day}: ${aboutEmergingTheme.map((post) => post.body).join("\n")}`,
+    );
+  }
+});
+
+test("zero-placement low-adoption emerging themes stay neutral while evidence is inconclusive", () => {
+  const { state, themeId } = emergingThemeTrajectoryState(
+    "weak-to-strong",
+    9_294,
+  );
+  for (const batch of state.releaseHistory) {
+    batch.products = batch.products.filter(
+      (product) => product.kind !== "new-theme" || product.themeId === themeId,
+    );
+  }
+  const otherIds = state.activeThemeIds.filter(
+    (candidate) => candidate !== themeId,
+  );
+  const leadingId = otherIds[0];
+  assert.ok(leadingId);
+
+  for (const entry of state.history) {
+    if (entry.day < 61 || entry.day > 73) continue;
+    entry.shares = Object.fromEntries(
+      state.activeThemeIds.map((candidate) => [
+        candidate,
+        candidate === themeId ? 0.04 : 0.96 / otherIds.length,
+      ]),
+    );
+    entry.winRates = Object.fromEntries(
+      state.activeThemeIds.map((candidate) => [
+        candidate,
+        candidate === themeId ? 0.5 : 0.51,
+      ]),
+    );
+    entry.topCutPlacements = Object.fromEntries(
+      state.activeThemeIds.map((candidate) => [
+        candidate,
+        candidate === leadingId ? 32 : 0,
+      ]),
+    );
+    entry.topThemeId = leadingId;
+  }
+
+  for (const day of [66, 73]) {
+    const evaluation = getDailyCommunityPosts(state, day).find((post) =>
+      post.id.endsWith("-evaluation") && post.themeId === themeId
+    );
+    assert.ok(evaluation, `DAY ${day}`);
+    assert.match(
+      evaluation.body,
+      /표본|판단.*보류|평가.*보류|더 지켜|결론.*(?:이르|선명하지|밀 정도)|근거.*부족|말할 단계.*아님|확정할 만큼 선명하지|다음 (?:대회|표본)|강세도 거품도 아니다/,
+      `DAY ${day}: ${evaluation.body}`,
+    );
+    assert.match(
+      evaluation.body,
+      /입상|탑컷|본선 진출|성적/,
+      `DAY ${day}: ${evaluation.body}`,
+    );
+    assert.doesNotMatch(
+      evaluation.body,
+      /시작은 좋|기대|강할 가능성|좋은 신호|제대로 작동|성적표는 나왔다/,
+      `DAY ${day}: ${evaluation.body}`,
     );
   }
 });
@@ -1199,7 +1456,7 @@ function prologueRestrictionDecisions(
 ): PrologueRestrictionDecision[] {
   return state.community.flatMap((event) => {
     if (
-      event.day !== 45 ||
+      event.day !== FIRST_BAN_DAY ||
       (event.type !== "restriction-applied" &&
         event.type !== "cosmetic-restriction") ||
       !event.partId ||
@@ -1266,9 +1523,9 @@ test("prologue four-cut reactions use the actual targets, scope, and roles", () 
   );
 
   for (const [day, quota] of [
-    [46, 16],
-    [47, 14],
-    [48, 12],
+    [FIRST_RESTRICTION_REACTION_DAY, 16],
+    [FIRST_RESTRICTION_REACTION_DAY + 1, 14],
+    [FIRST_RESTRICTION_REACTION_DAY + 2, 12],
   ] as const) {
     const posts = restrictionContextPosts(state, day);
     assert.equal(posts.length, quota);
@@ -1293,7 +1550,10 @@ test("prologue four-cut reactions use the actual targets, scope, and roles", () 
     }
   }
 
-  const dayOne = restrictionContextPosts(state, 46);
+  const dayOne = restrictionContextPosts(
+    state,
+    FIRST_RESTRICTION_REACTION_DAY,
+  );
   const debutThemeIds = new Set(
     state.releaseHistory.flatMap((batch) =>
       batch.products
@@ -1347,12 +1607,10 @@ test("prologue dynamic four-cut copy stays fact-safe across seeds", () => {
       4,
       `seed ${seed}`,
     );
-    signatures.add([...byKey.keys()].sort().join("|"));
-
     for (const [day, quota] of [
-      [46, 16],
-      [47, 14],
-      [48, 12],
+      [FIRST_RESTRICTION_REACTION_DAY, 16],
+      [FIRST_RESTRICTION_REACTION_DAY + 1, 14],
+      [FIRST_RESTRICTION_REACTION_DAY + 2, 12],
     ] as const) {
       const posts = restrictionContextPosts(state, day);
       assert.equal(posts.length, quota, `seed ${seed} DAY ${day}`);
@@ -1376,7 +1634,11 @@ test("prologue dynamic four-cut copy stays fact-safe across seeds", () => {
       );
     }
 
-    const dayOne = restrictionContextPosts(state, 46);
+    const dayOne = restrictionContextPosts(
+      state,
+      FIRST_RESTRICTION_REACTION_DAY,
+    );
+    signatures.add(dayOne.map((post) => post.body).sort().join("\n"));
     for (const decision of decisions) {
       const anchored = dayOne.filter(
         (post) => `${post.themeId}:${post.partId}` === decision.key,
@@ -1430,7 +1692,10 @@ test("single-card restriction copy follows starter, bridge, and recursion roles"
 
   for (const [index, { change, expected, forbidden }] of cases.entries()) {
     const state = makeRestrictionReactionState([change], 35_000 + index);
-    const posts = restrictionContextPosts(state, 46);
+    const posts = restrictionContextPosts(
+      state,
+      FIRST_RESTRICTION_REACTION_DAY,
+    );
     assert.equal(posts.length, 16);
     assert.ok(posts.filter((post) => expected.test(post.body)).length >= 3);
     assert.ok(posts.every((post) => !forbidden.test(post.body)));
@@ -1449,7 +1714,7 @@ test("single cosmetic restriction criticizes both zero impact and missing breadt
       type: "cosmetic-restriction",
     },
   ], 36_001);
-  const posts = restrictionContextPosts(state, 46);
+  const posts = restrictionContextPosts(state, FIRST_RESTRICTION_REACTION_DAY);
   assert.equal(posts.length, 16);
   assert.ok(
     posts.filter((post) =>
@@ -1485,7 +1750,10 @@ test("one-card and two-card D+1 boards make insufficient breadth the majority", 
       newLimit: 1,
     },
   ], 36_101);
-  const singlePosts = restrictionContextPosts(single, 46);
+  const singlePosts = restrictionContextPosts(
+    single,
+    FIRST_RESTRICTION_REACTION_DAY,
+  );
   const singleBreadth =
     /왜 이것밖에|금제 범위|하나만 찍|한 줄뿐|한 장짜리|한 종에서 끝|실제 제한은 .*하나|한 종뿐|단일 변경|환경의 여러 강덱|여러 곳을 친 금제가 아니다|상위권 전체를 조정|여러 장을 자른 게 아니다/;
   assert.ok(
@@ -1507,7 +1775,10 @@ test("one-card and two-card D+1 boards make insufficient breadth the majority", 
       newLimit: 1,
     },
   ], 36_102);
-  const doublePosts = restrictionContextPosts(double, 46);
+  const doublePosts = restrictionContextPosts(
+    double,
+    FIRST_RESTRICTION_REACTION_DAY,
+  );
   const doubleBreadth =
     /실효 제한.*뿐|여전히 부족|끝이면|전부 둔|함께 조정|여기서 끝|복수 조정|다른 얘기|규모가 아님|비워 둔|바로 다음 금제|부족함/;
   assert.ok(
@@ -1555,7 +1826,11 @@ test("one-card and two-card cuts below the leaders ask why the top decks were sp
         changes,
         39_100 + fixtureIndex * 100 + seedOffset,
       );
-      const posts = restrictionContextPosts(state, 166, 165);
+      const posts = restrictionContextPosts(
+        state,
+        REGULAR_RESTRICTION_REACTION_DAY,
+        REGULAR_RESTRICTION_DAY,
+      );
       const comparativePosts = posts.filter((post) => comparison.test(post.body));
       assert.ok(
         comparativePosts.length >= 4,
@@ -1589,7 +1864,7 @@ test("multi-card restriction keeps aggregate and multi-axis reactions", () => {
     },
   ];
   const state = makeRestrictionReactionState(changes, 37_001);
-  const posts = restrictionContextPosts(state, 46);
+  const posts = restrictionContextPosts(state, FIRST_RESTRICTION_REACTION_DAY);
   assert.equal(posts.length, 16);
   assert.deepEqual(
     new Set(posts.map((post) => post.partId)),
@@ -1627,7 +1902,10 @@ test("multi-card copy distinguishes same-role and multi-theme scopes", () => {
       newLimit: 2,
     },
   ], 38_001);
-  const sameRolePosts = restrictionContextPosts(sameRole, 46);
+  const sameRolePosts = restrictionContextPosts(
+    sameRole,
+    FIRST_RESTRICTION_REACTION_DAY,
+  );
   assert.equal(sameRolePosts.length, 16);
   assert.ok(
     sameRolePosts.some((post) =>
@@ -1649,7 +1927,10 @@ test("multi-card copy distinguishes same-role and multi-theme scopes", () => {
       newLimit: 1,
     },
   ], 38_002);
-  const multiThemePosts = restrictionContextPosts(multiTheme, 46);
+  const multiThemePosts = restrictionContextPosts(
+    multiTheme,
+    FIRST_RESTRICTION_REACTION_DAY,
+  );
   assert.equal(multiThemePosts.length, 16);
   assert.ok(
     multiThemePosts.some((post) =>
@@ -1675,7 +1956,7 @@ test("balanced reviews praise Tier 1/Tier 2 coverage and a full stale release wi
   ], 38_101);
   state.community.unshift({
     id: "stale-white-night-start",
-    day: 45,
+    day: FIRST_BAN_DAY,
     category: "restriction",
     type: "restriction-applied",
     themeId: "white-night",
@@ -1686,7 +1967,7 @@ test("balanced reviews praise Tier 1/Tier 2 coverage and a full stale release wi
   });
   setRestrictionDecisionMeta(
     state,
-    165,
+    REGULAR_RESTRICTION_DAY,
     Object.fromEntries(
       state.activeThemeIds.map((themeId, index) => [
         themeId,
@@ -1700,14 +1981,21 @@ test("balanced reviews praise Tier 1/Tier 2 coverage and a full stale release wi
       ]),
     ),
   );
-  const profile = getPublishedRestrictionPolicyProfile(state, 165);
+  const profile = getPublishedRestrictionPolicyProfile(
+    state,
+    REGULAR_RESTRICTION_DAY,
+  );
   assert.equal(profile.quality, "balanced");
   assert.equal(profile.coverageComplete, true);
   assert.equal(profile.upperMeaningfulCuts, 2);
   assert.equal(profile.tier2MeaningfulCuts, 2);
   assert.equal(profile.staleFullyReleased, 1);
 
-  const posts = restrictionContextPosts(state, 166, 165);
+  const posts = restrictionContextPosts(
+    state,
+    REGULAR_RESTRICTION_REACTION_DAY,
+    REGULAR_RESTRICTION_DAY,
+  );
   assert.equal(posts.length, 16);
   assert.ok(
     posts.filter((post) =>
@@ -1828,9 +2116,18 @@ test("restriction reactions distinguish all four pick-rate and win-rate quadrant
         fixture.winRates[themeIndex],
       ]),
     );
-    setRestrictionDecisionMeta(state, 165, shares, winRates);
+    setRestrictionDecisionMeta(
+      state,
+      REGULAR_RESTRICTION_DAY,
+      shares,
+      winRates,
+    );
 
-    const posts = restrictionContextPosts(state, 166, 165);
+    const posts = restrictionContextPosts(
+      state,
+      REGULAR_RESTRICTION_REACTION_DAY,
+      REGULAR_RESTRICTION_DAY,
+    );
     const quadrantPosts = posts.filter((post) => fixture.expected.test(post.body));
     assert.equal(posts.length, 16, fixture.label);
     assert.ok(
@@ -1869,15 +2166,27 @@ test("a tier-balanced list cannot earn unconditional praise for cutting popular 
       [0.46, 0.47, 0.49, 0.45, 0.46, 0.62][index],
     ]),
   );
-  setRestrictionDecisionMeta(state, 165, shares, winRates);
+  setRestrictionDecisionMeta(
+    state,
+    REGULAR_RESTRICTION_DAY,
+    shares,
+    winRates,
+  );
 
-  const profile = getPublishedRestrictionPolicyProfile(state, 165);
+  const profile = getPublishedRestrictionPolicyProfile(
+    state,
+    REGULAR_RESTRICTION_DAY,
+  );
   assert.equal(profile.quality, "incomplete");
   assert.equal(profile.coverageComplete, false);
   assert.equal(profile.upperMeaningfulCuts, 2);
   assert.equal(profile.tier2MeaningfulCuts, 2);
 
-  const posts = restrictionContextPosts(state, 166, 165);
+  const posts = restrictionContextPosts(
+    state,
+    REGULAR_RESTRICTION_REACTION_DAY,
+    REGULAR_RESTRICTION_DAY,
+  );
   const missedSleeper =
     /진짜 본선 진출률|저픽 고승률|성적표 첫 줄|실속 있는|승률은 경고|우선순위 반대|숨은 강덱|풍선효과 후보/;
   const unconditionalPraise =
@@ -1916,11 +2225,20 @@ test("pick-win restriction copy stays historical with and without a saved win-ra
         [0.46, 0.5, 0.5, 0.5, 0.5][index],
       ]),
     );
-    setRestrictionDecisionMeta(state, 165, shares, winRates);
+    setRestrictionDecisionMeta(
+      state,
+      REGULAR_RESTRICTION_DAY,
+      shares,
+      winRates,
+    );
     return state;
   };
   const bodies = (state: GameState) =>
-    restrictionContextPosts(state, 166, 165).map((post) => post.body);
+    restrictionContextPosts(
+      state,
+      REGULAR_RESTRICTION_REACTION_DAY,
+      REGULAR_RESTRICTION_DAY,
+    ).map((post) => post.body);
 
   const snapshotted = makeHistoricalFixture(38_161);
   const snapshottedBefore = bodies(snapshotted);
@@ -1929,7 +2247,9 @@ test("pick-win restriction copy stays historical with and without a saved win-ra
   assert.deepEqual(bodies(snapshotted), snapshottedBefore);
 
   const legacy = makeHistoricalFixture(38_162);
-  const decisionSnapshot = legacy.history.find((entry) => entry.day === 165);
+  const decisionSnapshot = legacy.history.find(
+    (entry) => entry.day === REGULAR_RESTRICTION_DAY,
+  );
   assert.ok(decisionSnapshot);
   delete decisionSnapshot.winRates;
   legacy.themes.cycle.winRate = 0.5;
@@ -2031,10 +2351,22 @@ test("performance-blind cuts suppress unconditional praise at exact-four, three-
         fixture.winRates[themeIndex],
       ]),
     );
-    setRestrictionDecisionMeta(state, 165, shares, winRates);
+    setRestrictionDecisionMeta(
+      state,
+      REGULAR_RESTRICTION_DAY,
+      shares,
+      winRates,
+    );
 
-    const profile = getPublishedRestrictionPolicyProfile(state, 165);
-    const posts = restrictionContextPosts(state, 166, 165);
+    const profile = getPublishedRestrictionPolicyProfile(
+      state,
+      REGULAR_RESTRICTION_DAY,
+    );
+    const posts = restrictionContextPosts(
+      state,
+      REGULAR_RESTRICTION_REACTION_DAY,
+      REGULAR_RESTRICTION_DAY,
+    );
     assert.equal(profile.meaningfulCutCount, fixture.expectedCuts, fixture.label);
     assert.equal(profile.tier2MeaningfulCuts, fixture.expectedTierTwoCuts, fixture.label);
     assert.equal(posts.length, 16, fixture.label);
@@ -2070,9 +2402,18 @@ test("an uncut low-pick high-win sleeper is flagged independently of the cut tar
       [0.58, 0.5, 0.5, 0.5, 0.5, 0.62][index],
     ]),
   );
-  setRestrictionDecisionMeta(state, 165, shares, winRates);
+  setRestrictionDecisionMeta(
+    state,
+    REGULAR_RESTRICTION_DAY,
+    shares,
+    winRates,
+  );
 
-  const posts = restrictionContextPosts(state, 166, 165);
+  const posts = restrictionContextPosts(
+    state,
+    REGULAR_RESTRICTION_REACTION_DAY,
+    REGULAR_RESTRICTION_DAY,
+  );
   const independentSleeperCopy =
     /빠진 .* 점유율|저픽 고승률|적게 잡히고도|픽률 표 밖|빈자리를 먹을|안 자른 덱의 승률|선제 검토가 빠졌/;
   assert.equal(posts.length, 16);
@@ -2169,13 +2510,17 @@ test("restriction reactions distinguish recent placement and conversion profiles
     );
     setRestrictionPlacementWindow(
       state,
-      165,
+      REGULAR_RESTRICTION_DAY,
       shares,
       winRates,
       dailyPlacements,
     );
 
-    const posts = restrictionContextPosts(state, 166, 165);
+    const posts = restrictionContextPosts(
+      state,
+      REGULAR_RESTRICTION_REACTION_DAY,
+      REGULAR_RESTRICTION_DAY,
+    );
     const placementPosts = posts.filter((post) => fixture.expected.test(post.body));
     assert.equal(posts.length, 16, fixture.label);
     assert.equal(
@@ -2230,7 +2575,7 @@ test("placement reactions wait for seven theme-specific observed days", () => {
   );
   setRestrictionPlacementWindow(
     state,
-    165,
+    REGULAR_RESTRICTION_DAY,
     shares,
     winRates,
     dailyPlacements,
@@ -2247,7 +2592,11 @@ test("placement reactions wait for seven theme-specific observed days", () => {
   }
 
   const targetName = THEME_BY_ID[targetId].shortName;
-  const posts = restrictionContextPosts(state, 166, 165);
+  const posts = restrictionContextPosts(
+    state,
+    REGULAR_RESTRICTION_REACTION_DAY,
+    REGULAR_RESTRICTION_DAY,
+  );
   assert.equal(posts.length, 16);
   assert.equal(
     posts.filter(
@@ -2280,14 +2629,24 @@ test("placement restriction copy is frozen at the decision window and legacy fal
         [16, 5, 4, 4, 3][index],
       ]),
     );
-    setRestrictionPlacementWindow(state, 165, shares, winRates, placements);
+    setRestrictionPlacementWindow(
+      state,
+      REGULAR_RESTRICTION_DAY,
+      shares,
+      winRates,
+      placements,
+    );
     if (!stored) {
       for (const entry of state.history) delete entry.topCutPlacements;
     }
     return state;
   };
   const bodies = (state: GameState) =>
-    restrictionContextPosts(state, 166, 165).map((post) => post.body);
+    restrictionContextPosts(
+      state,
+      REGULAR_RESTRICTION_REACTION_DAY,
+      REGULAR_RESTRICTION_DAY,
+    ).map((post) => post.body);
 
   for (const [index, stored] of [true, false].entries()) {
     const state = makePlacementFixture(38_230 + index, stored);
@@ -2298,7 +2657,7 @@ test("placement restriction copy is frozen at the decision window and legacy fal
     assert.ok(latest);
     state.history.push({
       ...latest,
-      day: 166,
+      day: REGULAR_RESTRICTION_REACTION_DAY,
       shares: { ...latest.shares, cycle: 0.01 },
       winRates: { ...latest.winRates, cycle: 0.8 },
       topCutPlacements: Object.fromEntries(
@@ -2324,8 +2683,15 @@ test("coverage follows measured threats while cosmetic signals stay factual", ()
     { themeId: "cycle", partId: "cycle-guide", oldLimit: 3, newLimit: 2 },
     { themeId: "white-night", partId: "white-night-prayer", oldLimit: 3, newLimit: 2 },
   ], 38_201);
-  const upperPosts = restrictionContextPosts(upperOnly, 166, 165);
-  const upperProfile = getPublishedRestrictionPolicyProfile(upperOnly, 165);
+  const upperPosts = restrictionContextPosts(
+    upperOnly,
+    REGULAR_RESTRICTION_REACTION_DAY,
+    REGULAR_RESTRICTION_DAY,
+  );
+  const upperProfile = getPublishedRestrictionPolicyProfile(
+    upperOnly,
+    REGULAR_RESTRICTION_DAY,
+  );
   assert.equal(upperProfile.coverageComplete, true);
   assert.deepEqual(upperProfile.unaddressedThreatThemeIds, []);
   assert.deepEqual(upperProfile.preemptiveCutThemeIds, []);
@@ -2347,8 +2713,15 @@ test("coverage follows measured threats while cosmetic signals stay factual", ()
     { themeId: "ironblood", partId: "ironblood-mobilization", oldLimit: 3, newLimit: 1 },
     { themeId: "abyss", partId: "abyss-bait", oldLimit: 3, newLimit: 2 },
   ], 38_202);
-  const lowerPosts = restrictionContextPosts(lowerOnly, 166, 165);
-  const lowerProfile = getPublishedRestrictionPolicyProfile(lowerOnly, 165);
+  const lowerPosts = restrictionContextPosts(
+    lowerOnly,
+    REGULAR_RESTRICTION_REACTION_DAY,
+    REGULAR_RESTRICTION_DAY,
+  );
+  const lowerProfile = getPublishedRestrictionPolicyProfile(
+    lowerOnly,
+    REGULAR_RESTRICTION_DAY,
+  );
   assert.equal(lowerProfile.upperMeaningfulCuts, 0);
   assert.ok(lowerProfile.unaddressedThreatThemeIds.length > 0);
   assert.ok(lowerProfile.preemptiveCutThemeIds.length > 0);
@@ -2378,7 +2751,11 @@ test("coverage follows measured threats while cosmetic signals stay factual", ()
       type: "cosmetic-restriction",
     },
   ], 38_203);
-  const cosmeticPosts = restrictionContextPosts(cosmetic, 166, 165);
+  const cosmeticPosts = restrictionContextPosts(
+    cosmetic,
+    REGULAR_RESTRICTION_REACTION_DAY,
+    REGULAR_RESTRICTION_DAY,
+  );
   assert.ok(
     cosmeticPosts.some((post) =>
       /실사용 매수|실제 구축|보여 주기|덱에서 빠지는 카드가 0장|구축 변화 0장/.test(
@@ -2409,7 +2786,7 @@ test("coverage follows measured threats while cosmetic signals stay factual", ()
   ], 38_204);
   cosmeticWithRelief.community.unshift({
     id: "stale-cosmetic-relief-start",
-    day: 45,
+    day: FIRST_BAN_DAY,
     category: "restriction",
     type: "restriction-applied",
     themeId: "white-night",
@@ -2420,8 +2797,8 @@ test("coverage follows measured threats while cosmetic signals stay factual", ()
   });
   const mixedZeroCutPosts = restrictionContextPosts(
     cosmeticWithRelief,
-    166,
-    165,
+    REGULAR_RESTRICTION_REACTION_DAY,
+    REGULAR_RESTRICTION_DAY,
   );
   assert.ok(
     mixedZeroCutPosts.some((post) =>
@@ -2446,7 +2823,7 @@ test("coverage follows measured threats while cosmetic signals stay factual", ()
   ], 38_205);
   partialStaleRelief.community.unshift({
     id: "stale-partial-relief-start",
-    day: 45,
+    day: FIRST_BAN_DAY,
     category: "restriction",
     type: "restriction-applied",
     themeId: "cycle",
@@ -2455,7 +2832,11 @@ test("coverage follows measured threats while cosmetic signals stay factual", ()
     previousValue: 3,
     body: "[운영 공지] 윤회의 문 3→0장",
   });
-  const partialPosts = restrictionContextPosts(partialStaleRelief, 166, 165);
+  const partialPosts = restrictionContextPosts(
+    partialStaleRelief,
+    REGULAR_RESTRICTION_REACTION_DAY,
+    REGULAR_RESTRICTION_DAY,
+  );
   assert.ok(
     partialPosts.some((post) =>
       /완화.*완전 해제|한 칸 풀어|부분 완화|완화에서 멈췄|매수를 늘려/.test(
@@ -2505,7 +2886,7 @@ test("narrow D+4 followups split stabilized, ineffective, replacement, and mixed
     ], 39_100 + index);
     setRestrictionFollowupSnapshot(
       state,
-      169,
+      REGULAR_RESTRICTION_FOLLOWUP_DAY,
       Object.fromEntries(
         state.activeThemeIds.map((themeId, shareIndex) => [
           themeId,
@@ -2514,12 +2895,21 @@ test("narrow D+4 followups split stabilized, ineffective, replacement, and mixed
       ),
     );
     assert.equal(
-      getRestrictionHistoricalOutcome(state, 165, 169).classification,
+      getRestrictionHistoricalOutcome(
+        state,
+        REGULAR_RESTRICTION_DAY,
+        REGULAR_RESTRICTION_FOLLOWUP_DAY,
+      ).classification,
       fixture.classification,
       fixture.label,
     );
-    const posts = getDailyCommunityPosts(state, 169).filter((post) =>
-      post.id.startsWith("daily-restriction-followup-165-")
+    const posts = getDailyCommunityPosts(
+      state,
+      REGULAR_RESTRICTION_FOLLOWUP_DAY,
+    ).filter((post) =>
+      post.id.startsWith(
+        `daily-restriction-followup-${REGULAR_RESTRICTION_DAY}-`,
+      )
     );
     assert.equal(posts.length, 3, fixture.label);
     assert.equal(new Set(posts.map((post) => post.body)).size, 3, fixture.label);
@@ -2533,8 +2923,12 @@ test("narrow D+4 followups split stabilized, ineffective, replacement, and mixed
       runtime.topStreakDays = 999;
     }
     assert.deepEqual(
-      getDailyCommunityPosts(state, 169)
-        .filter((post) => post.id.startsWith("daily-restriction-followup-165-"))
+      getDailyCommunityPosts(state, REGULAR_RESTRICTION_FOLLOWUP_DAY)
+        .filter((post) =>
+          post.id.startsWith(
+            `daily-restriction-followup-${REGULAR_RESTRICTION_DAY}-`,
+          )
+        )
         .map((post) => post.body),
       before,
       `${fixture.label} must use history only`,
@@ -2556,7 +2950,7 @@ test("one-card and two-card stabilization earn distinct surprised reappraisals",
     const decision = [0.28, 0.2, 0.16, 0.1, 0.08, 0.07, 0.06, 0.05];
     setRestrictionFollowupSnapshot(
       state,
-      165,
+      REGULAR_RESTRICTION_DAY,
       Object.fromEntries(
         state.activeThemeIds.map((themeId, index) => [themeId, decision[index]]),
       ),
@@ -2569,7 +2963,7 @@ test("one-card and two-card stabilization earn distinct surprised reappraisals",
   ], 39_201);
   setRestrictionFollowupSnapshot(
     single,
-    169,
+    REGULAR_RESTRICTION_FOLLOWUP_DAY,
     Object.fromEntries(
       single.activeThemeIds.map((themeId, index) => [
         themeId,
@@ -2578,11 +2972,20 @@ test("one-card and two-card stabilization earn distinct surprised reappraisals",
     ),
   );
   assert.equal(
-    getRestrictionHistoricalOutcome(single, 165, 169).classification,
+    getRestrictionHistoricalOutcome(
+      single,
+      REGULAR_RESTRICTION_DAY,
+      REGULAR_RESTRICTION_FOLLOWUP_DAY,
+    ).classification,
     "stabilized",
   );
-  const singlePosts = getDailyCommunityPosts(single, 169).filter((post) =>
-    post.id.startsWith("daily-restriction-followup-165-")
+  const singlePosts = getDailyCommunityPosts(
+    single,
+    REGULAR_RESTRICTION_FOLLOWUP_DAY,
+  ).filter((post) =>
+    post.id.startsWith(
+      `daily-restriction-followup-${REGULAR_RESTRICTION_DAY}-`,
+    )
   );
   assert.equal(singlePosts.length, 3);
   assert.ok(
@@ -2597,7 +3000,7 @@ test("one-card and two-card stabilization earn distinct surprised reappraisals",
   ], 39_202);
   setRestrictionFollowupSnapshot(
     double,
-    169,
+    REGULAR_RESTRICTION_FOLLOWUP_DAY,
     Object.fromEntries(
       double.activeThemeIds.map((themeId, index) => [
         themeId,
@@ -2606,11 +3009,20 @@ test("one-card and two-card stabilization earn distinct surprised reappraisals",
     ),
   );
   assert.equal(
-    getRestrictionHistoricalOutcome(double, 165, 169).classification,
+    getRestrictionHistoricalOutcome(
+      double,
+      REGULAR_RESTRICTION_DAY,
+      REGULAR_RESTRICTION_FOLLOWUP_DAY,
+    ).classification,
     "stabilized",
   );
-  const doublePosts = getDailyCommunityPosts(double, 169).filter((post) =>
-    post.id.startsWith("daily-restriction-followup-165-")
+  const doublePosts = getDailyCommunityPosts(
+    double,
+    REGULAR_RESTRICTION_FOLLOWUP_DAY,
+  ).filter((post) =>
+    post.id.startsWith(
+      `daily-restriction-followup-${REGULAR_RESTRICTION_DAY}-`,
+    )
   );
   assert.equal(doublePosts.length, 3);
   assert.ok(
@@ -2625,15 +3037,20 @@ test("two-target overcorrection names only the target that actually collapsed", 
     { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 1 },
     { themeId: "white-night", partId: "white-night-prayer", oldLimit: 3, newLimit: 1 },
   ], 39_301);
-  setRestrictionFollowupSnapshot(state, 169, {
+  setRestrictionFollowupSnapshot(state, REGULAR_RESTRICTION_FOLLOWUP_DAY, {
     cycle: 0.15,
     "white-night": 0.27,
     "machine-revolution": 0.23,
     ironblood: 0.18,
     abyss: 0.17,
   });
-  const posts = getDailyCommunityPosts(state, 169).filter((post) =>
-    post.id.startsWith("daily-restriction-followup-165-")
+  const posts = getDailyCommunityPosts(
+    state,
+    REGULAR_RESTRICTION_FOLLOWUP_DAY,
+  ).filter((post) =>
+    post.id.startsWith(
+      `daily-restriction-followup-${REGULAR_RESTRICTION_DAY}-`,
+    )
   );
   assert.equal(posts.length, 3);
   assert.ok(posts.every((post) => post.partId === "cycle-gate"));
@@ -2646,7 +3063,7 @@ test("two-target mixed followups do not claim that a rising target fell", () => 
     { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 1 },
     { themeId: "white-night", partId: "white-night-prayer", oldLimit: 3, newLimit: 1 },
   ], 39_302);
-  setRestrictionFollowupSnapshot(state, 169, {
+  setRestrictionFollowupSnapshot(state, REGULAR_RESTRICTION_FOLLOWUP_DAY, {
     cycle: 0.29,
     "white-night": 0.27,
     "machine-revolution": 0.19,
@@ -2654,11 +3071,20 @@ test("two-target mixed followups do not claim that a rising target fell", () => 
     abyss: 0.11,
   });
   assert.equal(
-    getRestrictionHistoricalOutcome(state, 165, 169).classification,
+    getRestrictionHistoricalOutcome(
+      state,
+      REGULAR_RESTRICTION_DAY,
+      REGULAR_RESTRICTION_FOLLOWUP_DAY,
+    ).classification,
     "mixed",
   );
-  const posts = getDailyCommunityPosts(state, 169).filter((post) =>
-    post.id.startsWith("daily-restriction-followup-165-")
+  const posts = getDailyCommunityPosts(
+    state,
+    REGULAR_RESTRICTION_FOLLOWUP_DAY,
+  ).filter((post) =>
+    post.id.startsWith(
+      `daily-restriction-followup-${REGULAR_RESTRICTION_DAY}-`,
+    )
   );
   assert.equal(posts.length, 3);
   assert.ok(posts.some((post) => post.partId === "white-night-prayer"));
@@ -2674,26 +3100,28 @@ test("restriction reactions start next day and dominate the board 16/14/12", () 
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 2 });
   const announcement = state.community.find(
     (event) =>
-      event.day === 45 &&
+      event.day === FIRST_BAN_DAY &&
       event.type === "restriction-applied",
   );
   assert.ok(announcement);
 
-  const decisionPosts = getDailyCommunityPosts(state, 45);
+  const decisionPosts = getDailyCommunityPosts(state, FIRST_BAN_DAY);
   assert.equal(
     decisionPosts.some((post) => post.id === announcement.id),
     false,
   );
   assert.equal(
-    decisionPosts.some((post) => post.id.startsWith("daily-restriction-45-")),
+    decisionPosts.some((post) =>
+      post.id.startsWith(`daily-restriction-${FIRST_BAN_DAY}-`)
+    ),
     false,
   );
 
   const before = JSON.stringify(state);
   for (const [day, expected] of [
-    [46, 16],
-    [47, 14],
-    [48, 12],
+    [FIRST_RESTRICTION_REACTION_DAY, 16],
+    [FIRST_RESTRICTION_REACTION_DAY + 1, 14],
+    [FIRST_RESTRICTION_REACTION_DAY + 2, 12],
   ] as const) {
     const first = getDailyCommunityPosts(state, day);
     const second = getDailyCommunityPosts(state, day);
@@ -2702,14 +3130,17 @@ test("restriction reactions start next day and dominate the board 16/14/12", () 
     assert.equal(contextual.length, expected);
     assert.equal(new Set(contextual.map((post) => post.body)).size, expected);
     assert.deepEqual(first, second);
-    assert.ok(getCommunityHeat(state, day) >= ([96, 84, 70] as const)[day - 46]);
+    assert.ok(
+      getCommunityHeat(state, day) >=
+        ([96, 84, 70] as const)[day - FIRST_RESTRICTION_REACTION_DAY],
+    );
     for (const post of contextual) {
       const theme = THEME_BY_ID[post.themeId];
       assert.ok(theme);
       assert.ok(theme.parts.some((part) => part.id === post.partId));
       const matchingDecision = state.community.find(
         (event) =>
-          event.day === 45 &&
+          event.day === FIRST_BAN_DAY &&
           event.themeId === post.themeId &&
           event.partId === post.partId &&
           (event.type === "restriction-applied" ||
@@ -2734,14 +3165,13 @@ test("generic-only restrictions burn hotter and fill the board with multi-deck f
     changes: { [genericCardId]: 0 },
     campaignSeed: 91_001,
   });
-  state = reduceGame(state, { type: "COMPLETE_HANDOVER" });
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 3 });
 
   const before = JSON.stringify(state);
   for (const [day, expectedCount, expectedHeat] of [
-    [46, 18, 100],
-    [47, 16, 92],
-    [48, 14, 82],
+    [FIRST_RESTRICTION_REACTION_DAY, 18, 99],
+    [FIRST_RESTRICTION_REACTION_DAY + 1, 16, 91],
+    [FIRST_RESTRICTION_REACTION_DAY + 2, 14, 81],
   ] as const) {
     const posts = getDailyCommunityPosts(state, day);
     const genericFallout = posts.filter(
@@ -2757,7 +3187,10 @@ test("generic-only restrictions burn hotter and fill the board with multi-deck f
     assert.equal(getCommunityHeat(state, day), expectedHeat);
     assert.deepEqual(getDailyCommunityPosts(state, day), posts);
   }
-  const firstDay = getDailyCommunityPosts(state, 46).filter(
+  const firstDay = getDailyCommunityPosts(
+    state,
+    FIRST_RESTRICTION_REACTION_DAY,
+  ).filter(
     (post) => post.genericCardId === genericCardId,
   );
   assert.ok(
@@ -2778,7 +3211,7 @@ test("reprint products branch into price-crash, access, and collector conversati
     type: "SET_RELEASE_REQUEST",
     request: { kind: "reprint", cardId: candidate.cardId },
   });
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 29 });
+  state = advanceToFirstReleaseThroughTutorial(state);
   state = reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: getAutomaticReleaseSelections(state),
@@ -2787,9 +3220,14 @@ test("reprint products branch into price-crash, access, and collector conversati
     (product) => product.kind === "reprint",
   );
   assert.ok(reprint && reprint.kind === "reprint");
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 4 });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(state.day, PLAYER_START_DAY);
+  state = reduceGame(state, { type: "COMPLETE_HANDOVER" });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 3 });
 
-  const linked = [31, 32, 33, 34].flatMap((day) =>
+  const linked = Array.from({ length: 4 }, (_, index) =>
+    PLAYER_START_DAY + index
+  ).flatMap((day) =>
     getDailyCommunityPosts(state, day).filter(
       (post) =>
         post.partId === reprint.cardId &&
@@ -2797,7 +3235,7 @@ test("reprint products branch into price-crash, access, and collector conversati
     )
   );
   assert.ok(linked.length >= 8);
-  assert.ok(linked.some((post) => /폭락|내려|반 토막|급락/.test(post.body)));
+  assert.ok(linked.some((post) => /폭락|내려|반 토막|급락|무너/.test(post.body)));
   assert.ok(linked.some((post) => /개꿀|입문|맞출|접근성|플레이용/.test(post.body)));
   assert.ok(linked.some((post) => /초판|보유자|수집|컬렉터/.test(post.body)));
   assert.ok(linked.every((post) => post.themeId === candidate.themeId));
@@ -2807,14 +3245,14 @@ test("a no-change restriction announcement also creates a delayed debate", () =>
   const state = makeNoChangeRestrictionState();
 
   assert.equal(
-    getDailyCommunityPosts(state, 45).some(
+    getDailyCommunityPosts(state, FIRST_BAN_DAY).some(
       (post) => post.id === "no-change-announcement",
     ),
     false,
   );
-  const posts = getDailyCommunityPosts(state, 46);
+  const posts = getDailyCommunityPosts(state, FIRST_RESTRICTION_REACTION_DAY);
   const contextual = posts.filter((post) =>
-    post.id.startsWith("daily-restriction-45-"),
+    post.id.startsWith(`daily-restriction-${FIRST_BAN_DAY}-`),
   );
   assert.equal(posts.length, 20);
   assert.equal(contextual.length, 16);
@@ -2824,9 +3262,9 @@ test("a no-change restriction announcement also creates a delayed debate", () =>
     ),
   );
   assert.ok(contextual.every((post) => post.previousValue === post.value));
-  for (const day of [46, 47, 48]) {
+  for (const day of FIRST_RESTRICTION_AFTERMATH_DAYS) {
     const delayed = getDailyCommunityPosts(state, day).filter((post) =>
-      post.id.startsWith("daily-restriction-45-"),
+      post.id.startsWith(`daily-restriction-${FIRST_BAN_DAY}-`),
     );
     assert.ok(
       delayed.every(
@@ -2847,8 +3285,8 @@ test("no-change debate condemns a stuck meta but defends a healthy one", () => {
   const criticalPattern =
     /아무것도 안 자르냐|손을 아예 놨네|다음 금제로 미룬|경고등|책임을 유저|숨 쉴 틈|환경이 괜찮다는|쌓인 피로|검토 결과|고착에도|환경 개선보다|솜방망이 금제보다|신중함이 아니라 방치|상위권 집중|별개 문제|기준으로만/;
   const context = (state: GameState) =>
-    getDailyCommunityPosts(state, 46).filter((post) =>
-      post.id.startsWith("daily-restriction-45-"),
+    getDailyCommunityPosts(state, FIRST_RESTRICTION_REACTION_DAY).filter((post) =>
+      post.id.startsWith(`daily-restriction-${FIRST_BAN_DAY}-`),
     );
   const healthyPosts = context(healthy);
   const unhealthyPosts = context(unhealthy);
@@ -2875,8 +3313,10 @@ test("no-change debate condemns a stuck meta but defends a healthy one", () => {
 test("historical no-change debate ignores later runtime pressure", () => {
   const state = makeNoChangeRestrictionState(3310);
   setNoChangeMetaHealth(state, false);
-  const before = getDailyCommunityPosts(state, 46)
-    .filter((post) => post.id.startsWith("daily-restriction-45-"))
+  const before = getDailyCommunityPosts(state, FIRST_RESTRICTION_REACTION_DAY)
+    .filter((post) =>
+      post.id.startsWith(`daily-restriction-${FIRST_BAN_DAY}-`)
+    )
     .map((post) => post.body);
 
   for (const runtime of Object.values(state.themes)) {
@@ -2887,22 +3327,35 @@ test("historical no-change debate ignores later runtime pressure", () => {
   }
 
   assert.deepEqual(
-    getDailyCommunityPosts(state, 46)
-      .filter((post) => post.id.startsWith("daily-restriction-45-"))
+    getDailyCommunityPosts(state, FIRST_RESTRICTION_REACTION_DAY)
+      .filter((post) =>
+        post.id.startsWith(`daily-restriction-${FIRST_BAN_DAY}-`)
+      )
       .map((post) => post.body),
     before,
   );
 });
 
 test("restriction recency copy uses the latest support product, not theme debut", () => {
-  let state = createInitialGame(1000);
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 2 });
+  const state = makeScheduledRestrictionReactionState(
+    [
+      { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 1 },
+      {
+        themeId: "white-night",
+        partId: "white-night-prayer",
+        oldLimit: 3,
+        newLimit: 1,
+      },
+    ],
+    1000,
+    SECOND_RESTRICTION_DAY,
+  );
   const restrictedThemeIds = [
     ...new Set(
       state.community
         .filter(
           (event) =>
-            event.day === 45 &&
+            event.day === SECOND_RESTRICTION_DAY &&
             (event.type === "restriction-applied" ||
               event.type === "cosmetic-restriction"),
         )
@@ -2911,7 +3364,7 @@ test("restriction recency copy uses the latest support product, not theme debut"
   ];
   assert.ok(restrictedThemeIds.length > 0);
   state.releaseHistory.push({
-    day: 40,
+    day: RELEASE_INTERVAL * 2,
     products: restrictedThemeIds.map((themeId, index) => ({
       optionId: `recent-restricted-support-${index}`,
       kind: "support",
@@ -2921,14 +3374,19 @@ test("restriction recency copy uses the latest support product, not theme debut"
       powerAdjustment: 0,
     })),
   });
-  const recencyPosts = [47, 48].flatMap((day) =>
+  const recencyPosts = [
+    SECOND_RESTRICTION_REACTION_DAY + 1,
+    SECOND_RESTRICTION_REACTION_DAY + 2,
+  ].flatMap((day) =>
     getDailyCommunityPosts(state, day)
-      .filter((post) => post.id.startsWith("daily-restriction-45-"))
+      .filter((post) =>
+        post.id.startsWith(`daily-restriction-${SECOND_RESTRICTION_DAY}-`)
+      )
       .filter((post) => /발매 \d+일/.test(post.body)),
   );
   assert.ok(recencyPosts.length > 0);
-  assert.ok(recencyPosts.every((post) => post.body.includes("발매 5일")));
-  assert.ok(recencyPosts.every((post) => !post.body.includes("발매 44일")));
+  assert.ok(recencyPosts.every((post) => post.body.includes("발매 15일")));
+  assert.ok(recencyPosts.every((post) => !post.body.includes("발매 74일")));
 });
 
 test("crosses prior theme strength with support strength in dense release chatter", () => {
@@ -2954,10 +3412,10 @@ test("crosses prior theme strength with support strength in dense release chatte
 
   for (const { state, expected } of cases) {
     for (const [age, expectedQuota, expectedPlay] of [
-      [1, 16, 10],
-      [2, 12, 8],
-      [3, 8, 5],
-      [4, 5, 3],
+      [1, 16, 16],
+      [2, 12, 12],
+      [3, 8, 8],
+      [4, 5, 5],
     ] as const) {
       const day = 60 + age;
       const first = getDailyCommunityPosts(state, day);
@@ -2994,7 +3452,7 @@ test("calls out a Theseus rebuild when new cards displace an old weak-theme core
     .filter((post) => post.id.startsWith("daily-release-"))
     .filter((post) => post.id.endsWith("-play"));
 
-  assert.equal(posts.length, 10);
+  assert.equal(posts.length, 16);
   assert.ok(posts.some((post) => post.body.includes("테세우스")));
   assert.ok(
     posts.some((post) => launchParts.some((part) => post.body.includes(part.name))),
@@ -3063,7 +3521,10 @@ test("keeps a first support wave's D+1 board identical after a later wave", () =
     themeId: "white-night",
     direction: "consistency",
   });
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
+  state = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: RELEASE_INTERVAL * 2 - state.day,
+  });
   assert.equal(state.day, 60);
   assert.ok(state.releaseSlate);
   const firstSelections = getPlannedReleaseOptions(state);
@@ -3075,11 +3536,20 @@ test("keeps a first support wave's D+1 board identical after a later wave", () =
     })),
   });
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(state.day, 61);
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
   const firstView = getDailyCommunityPosts(state, 61);
   assert.ok(firstView.some((post) => post.type === "support-released"));
 
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
-  assert.equal(state.day, 76);
+  state = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: SECOND_RESTRICTION_DAY - state.day,
+  });
+  assert.equal(state.day, SECOND_RESTRICTION_DAY);
+  assert.equal(state.phase, "ban-edit");
+  state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(state.day, SECOND_RESTRICTION_REACTION_DAY);
   state = reduceGame(state, {
     type: "PROPOSE_SUPPORT",
     themeId: "white-night",
@@ -3151,8 +3621,11 @@ test("routes unban debate through overdue, dangerous, surge, no-impact, and meas
       [2, 14, 3],
       [3, 12, 2],
     ] as const) {
-      const posts = getDailyCommunityPosts(state, 165 + age).filter((post) =>
-        post.id.startsWith("daily-restriction-165-"),
+      const posts = getDailyCommunityPosts(
+        state,
+        REGULAR_RESTRICTION_DAY + age,
+      ).filter((post) =>
+        post.id.startsWith(`daily-restriction-${REGULAR_RESTRICTION_DAY}-`),
       );
       assert.equal(posts.length, quota, `${tone} D+${age}`);
       assert.equal(new Set(posts.map((post) => post.body)).size, quota);
@@ -3177,16 +3650,19 @@ test("routes unban debate through overdue, dangerous, surge, no-impact, and meas
 
 test("historical unban reactions ignore later runtime and restriction changes", () => {
   const state = unbanReactionState("surge", 72001);
-  const historical = getDailyCommunityPosts(state, 166);
+  const historical = getDailyCommunityPosts(
+    state,
+    REGULAR_RESTRICTION_REACTION_DAY,
+  );
   const later = structuredClone(state);
-  later.day = 230;
+  later.day = NEXT_REGULAR_RESTRICTION_DAY + 5;
   later.themes.cycle.share = 0.5;
   later.themes.cycle.unpleasantness = 99;
   later.themes.cycle.fatigue = 99;
   later.themes.cycle.legalLimits["cycle-gate"] = 0;
   later.community.push({
     id: "future-cycle-restriction",
-    day: 225,
+    day: NEXT_REGULAR_RESTRICTION_DAY,
     category: "restriction",
     type: "restriction-applied",
     themeId: "cycle",
@@ -3196,7 +3672,7 @@ test("historical unban reactions ignore later runtime and restriction changes", 
     body: "미래 금제",
   });
   later.history.push({
-    day: 230,
+    day: NEXT_REGULAR_RESTRICTION_DAY + 5,
     totalUsers: 9_000,
     revenue: 0.4,
     topThemeId: "cycle",
@@ -3208,14 +3684,21 @@ test("historical unban reactions ignore later runtime and restriction changes", 
     ),
   });
 
-  assert.deepEqual(getDailyCommunityPosts(later, 166), historical);
+  assert.deepEqual(
+    getDailyCommunityPosts(later, REGULAR_RESTRICTION_REACTION_DAY),
+    historical,
+  );
 });
 
 test("periodically asks to free long-restricted off-meta cards without flooding", () => {
   const state = staleRestrictionState(false, 73001);
   const activeDays: number[] = [];
   let captured: CommunityEvent[] | null = null;
-  for (let day = 139; day <= 169; day += 1) {
+  for (
+    let day = REGULAR_RESTRICTION_DAY + 4;
+    day <= REGULAR_RESTRICTION_DAY + 34;
+    day += 1
+  ) {
     const board = getDailyCommunityPosts(state, day);
     const stale = board.filter((post) =>
       post.id.startsWith("daily-stale-restriction-"),
@@ -3244,11 +3727,11 @@ test("periodically asks to free long-restricted off-meta cards without flooding"
   const historicalDay = activeDays[0];
   const historical = getDailyCommunityPosts(state, historicalDay);
   const later = structuredClone(state);
-  later.day = 230;
+  later.day = NEXT_REGULAR_RESTRICTION_DAY + 5;
   later.themes.cycle.share = 0.4;
   later.themes.cycle.legalLimits["cycle-gate"] = 3;
   later.history.push({
-    day: 230,
+    day: NEXT_REGULAR_RESTRICTION_DAY + 5,
     totalUsers: 8_000,
     revenue: 0.3,
     topThemeId: "cycle",
@@ -3261,7 +3744,7 @@ test("periodically asks to free long-restricted off-meta cards without flooding"
   });
   later.community.push({
     id: "future-unban",
-    day: 225,
+    day: NEXT_REGULAR_RESTRICTION_DAY,
     category: "restriction",
     type: "restriction-applied",
     themeId: "cycle",
@@ -3275,9 +3758,12 @@ test("periodically asks to free long-restricted off-meta cards without flooding"
 
 test("prioritizes an overdue unban request after a no-change restriction review", () => {
   const state = staleRestrictionState(true, 74001);
-  const posts = getDailyCommunityPosts(state, 166);
+  const posts = getDailyCommunityPosts(
+    state,
+    REGULAR_RESTRICTION_REACTION_DAY,
+  );
   const contextual = posts.filter((post) =>
-    post.id.startsWith("daily-restriction-165-"),
+    post.id.startsWith(`daily-restriction-${REGULAR_RESTRICTION_DAY}-`),
   );
   const stale = contextual.filter((post) => post.id.includes("-stale-"));
   assert.equal(posts.length, 20);
@@ -3292,7 +3778,7 @@ test("formats full and partial restriction relief explicitly", () => {
   const state = makeState(75001);
   const base: CommunityEvent = {
     id: "format-unban",
-    day: 165,
+    day: REGULAR_RESTRICTION_DAY,
     category: "restriction",
     type: "restriction-applied",
     themeId: "cycle",
@@ -3552,21 +4038,23 @@ test("pack scandal and stored restriction overlap is capped at twenty posts", ()
     days: 2,
   });
   const storedRestrictionCount = state.community.filter(
-    (event) => event.day === 46 && event.type === "restriction-demand",
+    (event) =>
+      event.day === FIRST_RESTRICTION_REACTION_DAY &&
+      event.type === "restriction-demand",
   ).length;
   assert.ok(storedRestrictionCount >= 4);
   addBusinessRecord(state, {
     type: "pack-odds",
     startedDay: 1,
-    endsDay: 45,
+    endsDay: FIRST_BAN_DAY,
     cost: 0.1,
     outcome: "detected",
     risk: 0.3,
-    appliedDay: 45,
-    resolvedDay: 46,
+    appliedDay: FIRST_BAN_DAY,
+    resolvedDay: FIRST_RESTRICTION_REACTION_DAY,
   });
 
-  const board = getDailyCommunityPosts(state, 46);
+  const board = getDailyCommunityPosts(state, FIRST_RESTRICTION_REACTION_DAY);
   assert.equal(board.length, 20);
   assert.equal(new Set(board.map((post) => post.id)).size, 20);
   assert.equal(
@@ -3582,20 +4070,25 @@ test("no-change stale prompts never overwrite the business reaction prefix", () 
   const state = staleRestrictionState(true, 84_002);
   addBusinessRecord(state, {
     type: "tv-cm",
-    startedDay: 165,
-    endsDay: 186,
+    startedDay: REGULAR_RESTRICTION_DAY,
+    endsDay: REGULAR_RESTRICTION_DAY + 21,
     cost: 0.6,
     outcome: "completed",
   });
 
-  const board = getDailyCommunityPosts(state, 166);
+  const board = getDailyCommunityPosts(
+    state,
+    REGULAR_RESTRICTION_REACTION_DAY,
+  );
   const business = board.filter((post) => post.type === "business-reaction");
   assert.equal(board.length, 20);
   assert.equal(business.length, 8);
   assert.ok(board.slice(0, 8).every((post) => post.type === "business-reaction"));
   assert.ok(
     board.slice(8).some((post) =>
-      post.id.startsWith("daily-restriction-165-stale-"),
+      post.id.startsWith(
+        `daily-restriction-${REGULAR_RESTRICTION_DAY}-stale-`,
+      ),
     ),
   );
 });

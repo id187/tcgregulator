@@ -2,13 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { getAutomaticReleaseSelections } from "../app/game/automatic-release.ts";
-import { createCampaignStart, reduceGame } from "../app/game/engine.ts";
+import {
+  createCampaignStart,
+  getPrologueRestrictionChanges,
+  reduceGame,
+} from "../app/game/engine.ts";
 import type { GameState, ReleaseOption } from "../app/game/types.ts";
 
 function openFirstRelease(seed: number): GameState {
-  const state = reduceGame(createCampaignStart(seed), {
+  let state = reduceGame(createCampaignStart(seed), {
     type: "ADVANCE_DAYS",
-    days: 29,
+    days: 14,
+  });
+  assert.equal(state.day, 15);
+  assert.equal(state.phase, "ban-edit");
+  state = reduceGame(state, {
+    type: "SUBMIT_BAN",
+    changes: getPrologueRestrictionChanges(state),
+  });
+  state = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: 15,
   });
   assert.equal(state.phase, "release-edit");
   assert.ok(state.releaseSlate);

@@ -36,6 +36,7 @@ import {
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
   RELEASE_INTERVAL,
+  TUTORIAL_END_DAY,
 } from "./campaign.ts";
 import {
   getDailyOperatingCost,
@@ -3419,31 +3420,44 @@ export function parseGameState(value: unknown): GameState {
     state.handoverComplete,
     "$.handoverComplete",
   );
-  if (handoverComplete && day < FIRST_BAN_DAY) {
-    fail("$.handoverComplete", `cannot be true before DAY ${FIRST_BAN_DAY}`);
-  }
-  if (
-    handoverComplete &&
-    day === FIRST_BAN_DAY &&
-    !(state.community as GameState["community"]).some(
+  const community = state.community as GameState["community"];
+  const hasRestrictionDecisionAt = (decisionDay: number) =>
+    community.some(
       (event) =>
-        event.day === FIRST_BAN_DAY &&
+        event.day === decisionDay &&
         (event.type === "restriction-applied" ||
           event.type === "cosmetic-restriction" ||
           event.type === "restriction-no-change"),
-    )
+    );
+  const hasFirstRelease = (state.releaseHistory as GameState["releaseHistory"])
+    .some((batch) => batch.day === RELEASE_INTERVAL && !batch.baseline);
+  const redesignedHandoverReady =
+    day >= TUTORIAL_END_DAY &&
+    hasRestrictionDecisionAt(FIRST_BAN_DAY) &&
+    hasFirstRelease;
+  const legacyDay46HandoverReady =
+    day >= 46 && hasRestrictionDecisionAt(45) && hasFirstRelease;
+  if (
+    handoverComplete &&
+    !redesignedHandoverReady &&
+    !legacyDay46HandoverReady
   ) {
     fail(
       "$.handoverComplete",
-      "requires a published DAY 45 restriction decision",
+      `requires the DAY ${FIRST_BAN_DAY} restriction, DAY ${RELEASE_INTERVAL} release, and DAY ${TUTORIAL_END_DAY} impact review`,
     );
   }
 
   if (
     phase === "ban-edit" &&
-    (day < FIRST_BAN_DAY ||
-      day > LAST_DECISION_DAY ||
-      (day - FIRST_BAN_DAY) % BAN_INTERVAL !== 0)
+    !(
+      (day >= FIRST_BAN_DAY &&
+        day <= LAST_DECISION_DAY &&
+        (day - FIRST_BAN_DAY) % BAN_INTERVAL === 0) ||
+      // v0.2.0 saves may be paused on the former 45+60n calendar. Allow the
+      // pending board to load and submit; all later gates use the new calendar.
+      (day >= 45 && day <= 465 && (day - 45) % BAN_INTERVAL === 0)
+    )
   ) {
     fail("$.phase", "ban-edit is only valid on a restriction day");
   }

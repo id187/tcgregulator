@@ -7,6 +7,7 @@ import { getThemeCardMarketQuote } from "../app/game/card-market.ts";
 import { THEME_BY_ID } from "../app/game/content.ts";
 import {
   createCampaignStart,
+  getPrologueRestrictionChanges,
   reduceGame,
 } from "../app/game/engine.ts";
 import { getKeywordMatchupEdgeScore } from "../app/game/play-keywords.ts";
@@ -21,7 +22,14 @@ import { parseGameState, SaveSchemaError } from "../app/game/save-schema.ts";
 import type { GameState } from "../app/game/types.ts";
 
 function reachFirstRelease(state: GameState): GameState {
-  const next = reduceGame(state, { type: "ADVANCE_DAYS", days: 29 });
+  let next = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
+  assert.equal(next.day, 15);
+  assert.equal(next.phase, "ban-edit");
+  next = reduceGame(next, {
+    type: "SUBMIT_BAN",
+    changes: getPrologueRestrictionChanges(next),
+  });
+  next = reduceGame(next, { type: "ADVANCE_DAYS", days: 15 });
   assert.equal(next.day, 30);
   assert.equal(next.phase, "release-edit");
   assert.ok(next.releaseSlate);

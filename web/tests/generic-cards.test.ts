@@ -8,6 +8,7 @@ import {
 } from "../app/game/generic-card-meta.ts";
 import {
   createCampaignStart,
+  getPrologueRestrictionChanges,
   getCurrentGenericMetaModel,
   getCurrentPairWinProbability,
   reduceGame,
@@ -26,9 +27,19 @@ import type {
 const INTEGRATION_SEED = 3;
 
 function advanceToDay30(seed = INTEGRATION_SEED): GameState {
-  const state = reduceGame(createCampaignStart(seed), {
+  let state = reduceGame(createCampaignStart(seed), {
     type: "ADVANCE_DAYS",
-    days: 29,
+    days: 14,
+  });
+  assert.equal(state.day, 15);
+  assert.equal(state.phase, "ban-edit");
+  state = reduceGame(state, {
+    type: "SUBMIT_BAN",
+    changes: getPrologueRestrictionChanges(state),
+  });
+  state = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: 15,
   });
   assert.equal(state.day, 30);
   assert.equal(state.phase, "release-edit");
@@ -367,9 +378,8 @@ test("generic restrictions persist globally and immediately reduce purchase trus
   const strongGenericRelease = releaseOneStrongGeneric();
   let released = strongGenericRelease.released;
   const genericOption = strongGenericRelease.genericOption;
-  released = reduceGame(released, { type: "ADVANCE_DAYS", days: 1 });
-  released = reduceGame(released, { type: "ADVANCE_DAYS", days: 14 });
-  assert.equal(released.day, 45);
+  released = advanceThroughDecisions(released, 75);
+  assert.equal(released.day, 75);
   assert.equal(released.phase, "ban-edit");
   assert.equal(released.genericLimits[genericOption.genericCardId], 3);
   const trustBefore = released.purchaseTrust;
@@ -383,7 +393,7 @@ test("generic restrictions persist globally and immediately reduce purchase trus
   assert.ok(
     restricted.community.some(
       (event) =>
-        event.day === 45 &&
+        event.day === 75 &&
         event.type === "restriction-applied" &&
         event.genericCardId === genericOption.genericCardId &&
         event.previousValue === 3 &&

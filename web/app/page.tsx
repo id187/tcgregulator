@@ -15,7 +15,10 @@ import {
 import { GuidedTutorialBar } from "./components/GuidedTutorialBar";
 import { HeaderReferenceTools } from "./components/HeaderReferenceTools";
 import { LotusSymbol } from "./components/LotusSymbol";
-import { CardMarketQuote } from "./components/CardMarketQuote";
+import {
+  CardMarketQuote,
+  formatCardMarketPrice,
+} from "./components/CardMarketQuote";
 import { DailyNewsView, ImpactMessageStack } from "./components/NewsViews";
 import { ReleasePackCard } from "./components/ReleasePackCard";
 import { ReleaseDecisionPanel } from "./components/ReleaseDecisionPanel";
@@ -28,14 +31,19 @@ import {
   THEMES,
 } from "./game/content";
 import {
+  BAN_INTERVAL,
   CAMPAIGN_END_DAY,
   FIRST_BAN_DAY,
+  LAST_BAN_DAY,
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
   PLAYER_CONTROL_DAYS,
+  PLAYER_START_DAY,
   PROLOGUE_SEED,
+  RELEASE_INTERVAL,
   SETTLEMENT_START_DAY,
   SETTLEMENT_DAYS,
+  TUTORIAL_END_DAY,
 } from "./game/campaign";
 import {
   CAMPAIGN_ENVIRONMENT_STABLE_MIN,
@@ -65,7 +73,9 @@ import { getDailyCommunitySentiment } from "./game/community-sentiment";
 import { rankCommunityPostsByLikes } from "./game/community-engagement";
 import {
   getGenericCardMarketQuote,
+  getNextDayRestrictionMarketImpact,
   getThemeCardMarketQuote,
+  getThemeCardMarketMovers,
 } from "./game/card-market";
 import { getImpactNewsRange, type DailyNewsItem } from "./game/daily-news";
 import {
@@ -78,6 +88,17 @@ import {
   getReprintCandidates,
 } from "./game/release-requests";
 import { getChartEnvironmentHealth } from "./game/environment-health";
+import {
+  DEFAULT_TUTORIAL_GUIDANCE_ENABLED,
+  GUIDED_OBJECTIVE_COUNT,
+  getGuidedAdvanceDays,
+  getGuidedObjective,
+  getGuidedStep,
+  getTutorialGuidanceEnabledAfterEvent,
+  isGuidedAdvanceDaysAllowed,
+  shouldShowGuidedPrompt,
+  type GuidedStep,
+} from "./game/guided-tutorial";
 import { isInitialGenericReleaseBatch } from "./game/initial-generic-cards";
 import {
   getPlayKeyword,
@@ -129,16 +150,14 @@ import {
 import {
   canProposeSupport,
   createCampaignStart,
-  createFirstBanGame,
   formatCommunityEvent,
   getCommittedSupportCount,
   getCurrentGenericMetaModel,
   getEffectiveThemePlayKeywords,
   getNextBanDay,
   getNextReleaseDay,
-  getPrologueReleaseCommand,
-  getPrologueReleasePlan,
   getProspectiveSupportKeyword,
+  isHandoverReady,
   isBanDay,
   reduceGame,
 } from "./game/engine";
@@ -197,6 +216,7 @@ type InterfaceSettings = {
   soundEnabled: boolean;
   impactEffectsEnabled: boolean;
   motionPreference: MotionPreference;
+  tutorialGuidanceEnabled: boolean;
 };
 
 const INTERFACE_SETTINGS_KEY = "tcg-regulator-interface-settings-v1";
@@ -204,6 +224,7 @@ const DEFAULT_INTERFACE_SETTINGS: InterfaceSettings = {
   soundEnabled: true,
   impactEffectsEnabled: true,
   motionPreference: "system",
+  tutorialGuidanceEnabled: DEFAULT_TUTORIAL_GUIDANCE_ENABLED,
 };
 
 function mintCampaignSeed(previousSeed: number): number {
@@ -296,6 +317,10 @@ function loadInterfaceSettings(): InterfaceSettings {
           : DEFAULT_INTERFACE_SETTINGS.impactEffectsEnabled,
       motionPreference:
         parsed.motionPreference === "reduced" ? "reduced" : "system",
+      tutorialGuidanceEnabled:
+        typeof parsed.tutorialGuidanceEnabled === "boolean"
+          ? parsed.tutorialGuidanceEnabled
+          : DEFAULT_INTERFACE_SETTINGS.tutorialGuidanceEnabled,
     };
   } catch {
     return DEFAULT_INTERFACE_SETTINGS;
@@ -420,6 +445,25 @@ function SettingsOptions({
         <strong>
           {settings.motionPreference === "reduced" ? "강제 감소" : "시스템 설정"}
         </strong>
+      </button>
+      <button
+        aria-pressed={settings.tutorialGuidanceEnabled}
+        onClick={() =>
+          updateSetting(
+            "tutorialGuidanceEnabled",
+            getTutorialGuidanceEnabledAfterEvent(
+              settings.tutorialGuidanceEnabled,
+              settings.tutorialGuidanceEnabled
+                ? "settings-disable"
+                : "settings-enable",
+            ),
+          )
+        }
+        title="ON으로 설정한 뒤 새 임기를 시작하면 튜토리얼을 다시 진행합니다."
+        type="button"
+      >
+        <span>튜토리얼</span>
+        <strong>{settings.tutorialGuidanceEnabled ? "ON" : "OFF"}</strong>
       </button>
     </div>
   );
@@ -1043,7 +1087,7 @@ function getAdvisorBrief(
     return withActiveTabHint({
       tone: "calm",
       kicker: "최종 결산 관찰",
-      message: `새 결정은 마감됐습니다. DAY ${CAMPAIGN_END_DAY}까지 최종 금제와 시장 반응을 관측한 뒤 임기 결과를 확정합니다.`,
+      message: `새 결정은 마감됐습니다. DAY ${CAMPAIGN_END_DAY}까지 최종 발매와 시장 반응을 관측한 뒤 임기 결과를 확정합니다.`,
     });
   }
   if (game.phase === "ended" && totalUsers(game) <= 0) {
@@ -1220,7 +1264,7 @@ export default function Home() {
       await savePersistedGame(boot.backend, next);
       setTitleMessage(null);
       setBoot({
-        status: "prologue",
+        status: settings.tutorialGuidanceEnabled ? "prologue" : "playing",
         backend: boot.backend,
         initialGame: next,
       });
@@ -1233,7 +1277,10 @@ export default function Home() {
 
   function continueGame() {
     if (boot.status !== "title" || !boot.savedGame) return;
-    if (!boot.savedGame.handoverComplete) {
+    if (
+      !boot.savedGame.handoverComplete &&
+      settings.tutorialGuidanceEnabled
+    ) {
       setBoot({
         status: "prologue",
         backend: boot.backend,
@@ -1285,7 +1332,7 @@ export default function Home() {
     const savedGameSummary = !ready
       ? "저장 확인 중"
       : savedGame
-        ? !savedGame.handoverComplete
+        ? !savedGame.handoverComplete && settings.tutorialGuidanceEnabled
           ? `DAY ${savedGame.day} · 인수인계 진행 중`
           : savedGame.phase === "ended"
             ? `DAY ${savedGame.day} · 임기 결과 보기`
@@ -1335,56 +1382,6 @@ export default function Home() {
   );
 }
 
-type GuidedStep =
-  | "day1-controls"
-  | "day1-banlist"
-  | "day1-keywords"
-  | "day1-distribution-mode"
-  | "day1-community"
-  | "day1-community-read"
-  | "day1-card-overview"
-  | "day1-advance"
-  | "day8-placement-read"
-  | "day8-distribution-links"
-  | "day8-community"
-  | "day8-advance"
-  | "day15-card-catalog-generic"
-  | "day15-card-catalog-theme"
-  | "day15-part"
-  | "day15-request-support"
-  | "day15-request-indirect"
-  | "day15-request-target"
-  | "day15-request-reprint"
-  | "day15-finance"
-  | "day15-finance-read"
-  | "day15-operations"
-  | "day15-operations-overview"
-  | "day15-tv-cm"
-  | "day1-distribution-return"
-  | "day15-advance"
-  | "day22-advance"
-  | "day29-advance"
-  | "day30-releases-nav"
-  | "day30-release-principles"
-  | "day30-release-select"
-  | "day30-releases-read"
-  | "day30-advance"
-  | "day31-community-read"
-  | "day31-community-controls"
-  | "day31-community-open"
-  | "day31-news"
-  | "day31-news-controls"
-  | "day31-advance"
-  | "day38-advance"
-  | "day45-restriction-controls"
-  | "day45-restriction"
-  | "day45-advance"
-  | "day46-community"
-  | "day46-community-read"
-  | "day46-distribution"
-  | "day46-distribution-read"
-  | "day46-start";
-
 type GuidedRestrictionTarget =
   | { kind: "limit"; partId: string; limit: RestrictionLimit }
   | { kind: "submit" };
@@ -1409,109 +1406,45 @@ type GuidedBrief = {
   kicker: string;
   title: string;
   message: string;
+  help?: string;
+  objective: number;
+  objectiveCount: number;
+  continueLabel?: string;
   controlIds?: readonly string[];
-  inspection?: boolean;
-  hoverInspection?: boolean;
   informational?: boolean;
   freeInteraction?: boolean;
 };
 
-function getGuidedStep(game: GameState): GuidedStep {
-  if (game.day >= 46) return "day46-community";
-  if (game.day <= 1) return "day1-controls";
-  if (game.day < 8) return "day1-advance";
-  if (game.day === 8) return "day8-placement-read";
-  if (game.day < 15) return "day8-advance";
-  if (game.day === 15) {
-    const guidedTvCmComplete = game.operations.records.some(
-      (record) => record.type === "tv-cm" && record.startedDay === 15,
-    );
-    return guidedTvCmComplete ? "day15-advance" : "day15-finance";
+function getGuidedAdvanceTab(step: GuidedStep, day: number): TabId | null {
+  if (step === "observe") return day >= 8 ? "cards" : "distribution";
+  if (step === "restriction") return "cards";
+  if (step === "restriction-reaction") {
+    return day === 16 ? "cards" : null;
   }
-  if (game.day < 22) return "day15-advance";
-  if (game.day < 29) return "day22-advance";
-  if (game.day < 30) return "day29-advance";
-  if (game.day === 30) {
-    return game.phase === "release-edit"
-      ? "day30-releases-nav"
-      : "day30-releases-read";
-  }
-  if (game.day < 38) return "day31-community-read";
-  if (game.day < 45) return "day38-advance";
-  return game.phase === "ban-edit"
-    ? "day45-restriction-controls"
-    : "day45-advance";
-}
-
-function isGuidedTimeAdvanceStep(step: GuidedStep): boolean {
-  return step.endsWith("-advance") || step === "day46-start";
-}
-
-function isGuidedAdvanceDaysAllowed(
-  step: GuidedStep,
-  days: 1 | 7,
-): boolean {
-  if (!isGuidedTimeAdvanceStep(step)) return false;
-  const requiredDaysByStep: Partial<Record<GuidedStep, 1 | 7>> = {
-    "day1-advance": 7,
-    "day8-advance": 7,
-    "day15-advance": 7,
-    "day22-advance": 7,
-    "day29-advance": 1,
-    "day30-advance": 1,
-    "day31-advance": 7,
-    "day38-advance": 7,
-    "day45-advance": 1,
-    "day46-start": 1,
-  };
-  return requiredDaysByStep[step] === days;
-}
-
-function getGuidedAdvanceTab(step: GuidedStep): TabId | null {
-  if (
-    step === "day8-placement-read" ||
-    step === "day8-distribution-links" ||
-    step === "day8-advance"
-  ) {
-    return "distribution";
-  }
-  if (
-    step === "day15-card-catalog-generic" ||
-    step === "day15-card-catalog-theme" ||
-    step.startsWith("day15-request-")
-  ) return "cards";
-  if (step === "day22-advance" || step === "day29-advance") return "finance";
-  if (step === "day30-advance") return "releases";
-  if (step === "day31-community-read" || step === "day38-advance") {
-    return "community";
-  }
-  if (
-    step === "day45-restriction-controls" ||
-    step === "day45-restriction" ||
-    step === "day45-advance" ||
-    step === "day46-community"
-  ) {
-    return "cards";
-  }
+  if (step === "business") return "operations";
+  if (step === "release-runup") return day === 23 ? "finance" : null;
+  if (step === "release") return "releases";
+  if (step === "release-reaction") return "releases";
+  if (step === "handover") return "community";
   return null;
 }
 
 function getGuidedInitialTab(game: GameState): TabId {
-  if (game.day >= 46) return "cards";
-  if (game.phase === "release-edit") return "finance";
-  if (game.phase === "ban-edit" || game.day === 45) return "cards";
-  if (game.day === 30) return "releases";
-  if (game.day === 1) return "distribution";
-  if (game.day === 8) return "distribution";
-  if (game.day === 15) {
-    return game.operations.records.some(
-      (record) => record.type === "tv-cm" && record.startedDay === 15,
-    )
-      ? "operations"
-      : "distribution";
+  if (game.day >= TUTORIAL_END_DAY) return "community";
+  if (game.phase === "release-edit") return "releases";
+  if (game.phase === "ban-edit" || game.day <= 21 && game.day >= 15) {
+    return "cards";
   }
-  if (game.day === 22 || game.day === 29) return "finance";
-  return "community";
+  if (game.day >= 30) return "releases";
+  if (game.day === 22) {
+    return game.operations.records.some(
+      (record) => record.type === "tv-cm" && record.startedDay === 22,
+    )
+      ? "finance"
+      : "operations";
+  }
+  if (game.day > 22) return "finance";
+  return game.day >= 8 ? "cards" : "distribution";
 }
 
 function withKoreanObjectParticle(value: string) {
@@ -1523,429 +1456,207 @@ function withKoreanObjectParticle(value: string) {
   return `${value}${hasFinalConsonant ? "을" : "를"}`;
 }
 
+function getGuidedMarketAlert(game: GameState) {
+  const mover = getThemeCardMarketMovers(game, 0)[0];
+  if (!mover) return null;
+  const direction = mover.changeRate >= 0 ? "급등" : "급락";
+  return {
+    cardId: mover.cardId,
+    cardName: mover.cardName,
+    changeRate: Math.abs(mover.changeRate).toFixed(1),
+    direction,
+    price: mover.price,
+    themeId: mover.themeId,
+    drivers: mover.drivers.slice(0, 2),
+  };
+}
+
 function getGuidedBrief(
   step: GuidedStep,
   game: GameState,
   restrictionPolicy: RestrictionPolicyProfile,
 ): GuidedBrief {
-  if (step === "day1-controls") {
+  const objective = getGuidedObjective(step, game.day);
+  const objectiveCount = GUIDED_OBJECTIVE_COUNT;
+
+  if (step === "observe") {
+    const firstWeek = game.day < 8;
+    const marketAlert = firstWeek ? null : getGuidedMarketAlert(game);
     return {
-      kicker: "LOTUS",
-      title: "인수인계를 시작하겠습니다",
-      message: "안녕하십니까. 저는 비서 LOTUS라고 합니다. TCG 매니지먼트 인수인계를 시작하겠습니다.",
-      informational: true,
-    };
-  }
-  if (step === "day1-banlist") {
-    return {
-      kicker: "LOTUS · REFERENCE",
-      title: "금제 리스트를 열어보세요",
-      message: "금제 리스트는 현재 금지·제한·준제한 카드만 모아보는 참고 창입니다. 버튼을 직접 눌러 여세요.",
-      controlIds: ["header-banlist"],
-      inspection: true,
-    };
-  }
-  if (step === "day1-keywords") {
-    return {
-      kicker: "LOTUS · REFERENCE",
-      title: "키워드 도감을 열어보세요",
-      message: "키워드 도감은 카드와 테마의 역할 용어를 짧게 풀이합니다. 버튼을 직접 눌러 참고 창을 바꿔보세요.",
-      controlIds: ["header-keywords"],
-      inspection: true,
-    };
-  }
-  if (step === "day1-distribution-mode") {
-    return {
-      kicker: "LOTUS · DISTRIBUTION MODE",
-      title: "유저 비율로 바꿔보세요",
-      message: "분포 화면은 탑컷 비율과 유저 비율을 전환할 수 있습니다. ‘유저 비율’을 직접 눌러 네 플레이어 계층을 확인하세요.",
-      controlIds: ["distribution-users"],
-      inspection: true,
-    };
-  }
-  if (step === "day1-community") {
-    return {
-      kicker: "LOTUS",
-      title: "유저 구성을 읽었습니다",
-      message: "각 계층은 서로 다른 이유로 게임에 남습니다. 설명을 확인한 뒤 상단의 ‘커뮤니티’를 직접 눌러 체감 반응과 대조하세요.",
-      controlIds: ["nav-community"],
-      inspection: true,
-    };
-  }
-  if (step === "day1-community-read") {
-    return {
-      kicker: "LOTUS · PUBLIC SENTIMENT",
-      title: "강조된 커뮤니티 글을 열어보세요",
-      message: "강조된 글을 직접 누르세요. 글이 언급한 테마와 카드 화면으로 이동해 커뮤니티 반응을 실제 수치와 비교합니다.",
-      controlIds: ["community-post"],
-    };
-  }
-  if (step === "day1-advance") {
-    return {
-      kicker: "LOTUS · META CHECK",
-      title: "첫 메타 변화를 관측합니다",
-      message: "분포 화면을 그대로 둔 채 강조된 +7일 버튼을 눌러 DAY 8까지 진행하세요. 간섭 없이 바뀌는 1위와 입상표를 비교합니다.",
-    };
-  }
-  if (step === "day8-placement-read") {
-    return {
-      kicker: "LOTUS · PLACEMENT RESULTS",
-      title: "입상 결과를 확인하세요",
-      message: "입상표로 마우스를 옮겨 오늘 대회 결과를 확인하세요. 이 결과는 다음 날 메타와 카드 시세에 반영됩니다.",
-      inspection: true,
-      hoverInspection: true,
-    };
-  }
-  if (step === "day8-distribution-links") {
-    return {
-      kicker: "LOTUS · DISTRIBUTION LINKS",
-      title: "분포에서 상세 화면으로 이동할 수 있습니다",
-      message: "도넛 조각이나 오른쪽 테마 행은 같은 분포를 다른 방식으로 보여줍니다. 테마를 선택하면 카드 상세 화면으로 이동합니다.",
-      controlIds: ["distribution-donut", "distribution-legend"],
-      informational: true,
-    };
-  }
-  if (step === "day8-community") {
-    return {
-      kicker: "LOTUS · COMMUNITY CHECK",
-      title: "커뮤니티 화면을 여세요",
-      message: "입상표의 변화를 확인했습니다. 상단의 ‘커뮤니티’를 직접 눌러 같은 기간의 플레이어 반응을 이어서 관찰하세요.",
-      controlIds: ["nav-community"],
-      inspection: true,
-    };
-  }
-  if (step === "day8-advance") {
-    return {
-      kicker: "LOTUS · COMMUNITY CHECK",
-      title: "커뮤니티 반응을 일주일 더 관찰합니다",
-      message: "커뮤니티 화면을 그대로 둔 채 강조된 +7일 버튼을 눌러 DAY 15까지 진행하세요. 다음 단계에서 재무 지표와 함께 비교합니다.",
-    };
-  }
-  if (step === "day1-card-overview") {
-    return {
-      kicker: "LOTUS · THEME DOSSIER",
-      title: "테마 지표를 읽어보세요",
-      message: "테마 지표로 마우스를 옮겨 유저 비율·탑컷 비율·승률을 확인하세요.",
-      controlIds: ["theme-metrics"],
-      inspection: true,
-      hoverInspection: true,
-    };
-  }
-  if (step === "day15-card-catalog-generic") {
-    return {
-      kicker: "LOTUS · CARD CATALOG",
-      title: "범용 리스트로 바꿔보세요",
-      message: "카드 탭은 테마 전용 카드와 여러 테마가 함께 쓰는 범용 카드를 나눠 봅니다. ‘범용 리스트’를 직접 누르세요.",
-      controlIds: ["card-catalog-generic"],
-      inspection: true,
-    };
-  }
-  if (step === "day15-card-catalog-theme") {
-    return {
-      kicker: "LOTUS · CARD CATALOG",
-      title: "테마 리스트로 돌아오세요",
-      message: "테마 리스트는 테마별 카드와 채용률·승률을 함께 봅니다. ‘테마 리스트’를 직접 눌러 돌아오세요.",
-      controlIds: ["card-catalog-themes"],
-      inspection: true,
-    };
-  }
-  if (step === "day15-part") {
-    return {
-      kicker: "LOTUS · CORE PARTS",
-      title: "카드 표를 읽습니다",
-      message: "카드 표로 마우스를 옮겨 역할·출시일·채용률·평균 매수·시세·현행 제한을 확인하세요.",
-      controlIds: ["theme-card-table"],
-      inspection: true,
-      hoverInspection: true,
-    };
-  }
-  if (step === "day15-request-support") {
-    return {
-      kicker: "LOTUS · RELEASE REQUEST",
-      title: "지원 요청 기능입니다",
-      message: "지원은 기존 테마의 안정성·대응력·결과물·회수 중 다음 보강 방향을 요청합니다. 튜토리얼에서는 버튼이 잠겨 있고 요청도 기록되지 않습니다.",
-      controlIds: ["release-request-support"],
-      informational: true,
-    };
-  }
-  if (step === "day15-request-indirect") {
-    return {
-      kicker: "LOTUS · RELEASE REQUEST",
-      title: "간접 지원 기능입니다",
-      message: "간접은 선택한 테마와 키워드가 맞는 범용 카드가 다음 발매 후보에 들어오도록 요청합니다. 지금은 설명만 확인합니다.",
-      controlIds: ["release-request-indirect"],
-      informational: true,
-    };
-  }
-  if (step === "day15-request-target") {
-    return {
-      kicker: "LOTUS · RELEASE REQUEST",
-      title: "환경 저격 기능입니다",
-      message: "저격은 선택한 테마를 상대하기 좋은 범용 카드가 다음 발매 후보에 들어오도록 요청합니다. 지금은 설명만 확인합니다.",
-      controlIds: ["release-request-target"],
-      informational: true,
-    };
-  }
-  if (step === "day15-request-reprint") {
-    return {
-      kicker: "LOTUS · RELEASE REQUEST",
-      title: "재판 요청 기능입니다",
-      message: "재판은 이미 발매된 카드의 공급을 늘립니다. 접근성은 좋아지지만 기존 보유가치와 구매 신뢰가 흔들릴 수 있으며, 지금은 설명만 확인합니다.",
-      controlIds: ["release-request-reprint"],
-      informational: true,
-    };
-  }
-  if (step === "day15-finance") {
-    return {
-      kicker: "LOTUS · FINANCE",
-      title: "이제 재무를 선택해주세요",
-      message: "커뮤니티의 큰 목소리가 실제 구매로 이어졌는지는 매출 흐름에서 따로 확인해야 합니다.",
-      controlIds: ["nav-finance"],
-      inspection: true,
-    };
-  }
-  if (step === "day15-finance-read") {
-    return {
-      kicker: "LOTUS · DAILY MARKET",
-      title: "매출과 유저 흐름을 확인해주세요",
-      message: "차트의 날짜 구간에 마우스를 올리거나 키보드 초점을 옮겨 그날의 매출·자금·환경·신뢰·여론을 직접 확인하세요.",
-      inspection: true,
-      hoverInspection: true,
-    };
-  }
-  if (step === "day15-operations") {
-    return {
-      kicker: "LOTUS · BUSINESS OPERATIONS",
-      title: "이제 사업 운영을 선택해주세요",
-      message: "운영자금은 쌓아두는 점수가 아니라 유입과 신뢰를 만드는 수단입니다. 밝게 표시된 ‘사업 운영’을 여세요.",
-      controlIds: ["nav-operations"],
-      inspection: true,
-    };
-  }
-  if (step === "day15-operations-overview") {
-    return {
-      kicker: "LOTUS · BUSINESS OPERATIONS",
-      title: "사업 액션의 기능군을 확인하세요",
-      message: "광고·유통·대회·전략 액션은 비용·기간·쿨다운과 공개된 도전 조건이 다릅니다. 봉입률 조정만 적발 확률을 사용합니다.",
-      controlIds: ["business-actions"],
-      informational: true,
-    };
-  }
-  if (step === "day15-tv-cm") {
-    return {
-      kicker: "LOTUS · FIRST CAMPAIGN",
-      title: "TV CM 집중 편성을 집행해주세요",
-      message: "TV CM의 현재 성공 확률·비용·기간·쿨다운을 확인하고 강조된 집행 버튼을 눌러주세요. 결과는 다음 날 확정됩니다.",
-    };
-  }
-  if (step === "day1-distribution-return") {
-    return {
-      kicker: "LOTUS · META CHECK",
-      title: "분포 화면으로 돌아가세요",
-      message: "DAY 1 카드 표만 확인했으며 아직 어떤 운영 액션도 집행하지 않았습니다. 상단의 ‘분포’를 직접 눌러 현재 그래프를 띄우세요.",
-      controlIds: ["nav-distribution"],
-      inspection: true,
-    };
-  }
-  if (step === "day15-advance") {
-    return {
-      kicker: "LOTUS · CAMPAIGN RESULT",
-      title: "광고 결과를 기다립니다",
-      message: "강조된 +7일 버튼을 눌러 DAY 22까지 진행하세요.",
-    };
-  }
-  if (step === "day22-advance") {
-    return {
-      kicker: "LOTUS · TREND CHECK",
-      title: "광고 효과와 자연 변동을 함께 확인했습니다",
-      message: "한 번의 급등만으로 판단하지 않습니다. 강조된 +7일 버튼을 눌러 첫 발매 직전인 DAY 29까지 진행하세요.",
-    };
-  }
-  if (step === "day29-advance") {
-    return {
-      kicker: "LOTUS · RELEASE EVE",
-      title: "첫 정기 발매가 하루 남았습니다",
-      message: "강조된 +1일 버튼으로 DAY 30으로 진행하세요. 이번 발매 시안은 이미 결정되어 있으므로 구성과 파워를 확인한 뒤 확정합니다.",
-    };
-  }
-  if (step === "day30-releases-nav") {
-    return {
-      kicker: "LOTUS · RELEASE ARCHIVE",
-      title: "발매 탭을 열어보세요",
-      message: "발매 탭에는 출시일과 카드팩, 신테마·지원·범용 구성이 기록됩니다. 상단의 ‘발매’를 직접 누르세요.",
-      controlIds: ["nav-releases"],
-      inspection: true,
-    };
-  }
-  if (step === "day30-release-principles") {
-    return {
-      kicker: "LOTUS · RELEASE PRINCIPLES",
-      title: "발매 원칙을 먼저 확인합니다",
-      message: "강한 카드는 매출과 관심을 빠르게 올리지만 환경 집중·피로·건강 악화를 부를 수 있습니다. 약한 카드는 매출이 줄 수 있지만 건강과 기존 카드 가치를 지키기 쉽습니다.",
-      controlIds: ["release-review"],
-      informational: true,
-    };
-  }
-  if (step === "day30-release-select") {
-    return {
-      kicker: "LOTUS · RELEASE REVIEW",
-      title: "결정된 발매안을 확인하세요",
-      message: "신테마 2종·지원 1종·범용 1종과 각 파워 값을 확인한 뒤 ‘발매 확정’을 직접 누르세요.",
-      controlIds: ["release-review"],
-    };
-  }
-  if (step === "day30-releases-read") {
-    return {
-      kicker: "LOTUS · RELEASE ARCHIVE",
-      title: "발매 기록을 읽어보세요",
-      message: "발매 기록으로 마우스를 옮겨 카드팩과 새로 들어온 테마·지원·범용 카드를 확인하세요.",
-      controlIds: ["release-archive"],
-      inspection: true,
-      hoverInspection: true,
-    };
-  }
-  if (step === "day30-advance") {
-    return {
-      kicker: "LOTUS · RELEASE ANNOUNCED",
-      title: "발매 당일에는 결과를 단정하지 않습니다",
-      message: "메타와 커뮤니티 반응은 다음 날부터 시작됩니다. DAY 31로 +1일 진행해주세요.",
-    };
-  }
-  if (step === "day31-community-read") {
-    return {
-      kicker: "LOTUS · DAY-AFTER REACTION",
-      title: "발매 다음 날의 글을 읽어보세요",
-      message: "글 목록으로 마우스를 옮겨 제목과 좋아요를 확인하세요. 체감과 실제 수치는 구분해야 합니다.",
-      inspection: true,
-      hoverInspection: true,
-    };
-  }
-  if (step === "day31-community-controls") {
-    return {
-      kicker: "LOTUS · COMMUNITY HISTORY",
-      title: "날짜별 글을 다시 볼 수 있습니다",
-      message: "날짜 버튼으로 마우스를 옮겨 기능을 확인하세요. 이 버튼들은 글 목록만 바꾸며 게임 시간은 진행하지 않습니다.",
-      controlIds: ["community-day"],
-      inspection: true,
-      hoverInspection: true,
-    };
-  }
-  if (step === "day31-community-open") {
-    return {
-      kicker: "LOTUS · COMMUNITY LINK",
-      title: "대표 글을 열어보세요",
-      message: "커뮤니티 글을 누르면 그 글이 언급한 테마나 카드 상세로 이동합니다. 강조된 글을 직접 누르세요.",
-      controlIds: ["community-post"],
-    };
-  }
-  if (step === "day31-news") {
-    return {
-      kicker: "LOTUS · DAILY NEWS",
-      title: "소식 탭을 열어보세요",
-      message: "소식은 큰 수치 변화와 인기 커뮤니티 화제를 날짜별로 압축합니다. 상단의 ‘소식’을 직접 누르세요.",
-      controlIds: ["nav-news"],
-      inspection: true,
-    };
-  }
-  if (step === "day31-news-controls") {
-    return {
-      kicker: "LOTUS · DAILY NEWS",
-      title: "소식도 날짜별로 확인합니다",
-      message: "날짜 버튼과 소식 목록으로 마우스를 옮겨 기능을 확인하세요. 좋은 소식은 푸른색, 나쁜 소식은 붉은색입니다.",
-      controlIds: ["news-day", "news-list"],
-      inspection: true,
-      hoverInspection: true,
-    };
-  }
-  if (step === "day31-advance") {
-    return {
-      kicker: "LOTUS · DAY-AFTER REACTION",
-      title: "발매 반응을 확인했습니다",
-      message: "초기 반응이 얼마나 남는지 보기 위해 강조된 +7일 버튼을 눌러 DAY 38까지 진행하세요.",
-    };
-  }
-  if (step === "day38-advance") {
-    return {
-      kicker: "LOTUS · REACTION DECAY",
-      title: "초기 폭발 이후의 환경을 확인했습니다",
-      message: "강조된 +7일 버튼을 눌러 DAY 45까지 진행하고 첫 금제위원회를 여세요.",
-    };
-  }
-  if (step === "day45-restriction-controls") {
-    return {
-      kicker: "LOTUS · FIRST MANDATE",
-      title: "금제 원칙을 먼저 확인합니다",
-      message: "강한 제재는 환경을 빠르게 회복시키지만 시세·보유가치·구매 신뢰 충격이 큽니다. 약한 제재나 무변경은 충격이 작지만 문제 환경이 남을 수 있습니다.",
-      controlIds: ["restriction-limits", "restriction-actions"],
-      informational: true,
-    };
-  }
-  if (step === "day45-restriction") {
-    return {
-      kicker: "LOTUS · FIRST MANDATE",
-      title: "첫 금제는 책임자님의 결정입니다",
-      message: restrictionPolicy.changeCount > 0
-        ? "채용률·승률·파츠 의존도를 비교해 직접 조정하고, 결정했으면 제출하세요. 제출과 동시에 인수인계가 끝납니다."
-        : "정해진 정답은 없습니다. 직접 제한을 정하거나 현 환경 유지안을 제출하세요. 제출과 동시에 인수인계가 끝납니다.",
+      kicker: "LOTUS · OBSERVE",
+      title: firstWeek
+        ? "TCG를 운영하고, 시간을 진행합니다"
+        : marketAlert
+          ? `${marketAlert.cardName} 시세 ${marketAlert.direction}`
+          : "첫 시장 변동이 감지됐습니다",
+      message: firstWeek
+        ? "원하는 화면을 둘러보고 +1일 또는 +7일로 진행하세요. 중요한 사건이 생기면 자동으로 멈춥니다."
+        : marketAlert
+          ? `DAY 8 시장 경보: ${marketAlert.cardName} 시세가 7일 전보다 ${marketAlert.changeRate}% ${marketAlert.direction}해 ${formatCardMarketPrice(marketAlert.price)}이 됐습니다. 카드를 확인하거나 바로 진행해도 됩니다.`
+          : "DAY 8 시장 경보가 도착했습니다. 카드 화면을 확인하거나 바로 다음 사건까지 진행해도 됩니다.",
+      help: firstWeek
+        ? "튜토리얼을 끝내거나 안내를 생략하면 다음 임기부터 자동으로 OFF됩니다. 설정에서 튜토리얼을 다시 ON한 뒤 새 임기를 시작하면 언제든 재실행할 수 있습니다."
+        : marketAlert
+          ? `${marketAlert.drivers.join(" · ")} 같은 수요 변화가 시세에 반영됩니다. 시세는 정답 지표가 아니라 환경 반응을 읽는 단서입니다.`
+          : "채용률과 입상 변화는 카드 수요와 시세에 이어집니다. 자세한 용어는 필요할 때 키워드 도감에서 확인할 수 있습니다.",
+      objective,
+      objectiveCount,
+      controlIds: marketAlert
+        ? [`card-market-${marketAlert.cardId}`]
+        : undefined,
       freeInteraction: true,
     };
   }
-  if (step === "day46-community") {
+
+  if (step === "restriction-reaction") {
+    const impact = game.day === 16
+      ? getNextDayRestrictionMarketImpact(game)
+      : null;
+    if (game.day === 15) {
+      return {
+        kicker: "LOTUS · DECISION PUBLISHED",
+        title: "첫 금제안이 공표됐습니다",
+        message: "+1일 또는 +7일을 누르면 DAY 16의 카드 시세 반응에서 멈춥니다.",
+        help: "제재를 바꿨다면 대상 카드의 매도 반응을, 변경 없음이라면 위험군 카드의 안도 매수를 확인하게 됩니다.",
+        objective,
+        objectiveCount,
+        freeInteraction: true,
+      };
+    }
+    if (game.day === 16) {
+      const impactRate = impact ? Math.abs(impact.changeRate).toFixed(1) : null;
+      const impactDirection = impact?.kind === "restriction-drop"
+        ? "하락"
+        : "상승";
+      return {
+        kicker: "LOTUS · RESTRICTION IMPACT",
+        title: impact
+          ? `${impact.cardName} 시세 ${impactDirection}`
+          : "금제 다음 날의 시세를 확인합니다",
+        message: impact
+          ? impact.kind === "restriction-drop"
+            ? `어제 제재한 ${impact.cardName} 시세가 ${impactRate}% 하락해 ${formatCardMarketPrice(impact.price)}이 됐습니다. 강조된 카드에서 실제 반응을 확인하거나 바로 진행하세요.`
+            : `위험군이던 ${impact.cardName}의 시세가 금제를 피한 뒤 ${impactRate}% 상승해 ${formatCardMarketPrice(impact.price)}이 됐습니다. 강조된 카드에서 실제 반응을 확인하거나 바로 진행하세요.`
+          : "카드 화면에서 전날 금제 결정 이후의 시세와 채용 변화를 확인하거나 바로 진행하세요.",
+        help: impact
+          ? `${impact.reactionLabel}는 결정의 단기 시장 반응입니다. 제재 방향과 시세 방향이 어떻게 연결됐는지 확인하세요.`
+          : "시세는 결정의 영향을 읽는 단서 중 하나입니다. 분포·입상·커뮤니티와 함께 볼 때 의미가 생깁니다.",
+        objective,
+        objectiveCount,
+        controlIds: impact ? [`card-market-${impact.cardId}`] : undefined,
+        freeInteraction: true,
+      };
+    }
     return {
-      kicker: "LOTUS · POST-RESTRICTION",
-      title: "금제 다음 날의 커뮤니티를 확인해주세요",
-      message: "금제 당일이 아니라 DAY 46부터 반응과 이탈이 나타납니다. 밝게 표시된 ‘커뮤니티’를 선택해주세요.",
-      controlIds: ["nav-community"],
-      inspection: true,
+      kicker: "LOTUS · NEXT EVENT",
+      title: "첫 사업 액션까지 자유롭게 관찰합니다",
+      message: "+1일 또는 +7일로 진행하면 DAY 22의 사업 운영 안내에서 멈춥니다.",
+      help: "이 구간에는 필수 읽기가 없습니다. 원하는 화면만 둘러보거나 바로 넘겨도 됩니다.",
+      objective,
+      objectiveCount,
+      freeInteraction: true,
     };
   }
-  if (step === "day46-community-read") {
+
+  if (step === "business") {
     return {
-      kicker: "LOTUS · POST-RESTRICTION",
-      title: "금제 다음 날의 글을 읽어보세요",
-      message: "글 목록으로 마우스를 옮겨 금제 반응과 이탈 신호를 확인하세요.",
-      inspection: true,
-      hoverInspection: true,
+      kicker: "LOTUS · FIRST ACTION",
+      title: "사업 액션 하나를 집행합니다",
+      message: "TV CM의 비용과 성공 확률만 확인하고 집행하세요. 결과는 다음 날부터 반영됩니다.",
+      help: "다른 사업 액션은 자유 운영에서 필요해질 때 각 카드의 비용·기간·위험을 확인하면 됩니다.",
+      objective,
+      objectiveCount,
+      controlIds: ["business-actions"],
+      freeInteraction: true,
     };
   }
-  if (step === "day46-distribution") {
+
+  if (step === "release-runup") {
+    const tvCm = game.operations.records.find(
+      (record) => record.type === "tv-cm" && record.startedDay === 22,
+    );
+    const resultLabel = tvCm?.outcome === "success"
+      ? "성공"
+      : tvCm?.outcome === "backlash"
+        ? "성과 미달"
+        : "결과";
+    const resultDay = game.day === 23;
     return {
-      kicker: "LOTUS · FINAL META CHECK",
-      title: "반응과 실제 분포를 대조해주세요",
-      message: "커뮤니티의 목소리가 곧 대회 성과는 아닙니다. ‘분포’에서 최근 14일 탑컷 점유율과 활성 유저를 마지막으로 확인합니다.",
-      controlIds: ["nav-distribution"],
-      inspection: true,
+      kicker: "LOTUS · NEXT DECISION",
+      title: game.day === 22
+        ? "TV CM 결과는 다음 날 공개됩니다"
+        : resultDay
+          ? `TV CM ${resultLabel} 결과가 재무에 반영됐습니다`
+          : "첫 정기 발매까지 자유롭게 진행합니다",
+      message: game.day === 22
+        ? "+1일 또는 +7일을 누르면 DAY 23의 사업 결과에서 멈춥니다."
+        : resultDay
+          ? `오늘 매출은 ₩${formatRevenue(game.finance.today)}, 현재 운영자금은 ₩${formatRevenue(game.finance.cash)}입니다. 재무 화면에서 결과를 확인하거나 바로 진행하세요.`
+          : "+1일 또는 +7일로 진행하면 DAY 30의 첫 발매 검토에서 멈춥니다.",
+      help: resultDay
+        ? "매출은 오늘 들어온 돈, 운영자금은 실제로 쓸 수 있는 잔액입니다. 둘의 움직임으로 사업 액션의 효과를 확인할 수 있습니다."
+        : "이 구간에는 필수 읽기가 없습니다. 재무·커뮤니티·카드 화면을 원하는 만큼 둘러볼 수 있습니다.",
+      objective,
+      objectiveCount,
+      controlIds: resultDay ? ["finance-chart"] : undefined,
+      freeInteraction: true,
     };
   }
-  if (step === "day46-distribution-read") {
+
+  if (step === "release") {
     return {
-      kicker: "LOTUS · FINAL META CHECK",
-      title: "최종 메타표를 확인해주세요",
-      message: "탑컷 점유율은 최근 14일 전체 본선 자리 중 차지한 비율이며 티어 기준입니다. 본선 진출률은 그 테마 참가자 중 탑컷에 오른 비율입니다. 채용률·승률과 함께 비교해주세요.",
-      inspection: true,
-      hoverInspection: true,
+      kicker: "LOTUS · FIRST RELEASE",
+      title: "첫 카드팩을 직접 구성합니다",
+      message: "신테마·지원·범용을 각각 1종 이상 포함해 4종을 고르고, 파워를 조정한 뒤 발매를 확정하세요.",
+      help: "강한 발매는 초기 매출을 키우지만 환경 집중과 피로를 높일 수 있습니다. 네 번째 자리는 원하는 종류를 한 장 더 선택할 수 있습니다.",
+      objective,
+      objectiveCount,
+      controlIds: ["release-review"],
     };
   }
-  if (step === "day46-start") {
+
+  if (step === "release-reaction") {
     return {
-      kicker: game.handoverComplete
-        ? "LOTUS · SAVE RETRY"
-        : "LOTUS · HANDOVER COMPLETE",
-      title: game.handoverComplete
-        ? "업무 시작 상태를 다시 저장해주세요"
-        : "이제 직접 운영을 시작합니다",
-      message: game.handoverComplete
-        ? "진행은 완료됐습니다. 강조된 버튼으로 저장을 다시 시도해주세요."
-        : `업무 시작 뒤 DAY ${LAST_DECISION_DAY}까지 직접 운영합니다. DAY 47부터 기본 운영비와 활성 유저 규모 비용이 매일 정산됩니다. 정기 발매는 30일, 금제위원회는 DAY ${FIRST_BAN_DAY} 이후 60일 주기이며, 마지막 결정 뒤 ${SETTLEMENT_DAYS}일은 자동 결산 관찰 기간입니다.`,
+      kicker: "LOTUS · AFTERMATH",
+      title: "발매 반응은 다음 날 시작됩니다",
+      message: "+1일 또는 +7일을 누르면 DAY 31의 첫 반응에서 멈춥니다.",
+      help: "다음 날 커뮤니티와 초기 수요 반응을 한 번 확인하면 인수인계가 끝납니다.",
+      objective,
+      objectiveCount,
+      freeInteraction: true,
     };
   }
+
+  if (step === "restriction") {
+    return {
+      kicker: "LOTUS · FIRST MANDATE",
+      title: "첫 금제안을 직접 결정합니다",
+      message:
+        restrictionPolicy.changeCount > 0
+          ? "채용률·승률·카드 역할을 참고해 허용 매수를 정하고 제출하세요. 정답은 하나가 아닙니다."
+          : "현 환경을 유지해도 되고 직접 제한을 정해도 됩니다. 결정했으면 제출하세요.",
+      help: "금지·제한·준제한은 허용 매수 0·1·2장을 뜻합니다. 강한 제재는 환경을 빨리 바꾸지만 시세와 구매 신뢰 충격도 커집니다.",
+      objective,
+      objectiveCount,
+      controlIds: ["restriction-actions"],
+      freeInteraction: true,
+    };
+  }
+
+  const releaseReaction = getReleaseReactionProfile(game, game.day);
   return {
-    kicker: "LOTUS · HANDOVER",
-    title: "결과 관측은 다음 날 시작됩니다",
-    message: "강조된 +1일 버튼으로 DAY 46에 진입한 뒤 금제 반응과 최종 분포를 확인합니다.",
+    kicker: "LOTUS · HANDOVER COMPLETE",
+    title: releaseReaction.headline || "첫 발매 반응이 도착했습니다",
+    message: "DAY 31 커뮤니티에서 첫 발매의 즉각적인 반응을 확인했습니다. 이제 필수 인수인계가 끝났고 원하는 방식으로 운영할 수 있습니다.",
+    help: `다음 정기 발매는 DAY ${RELEASE_INTERVAL * 2}, 다음 금제위원회는 DAY ${FIRST_BAN_DAY + BAN_INTERVAL}입니다. 튜토리얼은 자동으로 OFF되며 설정에서 다시 켤 수 있습니다.`,
+    objective,
+    objectiveCount,
+    controlIds: ["community-day"],
+    freeInteraction: true,
+    informational: true,
+    continueLabel: "자유 운영 시작",
   };
 }
-
 function GameSession({
   interfaceSettings,
   initialGame,
@@ -1971,11 +1682,21 @@ function GameSession({
     value: InterfaceSettings[Key],
   ) => void;
 }) {
+  const guidedInitialMarketAlert =
+    guided && initialGame.day === 8
+      ? getGuidedMarketAlert(initialGame)
+      : null;
+  const guidedInitialRestrictionImpact =
+    guided && initialGame.day === 16
+      ? getNextDayRestrictionMarketImpact(initialGame)
+      : null;
   const [game, setGame] = useState<GameState>(initialGame);
   const [selectedThemeId, setSelectedThemeId] = useState<ThemeId>(() =>
     guided && initialGame.phase === "ban-edit"
       ? getGuidedRestrictionThemeId(initialGame)
-      : "cycle",
+      : guidedInitialRestrictionImpact?.themeId ??
+        guidedInitialMarketAlert?.themeId ??
+        "cycle",
   );
   const initialTab: TabId = guided
     ? getGuidedInitialTab(initialGame)
@@ -1991,6 +1712,7 @@ function GameSession({
     getGuidedStep(initialGame),
   );
   const [guidedBusy, setGuidedBusy] = useState(false);
+  const [guidedSkipConfirmOpen, setGuidedSkipConfirmOpen] = useState(false);
   const [banDraft, setBanDraft] = useState<Record<string, RestrictionLimit>>(
     initialGame.phase === "ban-edit"
       ? makeRestrictionDraft(initialGame)
@@ -2013,9 +1735,16 @@ function GameSession({
     useState<StrategicBusinessActionType | null>(null);
   const [toast, setToast] = useState<string | null>(initialWarning ?? null);
   const [mobileDetail, setMobileDetail] = useState(
-    guided && initialGame.phase === "ban-edit",
+    guided &&
+      (initialGame.phase === "ban-edit" ||
+        Boolean(guidedInitialMarketAlert) ||
+        Boolean(guidedInitialRestrictionImpact)),
   );
-  const [highlightedPartId, setHighlightedPartId] = useState<string | null>(null);
+  const [highlightedPartId, setHighlightedPartId] = useState<string | null>(
+    guidedInitialRestrictionImpact?.cardId ??
+      guidedInitialMarketAlert?.cardId ??
+      null,
+  );
   const [persistence, setPersistence] =
     useState<PersistenceBackend>(initialPersistence);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -2232,14 +1961,14 @@ function GameSession({
   const hasFutureRelease =
     game.phase === "release-edit" || game.day < LAST_RELEASE_DAY;
   const hasFutureBan =
-    game.phase === "ban-edit" || game.day < LAST_DECISION_DAY;
+    game.phase === "ban-edit" || game.day < LAST_BAN_DAY;
   const campaignEnded = game.phase === "ended";
   const settlementPeriod =
     game.phase === "running" && game.day >= SETTLEMENT_START_DAY;
   const mandateProgress =
-    game.day <= FIRST_BAN_DAY
-      ? (game.day / FIRST_BAN_DAY) * 100
-      : ((Math.min(game.day, LAST_DECISION_DAY) - FIRST_BAN_DAY) /
+    game.day <= TUTORIAL_END_DAY
+      ? (game.day / TUTORIAL_END_DAY) * 100
+      : ((Math.min(game.day, LAST_DECISION_DAY) - PLAYER_START_DAY + 1) /
           PLAYER_CONTROL_DAYS) *
         100;
   const settlementProgress =
@@ -2255,7 +1984,7 @@ function GameSession({
   const progressLabel =
     campaignEnded
       ? "임기 종료"
-      : game.day <= FIRST_BAN_DAY
+      : game.day <= TUTORIAL_END_DAY
       ? "인수인계 진행"
       : settlementPeriod
         ? "결산 관찰"
@@ -2295,8 +2024,10 @@ function GameSession({
     concentratedRestrictionRisk,
     restrictionPolicy,
   );
-  // DAY 45 is the first real mandate: no hidden answer key or locked control.
+  // The first real mandate has no hidden answer key or locked control.
   const guidedRestrictionTarget = getGuidedRestrictionTarget();
+  const guidedPromptVisible = shouldShowGuidedPrompt(guidedStep, game.day);
+  const guidedObjective = getGuidedObjective(guidedStep, game.day);
   const guidedBrief = guided
     ? getGuidedBrief(
         guidedStep,
@@ -2306,7 +2037,7 @@ function GameSession({
     : null;
   const guidedTargetKey = guidedRestrictionTarget
     ? `${guidedRestrictionTarget.kind}-${"partId" in guidedRestrictionTarget ? guidedRestrictionTarget.partId : "submit"}-${"limit" in guidedRestrictionTarget ? guidedRestrictionTarget.limit : ""}`
-    : guidedStep;
+    : `${guidedStep}-${guidedObjective}-${activeTab}-${guidedPromptVisible ? "prompt" : "idle"}`;
 
   function dispatch(command: GameCommand) {
     const next = reduceGame(game, command);
@@ -2370,7 +2101,14 @@ function GameSession({
       if (game.phase === "release-edit") activateTab("releases", true);
       return null;
     }
-    const next = reduceGame(game, { type: "ADVANCE_DAYS", days });
+    let next = reduceGame(game, { type: "ADVANCE_DAYS", days });
+    if (
+      !guided &&
+      !next.handoverComplete &&
+      isHandoverReady(next)
+    ) {
+      next = reduceGame(next, { type: "COMPLETE_HANDOVER" });
+    }
     setGame(next);
     const businessToast = getBusinessTransitionToast(game, next);
     const eventResultToast = getBusinessEventTransitionToast(game, next);
@@ -2575,7 +2313,7 @@ function GameSession({
   ) {
     if (
       guided &&
-      (guidedStep !== "day15-tv-cm" || action !== "tv-cm")
+      (guidedStep !== "business" || action !== "tv-cm")
     ) {
       return null;
     }
@@ -2617,7 +2355,7 @@ function GameSession({
       );
     }
     if (guided && action === "tv-cm") {
-      setGuidedStep("day15-advance");
+      setGuidedStep("release-runup");
     }
     return next;
   }
@@ -2632,15 +2370,26 @@ function GameSession({
       setToast("현재 카드풀에서 더 이상 금제할 수 없습니다.");
       return null;
     }
+    const newCalendarMandatePublished = game.community.some(
+      (event) =>
+        event.day === FIRST_BAN_DAY &&
+        (event.type === "restriction-applied" ||
+          event.type === "cosmetic-restriction" ||
+          event.type === "restriction-no-change"),
+    );
     const isFirstMandate =
-      game.day === FIRST_BAN_DAY && !game.handoverComplete;
-    const next = dispatch({
+      !game.handoverComplete &&
+      (game.day === FIRST_BAN_DAY ||
+        (game.day === 45 && !newCalendarMandatePublished));
+    const published = reduceGame(game, {
       type: "SUBMIT_BAN",
       changes,
       ...(isFirstMandate
         ? { campaignSeed: mintCampaignSeed(game.seed) }
         : {}),
     });
+    const next = published;
+    setGame(next);
     clearImpactMessages();
     setReactionFlashDay(next.day + 1);
     setToast(
@@ -2654,11 +2403,7 @@ function GameSession({
 
   function submitReleaseSelections(selections: ReleaseSelection[]) {
     if (game.phase !== "release-edit" || !game.releaseSlate) return null;
-    const next = dispatch(
-      guided && guidedStep === "day30-release-select"
-        ? getPrologueReleaseCommand(game)
-        : { type: "SUBMIT_RELEASE", selections },
-    );
+    const next = dispatch({ type: "SUBMIT_RELEASE", selections });
     impactTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     impactTimersRef.current = [];
     setImpactItems([]);
@@ -2668,161 +2413,27 @@ function GameSession({
     setToast(`DAY ${next.day} 카드팩 ${next.releaseHistory.at(-1)?.products.length ?? 0}종을 발매했습니다.`);
     emitGameSound("release");
     if (guided && next.day === 30) {
-      setGuidedStep("day30-releases-read");
+      setGuidedStep("release-reaction");
       activateTab("releases", true);
     }
     return next;
   }
 
   function handleGuidedNavigation(tab: TabId) {
-    if (!guided || guidedBrief?.freeInteraction) {
-      activateTab(tab);
-      return;
-    }
-    if (guidedStep === "day1-community" && tab === "community") {
-      activateTab(tab, true);
-      setGuidedStep("day1-community-read");
-      return;
-    }
-    if (guidedStep === "day8-community" && tab === "community") {
-      activateTab(tab, true);
-      setGuidedStep("day8-advance");
-      return;
-    }
-    if (guidedStep === "day15-finance" && tab === "finance") {
-      activateTab(tab, true);
-      setGuidedStep("day15-finance-read");
-      return;
-    }
-    if (guidedStep === "day15-operations" && tab === "operations") {
-      activateTab(tab, true);
-      setGuidedStep("day15-operations-overview");
-      return;
-    }
-    if (guidedStep === "day1-distribution-return" && tab === "distribution") {
-      activateTab(tab, true);
-      setGuidedStep("day1-advance");
-      return;
-    }
-    if (guidedStep === "day46-community" && tab === "community") {
-      activateTab(tab, true);
-      setGuidedStep("day46-community-read");
-      return;
-    }
-    if (guidedStep === "day46-distribution" && tab === "distribution") {
-      activateTab(tab, true);
-      setGuidedStep("day46-distribution-read");
-      return;
-    }
-    if (guidedStep === "day30-releases-nav" && tab === "releases") {
-      activateTab(tab, true);
-      setGuidedStep("day30-release-principles");
-      return;
-    }
-    if (guidedStep === "day31-news" && tab === "news") {
-      activateTab(tab, true);
-      setGuidedStep("day31-news-controls");
-    }
+    activateTab(tab);
   }
 
-  function confirmGuidedInspection() {
-    if (!guided || guidedBusy) return;
-    if (guidedStep === "day1-community") {
-      handleGuidedNavigation("community");
-    } else if (guidedStep === "day15-finance") {
-      handleGuidedNavigation("finance");
-    } else if (guidedStep === "day15-operations") {
-      handleGuidedNavigation("operations");
-    } else if (guidedStep === "day1-distribution-return") {
-      handleGuidedNavigation("distribution");
-    } else if (guidedStep === "day30-releases-nav") {
-      handleGuidedNavigation("releases");
-    } else if (guidedStep === "day31-news") {
-      handleGuidedNavigation("news");
-    } else if (guidedStep === "day46-community") {
-      handleGuidedNavigation("community");
-    } else if (guidedStep === "day46-distribution") {
-      handleGuidedNavigation("distribution");
-    } else if (guidedStep === "day1-community-read") {
-      activateTab("cards", true);
-      setMobileDetail(true);
-      setGuidedStep("day1-card-overview");
-    } else if (guidedStep === "day8-community") {
-      handleGuidedNavigation("community");
-    } else if (guidedStep === "day1-banlist") {
-      setGuidedStep("day1-keywords");
-    } else if (guidedStep === "day1-keywords") {
-      setGuidedStep("day1-distribution-mode");
-      activateTab("distribution", true);
-    } else if (guidedStep === "day1-distribution-mode") {
-      setGuidedStep("day1-community");
-    } else if (guidedStep === "day8-placement-read") {
-      setGuidedStep("day8-distribution-links");
-    } else if (guidedStep === "day1-card-overview") {
-      setGuidedStep("day15-card-catalog-generic");
-    } else if (guidedStep === "day15-card-catalog-generic") {
-      setGuidedStep("day15-card-catalog-theme");
-    } else if (guidedStep === "day15-card-catalog-theme") {
-      setMobileDetail(true);
-      setGuidedStep("day15-part");
-    } else if (guidedStep === "day15-part") {
-      setGuidedStep("day15-request-support");
-    } else if (guidedStep === "day15-finance-read") {
-      setGuidedStep("day15-operations");
-    } else if (guidedStep === "day30-releases-read") {
-      setGuidedStep("day30-advance");
-    } else if (guidedStep === "day31-community-read") {
-      setGuidedStep("day31-community-controls");
-    } else if (guidedStep === "day31-community-controls") {
-      setGuidedStep("day31-community-open");
-    } else if (guidedStep === "day31-community-open") {
-      setGuidedStep("day31-news");
-    } else if (guidedStep === "day31-news-controls") {
-      setGuidedStep("day31-advance");
-    } else if (guidedStep === "day46-community-read") {
-      setGuidedStep("day46-distribution");
-    } else if (guidedStep === "day46-distribution-read") {
-      setGuidedStep("day46-start");
-    }
+  function ignoreGuidedInspection() {
+    return undefined;
   }
 
   function advanceGuidedInformation() {
-    if (!guided || guidedBusy) return;
-    if (guidedStep === "day1-controls") {
-      setGuidedStep("day1-banlist");
-    } else if (guidedStep === "day8-distribution-links") {
-      setGuidedStep("day8-community");
-    } else if (guidedStep === "day15-request-support") {
-      setGuidedStep("day15-request-indirect");
-    } else if (guidedStep === "day15-request-indirect") {
-      setGuidedStep("day15-request-target");
-    } else if (guidedStep === "day15-request-target") {
-      setGuidedStep("day15-request-reprint");
-    } else if (guidedStep === "day15-request-reprint") {
-      setGuidedStep("day1-distribution-return");
-    } else if (guidedStep === "day15-operations-overview") {
-      setGuidedStep("day15-tv-cm");
-    } else if (guidedStep === "day30-release-principles") {
-      setGuidedStep("day30-release-select");
-    } else if (guidedStep === "day45-restriction-controls") {
-      setGuidedStep("day45-restriction");
-    }
+    if (!guided || guidedBusy || guidedStep !== "handover") return;
+    const handover = game.handoverComplete
+      ? game
+      : reduceGame(game, { type: "COMPLETE_HANDOVER" });
+    void finishGuidedTutorial(handover);
   }
-
-  function isGuidedNavigationTarget(tab: TabId) {
-    return (
-      (guidedStep === "day1-community" && tab === "community") ||
-      (guidedStep === "day8-community" && tab === "community") ||
-      (guidedStep === "day15-finance" && tab === "finance") ||
-      (guidedStep === "day15-operations" && tab === "operations") ||
-      (guidedStep === "day1-distribution-return" && tab === "distribution") ||
-      (guidedStep === "day46-community" && tab === "community") ||
-      (guidedStep === "day46-distribution" && tab === "distribution") ||
-      (guidedStep === "day30-releases-nav" && tab === "releases") ||
-      (guidedStep === "day31-news" && tab === "news")
-    );
-  }
-
   async function finishGuidedTutorial(finalGame: GameState) {
     if (
       !guided ||
@@ -2840,6 +2451,13 @@ function GameSession({
         throw new Error(persistence.message);
       }
       await savePersistedGame(persistence, finalGame);
+      updateInterfaceSetting(
+        "tutorialGuidanceEnabled",
+        getTutorialGuidanceEnabledAfterEvent(
+          interfaceSettings.tutorialGuidanceEnabled,
+          "complete",
+        ),
+      );
       // GameSession is reused when the parent switches from guided to normal
       // play. Clear the transient save lock before that prop change so the
       // regular +1/+7 controls do not inherit a permanently busy tutorial.
@@ -2856,30 +2474,29 @@ function GameSession({
   }
 
   async function skipGuidedTutorial() {
-    if (!guided || guidedBusy || game.day >= FIRST_BAN_DAY) return;
-    const firstBanGame = createFirstBanGame(initialGame.seed);
-    const targetTheme = getGuidedRestrictionThemeId(firstBanGame);
+    if (!guided || guidedBusy) return;
     setGuidedBusy(true);
-    lastQueuedGameRef.current = firstBanGame;
-    setGame(firstBanGame);
-    setBanDraft(makeRestrictionDraft(firstBanGame));
-    setGuidedStep("day45-restriction-controls");
-    setSelectedThemeId(targetTheme);
-    setMobileDetail(true);
-    activateTab("cards", true);
-    setToast("고정 학습 구간을 건너뛰었습니다. 첫 금제안은 직접 결정해주세요.");
+    lastQueuedGameRef.current = game;
     try {
       await saveQueueRef.current;
       if (persistence.kind === "unavailable") {
         throw new Error(persistence.message);
       }
-      await savePersistedGame(persistence, firstBanGame);
-    } catch {
-      setToast(
-        "DAY 45 상태를 저장하지 못했습니다. 현재 결정은 계속할 수 있지만 저장소 상태를 확인해주세요.",
+      await savePersistedGame(persistence, game);
+      updateInterfaceSetting(
+        "tutorialGuidanceEnabled",
+        getTutorialGuidanceEnabledAfterEvent(
+          interfaceSettings.tutorialGuidanceEnabled,
+          "skip",
+        ),
       );
-    } finally {
       setGuidedBusy(false);
+      onTutorialComplete?.(game, persistence);
+    } catch {
+      setGuidedBusy(false);
+      setToast(
+        "현재 진행을 저장하지 못해 안내를 생략하지 않았습니다. 저장소 상태를 확인해주세요.",
+      );
     }
   }
 
@@ -2904,12 +2521,12 @@ function GameSession({
   }
 
   function openGuidedRestrictionBoard(next: GameState) {
-    if (next.day !== 45 || next.phase !== "ban-edit") return false;
+    if (next.day !== FIRST_BAN_DAY || next.phase !== "ban-edit") return false;
     const targetTheme = getGuidedRestrictionThemeId(next);
     setBanDraft((current) =>
       Object.keys(current).length > 0 ? current : makeRestrictionDraft(next),
     );
-    setGuidedStep("day45-restriction-controls");
+    setGuidedStep("restriction");
     activateTab("cards", true);
     setSelectedThemeId(targetTheme);
     setMobileDetail(true);
@@ -2920,55 +2537,68 @@ function GameSession({
     if (
       !guided ||
       guidedBusy ||
-      !isGuidedAdvanceDaysAllowed(guidedStep, days)
+      !isGuidedAdvanceDaysAllowed(guidedStep, game.day, days)
     ) return;
 
-    if (guidedStep === "day46-start") {
-      const handover = game.handoverComplete
-        ? game
-        : reduceGame(game, { type: "COMPLETE_HANDOVER" });
-      const next = reduceGame(handover, { type: "ADVANCE_DAYS", days });
-      void finishGuidedTutorial(next);
-      return;
-    }
-
-    if (guidedStep === "day29-advance") {
-      const next = dispatch({ type: "ADVANCE_DAYS", days: 1 });
-      if (next.phase !== "release-edit" || !next.releaseSlate) {
-        setToast("첫 발매 검토를 열지 못했습니다.");
-        return;
-      }
-      setReleaseDraft([]);
-      setGuidedStep("day30-releases-nav");
-      return;
-    }
-
-    const next = advance(days);
+    const advanceDays = getGuidedAdvanceDays(guidedStep, game.day, days);
+    if (advanceDays === null) return;
+    const next = advance(advanceDays);
     if (!next) return;
+    if (next.phase === "release-edit") setReleaseDraft([]);
     if (next.phase === "ban-edit") {
       openGuidedRestrictionBoard(next);
       return;
     }
     const nextStep = getGuidedStep(next);
     setGuidedStep(nextStep);
-    const nextTab = getGuidedAdvanceTab(nextStep);
-    if (nextTab) activateTab(nextTab, true);
+    if (next.day === 8) {
+      const marketAlert = getGuidedMarketAlert(next);
+      if (marketAlert) {
+        setSelectedThemeId(marketAlert.themeId);
+        setHighlightedPartId(marketAlert.cardId);
+        setMobileDetail(true);
+      }
+    } else if (next.day === 16) {
+      const restrictionImpact = getNextDayRestrictionMarketImpact(next);
+      if (restrictionImpact) {
+        setSelectedThemeId(restrictionImpact.themeId);
+        setHighlightedPartId(restrictionImpact.cardId);
+        setMobileDetail(true);
+      }
+    } else if (game.day === 8) {
+      setHighlightedPartId(null);
+    } else if (game.day === 16) {
+      setHighlightedPartId(null);
+    }
+    if (shouldShowGuidedPrompt(nextStep, next.day)) {
+      const nextTab = getGuidedAdvanceTab(nextStep, next.day);
+      if (nextTab) activateTab(nextTab, true);
+    }
   }
 
   function submitGuidedRestriction() {
-    if (!guided || guidedStep !== "day45-restriction") return;
+    if (!guided || guidedStep !== "restriction") return;
     const next = submitRestriction();
     if (!next) return;
-    const handover = next.handoverComplete
-      ? next
-      : reduceGame(next, { type: "COMPLETE_HANDOVER" });
-    void finishGuidedTutorial(handover);
+    if (next.day === 45) {
+      const legacyImpact = reduceGame(next, {
+        type: "ADVANCE_DAYS",
+        days: 1,
+      });
+      const legacyHandover = reduceGame(legacyImpact, {
+        type: "COMPLETE_HANDOVER",
+      });
+      setGuidedStep("handover");
+      void finishGuidedTutorial(legacyHandover);
+      return;
+    }
+    setGuidedStep("restriction-reaction");
   }
 
   const guidedOneDayAdvanceEnabled =
-    guided && isGuidedAdvanceDaysAllowed(guidedStep, 1);
+    guided && isGuidedAdvanceDaysAllowed(guidedStep, game.day, 1);
   const guidedSevenDayAdvanceEnabled =
-    guided && isGuidedAdvanceDaysAllowed(guidedStep, 7);
+    guided && isGuidedAdvanceDaysAllowed(guidedStep, game.day, 7);
 
   return (
     <div
@@ -2989,26 +2619,7 @@ function GameSession({
       <header className="topbar">
         <HeaderReferenceTools
           banList={<CurrentBanList expanded game={game} />}
-          guidedToolTarget={
-            guidedStep === "day1-banlist"
-              ? "banlist"
-              : guidedStep === "day1-keywords"
-                ? "keywords"
-                : null
-          }
           keywordGlossary={<PlayKeywordGlossary expanded />}
-          onGuidedToolOpen={(tool) => {
-            if (!guided) return;
-            if (tool === "banlist" && guidedStep === "day1-banlist") {
-              setGuidedStep("day1-keywords");
-            } else if (
-              tool === "keywords" &&
-              guidedStep === "day1-keywords"
-            ) {
-              setGuidedStep("day1-distribution-mode");
-              activateTab("distribution", true);
-            }
-          }}
         />
 
         <div className="header-metrics" aria-label="캠페인 핵심 지표">
@@ -3113,18 +2724,7 @@ function GameSession({
             <button
               className={activeTab === item.id ? "nav-item active" : "nav-item"}
               data-tutorial-control={`nav-${item.id}`}
-              data-tutorial-target={
-                guided && isGuidedNavigationTarget(item.id)
-                  ? "active"
-                  : undefined
-              }
-              disabled={
-                gameOver ||
-                campaignComplete ||
-                (guided &&
-                  !guidedBrief?.freeInteraction &&
-                  !isGuidedNavigationTarget(item.id))
-              }
+              disabled={gameOver || campaignComplete || guidedBusy}
               key={item.id}
               onClick={() => handleGuidedNavigation(item.id)}
               type="button"
@@ -3148,7 +2748,7 @@ function GameSession({
         <button
           className="reset-button"
           data-tutorial-control="home"
-          disabled={guided && !guidedBrief?.freeInteraction}
+          disabled={guidedBusy}
           onClick={() => {
             if (guided) {
               void pauseGuidedTutorial();
@@ -3181,7 +2781,49 @@ function GameSession({
           />
         ) : (
           <>
-        {guided ? null : (
+        {guided ? (
+          <aside aria-label="튜토리얼 상태" className="guided-status-rail">
+            <LotusSymbol tone="info" />
+            <div className="guided-status-copy">
+              <span>LOTUS · TUTORIAL ON</span>
+              <strong>
+                목표 {guidedObjective}/{GUIDED_OBJECTIVE_COUNT}
+              </strong>
+            </div>
+            <i aria-hidden="true">
+              <b
+                style={{
+                  width: `${(guidedObjective / GUIDED_OBJECTIVE_COUNT) * 100}%`,
+                }}
+              />
+            </i>
+            <div className="guided-status-actions">
+              {guidedStep === "handover" ? (
+                <button
+                  disabled={guidedBusy}
+                  onClick={advanceGuidedInformation}
+                  type="button"
+                >
+                  자유 운영 시작
+                </button>
+              ) : null}
+              <button
+                disabled={guidedBusy}
+                onClick={() => setGuidedSkipConfirmOpen(true)}
+                type="button"
+              >
+                안내 생략
+              </button>
+              <button
+                disabled={guidedBusy}
+                onClick={() => void pauseGuidedTutorial()}
+                type="button"
+              >
+                메인 화면으로
+              </button>
+            </div>
+          </aside>
+        ) : (
           <aside
             aria-label="로터스 상황 브리핑"
             className={`advisor-brief ${advisorBrief.tone} ${advisorOpen ? "open" : "collapsed"}`}
@@ -3210,13 +2852,7 @@ function GameSession({
             game={game}
             highlightedPartId={highlightedPartId}
             mobileDetail={mobileDetail}
-            guidedCatalogTarget={
-              guidedStep === "day15-card-catalog-generic"
-                ? "generic"
-                : guidedStep === "day15-card-catalog-theme"
-                  ? "themes"
-                  : null
-            }
+            guidedCatalogTarget={null}
             nextBanDay={nextBanDay}
             rankedThemes={rankedThemes}
             placementReport={placementReport}
@@ -3226,7 +2862,7 @@ function GameSession({
             selectedTheme={selectedTheme}
             detailHeadingRef={detailHeadingRef}
             onBackToThemes={() => setMobileDetail(false)}
-            onGuidedCatalogConfirm={confirmGuidedInspection}
+            onGuidedCatalogConfirm={ignoreGuidedInspection}
             onDraftChange={(partId, limit) => {
               if (
                 guidedRestrictionTarget &&
@@ -3258,17 +2894,13 @@ function GameSession({
         {activeTab === "distribution" ? (
           <DistributionView
             game={game}
-            guidedInspection={guided && guidedStep === "day46-distribution-read"}
-            guidedModeTarget={
-              guided && guidedStep === "day1-distribution-mode"
-                ? "users"
-                : null
-            }
-            guidedPlacementInspection={guided && guidedStep === "day8-placement-read"}
+            guidedInspection={false}
+            guidedModeTarget={null}
+            guidedPlacementInspection={false}
             nextBanDay={nextBanDay}
             nextReleaseDay={nextReleaseDay}
             onSelectTheme={selectTheme}
-            onGuidedModeConfirm={() => setGuidedStep("day1-community")}
+            onGuidedModeConfirm={ignoreGuidedInspection}
             placementReport={placementReport}
             previousPlacementReport={previousPlacementReport}
             rankedThemes={rankedThemes}
@@ -3279,9 +2911,9 @@ function GameSession({
         {activeTab === "releases" ? (
           <ReleasesView
             game={game}
-            guidedSelectionActive={guided && guidedStep === "day30-release-select"}
+            guidedSelectionActive={guided && guidedStep === "release"}
             releaseDraft={releaseDraft}
-            selectionDisabled={guided && guidedStep !== "day30-release-select"}
+            selectionDisabled={guided && guidedStep !== "release"}
             onReleaseDraftChange={setReleaseDraft}
             onSubmitRelease={submitReleaseSelections}
           />
@@ -3292,7 +2924,7 @@ function GameSession({
             game={game}
             guided={guided}
             guidedActionTarget={
-              guided && guidedStep === "day15-tv-cm" ? "tv-cm" : null
+              guided && guidedStep === "business" ? "tv-cm" : null
             }
             onRunAction={runBusinessAction}
           />
@@ -3307,18 +2939,10 @@ function GameSession({
                 : null
             }
             game={game}
-            guidedInspection={
-              guided &&
-              (guidedStep === "day31-community-read" ||
-                guidedStep === "day46-community-read")
-            }
-            guidedPostTarget={
-              guided &&
-              (guidedStep === "day1-community-read" ||
-                guidedStep === "day31-community-open")
-            }
+            guidedInspection={false}
+            guidedPostTarget={false}
             onFlashComplete={() => setReactionFlashDay(null)}
-            onGuidedPostOpen={confirmGuidedInspection}
+            onGuidedPostOpen={ignoreGuidedInspection}
             onSelectTheme={selectTheme}
           />
         ) : null}
@@ -3328,7 +2952,7 @@ function GameSession({
         {activeTab === "finance" ? (
           <FinanceView
             game={game}
-            guidedInspection={guided && guidedStep === "day15-finance-read"}
+            guidedInspection={false}
           />
         ) : null}
           </>
@@ -3458,15 +3082,17 @@ function GameSession({
 
       {guided && guidedBrief ? (
         <GuidedTutorialBar
-          allowSkip={game.day < FIRST_BAN_DAY}
+          allowSkip
           brief={guidedBrief}
           busy={guidedBusy}
+          compact={!guidedPromptVisible}
           day={game.day}
           key={guidedTargetKey}
-          onConfirm={confirmGuidedInspection}
           onInformationalNext={advanceGuidedInformation}
           onMain={() => void pauseGuidedTutorial()}
           onSkip={skipGuidedTutorial}
+          onSkipConfirmOpenChange={setGuidedSkipConfirmOpen}
+          skipConfirmOpen={guidedSkipConfirmOpen}
           step={guidedStep}
           targetKey={guidedTargetKey}
         />
@@ -3733,7 +3359,7 @@ function CampaignEndPanel({
       </dl>
       <CampaignEndingHints ending={ending} />
       <small className="campaign-end-note">
-        DAY {LAST_DECISION_DAY} 최종 금제 이후 {SETTLEMENT_DAYS}일의 관측
+        DAY {LAST_DECISION_DAY} 최종 발매 이후 {SETTLEMENT_DAYS}일의 관측
         결과로 확정된 공식 기록입니다.
       </small>
       <button className="primary-action" onClick={onReturnToPlay} type="button">
@@ -4015,6 +3641,7 @@ function MetaWorkspace({
   onSubmitRestriction,
 }: MetaWorkspaceProps) {
   const [catalogMode, setCatalogMode] = useState<"themes" | "generic">("themes");
+  const [requestHelpOpen, setRequestHelpOpen] = useState(false);
   const releasedPartIds = new Set(selectedRuntime.releasedPartIds);
   const releasedParts = selectedTheme.parts.filter((part) =>
     releasedPartIds.has(part.id),
@@ -4252,6 +3879,17 @@ function MetaWorkspace({
                 </div>
                 <div className="card-release-request-actions" aria-label="다음 발매 요청">
                   <button
+                    aria-controls="release-request-help"
+                    aria-expanded={requestHelpOpen}
+                    aria-label="발매 요청 종류 설명"
+                    className="card-release-request-info"
+                    onClick={() => setRequestHelpOpen((current) => !current)}
+                    title="지원·간접·저격·재판의 차이"
+                    type="button"
+                  >
+                    <span aria-hidden="true">ⓘ</span>
+                  </button>
+                  <button
                     data-tutorial-control="release-request-support"
                     disabled={supportDisabled || !supportProposalAvailable}
                     onClick={() => onOpenSupport(selectedTheme.id)}
@@ -4293,6 +3931,19 @@ function MetaWorkspace({
                   >
                     재판
                   </button>
+                  {requestHelpOpen ? (
+                    <div
+                      aria-label="발매 요청 종류"
+                      className="card-release-request-help"
+                      id="release-request-help"
+                      role="region"
+                    >
+                      <span><strong>지원</strong> 선택 테마 전용 보강</span>
+                      <span><strong>간접</strong> 키워드가 맞는 범용 카드</span>
+                      <span><strong>저격</strong> 선택 테마를 견제하는 범용 카드</span>
+                      <span><strong>재판</strong> 이미 출시된 카드의 재록</span>
+                    </div>
+                  ) : null}
                 </div>
               </div>
               <div
@@ -4325,6 +3976,8 @@ function MetaWorkspace({
                   <span className="editing-chip">
                     <GavelIcon size={14} /> 금제안 편집 중
                   </span>
+                ) : game.day >= LAST_BAN_DAY ? (
+                  <span className="readonly-chip">금제 일정 종료</span>
                 ) : (
                   <span className="readonly-chip">
                     DAY {nextBanDay} 조정 가능
@@ -4367,6 +4020,7 @@ function MetaWorkspace({
                                 ? "part-changed"
                                 : ""
                           }
+                          data-tutorial-control={`card-market-${part.id}`}
                           id={`part-${part.id}`}
                           key={part.id}
                         >
@@ -4498,8 +4152,8 @@ function MetaWorkspace({
           <strong>
             {editing
               ? "금제안 편집 중"
-              : game.day >= LAST_DECISION_DAY
-                ? "최종 금제 반영 · 결산 중"
+              : game.day >= LAST_BAN_DAY
+                ? "최종 금제 반영 완료"
                 : `다음 금제위원회까지 D-${Math.max(0, nextBanDay - game.day)}`}
           </strong>
           <p>
@@ -4672,10 +4326,10 @@ function DistributionView({
   const hasFutureRelease =
     game.phase === "release-edit" || game.day < LAST_RELEASE_DAY;
   const hasFutureBan =
-    game.phase === "ban-edit" || game.day < LAST_DECISION_DAY;
+    game.phase === "ban-edit" || game.day < LAST_BAN_DAY;
   const settlementPeriod =
     game.phase === "ended" ||
-    (game.phase === "running" && game.day >= LAST_DECISION_DAY);
+    (game.phase === "running" && game.day >= SETTLEMENT_START_DAY);
   const inspectedEntryId = hoveredEntryId ?? focusedEntryId;
   const inspectedEntry =
     chartEntries.find((entry) => entry.id === inspectedEntryId) ??
@@ -5168,11 +4822,6 @@ function ReleasesView({
       {game.phase === "release-edit" && game.releaseSlate ? (
         <ReleaseDecisionPanel
           disabled={selectionDisabled}
-          fixedSelections={
-            guidedSelectionActive
-              ? getPrologueReleasePlan(game).selections
-              : undefined
-          }
           game={game}
           guidedTarget={guidedSelectionActive}
           onChange={onReleaseDraftChange}

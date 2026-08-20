@@ -49,6 +49,27 @@ const LIMIT_PRICE_FACTOR: Readonly<Record<RestrictionLimit, number>> = {
   3: 1,
 };
 
+/**
+ * A no-change list briefly removes the risk discount around the card singled
+ * out by the restriction board. Each quote is derived from the decision event
+ * instead of mutating a stored price, so the relief rally cannot compound.
+ */
+const NO_CHANGE_RELIEF_PRICE_FACTOR_BY_AGE: Readonly<
+  Partial<Record<number, number>>
+> = {
+  1: 1.14,
+  2: 1.07,
+  3: 1.03,
+};
+
+const NO_CHANGE_RELIEF_DEMAND_BONUS_BY_AGE: Readonly<
+  Partial<Record<number, number>>
+> = {
+  1: 10,
+  2: 5,
+  3: 2,
+};
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
@@ -79,6 +100,27 @@ function reprintSupplyMultiplier(
 
 function historyAtOrBefore(state: GameState, day: number) {
   return [...state.history].reverse().find((entry) => entry.day <= day);
+}
+
+function noChangeReliefAtDay(
+  state: GameState,
+  themeId: ThemeId,
+  cardId: string,
+  day: number,
+) {
+  return state.community
+    .filter((event) => {
+      const age = day - event.day;
+      return (
+        event.type === "restriction-no-change" &&
+        event.themeId === themeId &&
+        event.partId === cardId &&
+        NO_CHANGE_RELIEF_PRICE_FACTOR_BY_AGE[age] !== undefined
+      );
+    })
+    .sort(
+      (left, right) => right.day - left.day || left.id.localeCompare(right.id),
+    )[0] ?? null;
 }
 
 function restrictionLimitAtDay(
@@ -154,7 +196,7 @@ function makeQuote(
   };
 }
 
-function themePartSnapshot(
+function themePartBaseSnapshot(
   state: GameState,
   themeId: ThemeId,
   part: PartContent,
@@ -214,6 +256,52 @@ function themePartSnapshot(
   };
 }
 
+function themePartSnapshot(
+  state: GameState,
+  themeId: ThemeId,
+  part: PartContent,
+  day: number,
+): {
+  price: number;
+  demand: number;
+  playDemand?: number;
+  collectorDemand?: number;
+} {
+  const base = themePartBaseSnapshot(state, themeId, part, day);
+  const reliefEvent = noChangeReliefAtDay(state, themeId, part.id, day);
+  if (!reliefEvent) return base;
+
+  const age = day - reliefEvent.day;
+  const priceFactor = NO_CHANGE_RELIEF_PRICE_FACTOR_BY_AGE[age];
+  const demandBonus = NO_CHANGE_RELIEF_DEMAND_BONUS_BY_AGE[age];
+  if (priceFactor === undefined || demandBonus === undefined) return base;
+
+  const decisionDay = themePartBaseSnapshot(
+    state,
+    themeId,
+    part,
+    reliefEvent.day,
+  );
+  const demand = clamp(
+    Math.max(base.demand, decisionDay.demand + demandBonus),
+    0,
+    100,
+  );
+  return {
+    ...base,
+    price: Math.max(base.price, decisionDay.price * priceFactor),
+    demand,
+    playDemand: clamp(
+      Math.max(
+        base.playDemand ?? base.demand,
+        (decisionDay.playDemand ?? decisionDay.demand) + demandBonus,
+      ),
+      0,
+      100,
+    ),
+  };
+}
+
 export function getThemeCardMarketQuoteAtDay(
   state: GameState,
   themeId: ThemeId,
@@ -233,11 +321,18 @@ export function getThemeCardMarketQuoteAtDay(
   const previous = themePartSnapshot(state, themeId, part, comparisonDay);
   const stats = runtime.partStats[partId];
   const collector = getCollectorCardProfile(partId);
+  const noChangeRelief = noChangeReliefAtDay(
+    state,
+    themeId,
+    partId,
+    asOfDay,
+  );
   const drivers = [
     `테마 채용 ${(runtime.share * 100).toFixed(1)}%`,
     `카드 채용 ${Math.round((stats?.usageRate ?? part.inclusion) * 100)}%`,
     `평균 ${(stats?.averageCopies ?? part.averageCopies).toFixed(1)}장`,
     `${["금지", "제한", "준제한", "무제한"][runtime.legalLimits[partId] ?? 3]}`,
+    ...(noChangeRelief ? ["금제 회피 안도 매수"] : []),
     ...(collector ? [`${collector.label} · 컬렉터 수요`] : []),
   ];
   return makeQuote(
@@ -352,6 +447,13 @@ export type CardMarketMover = CardMarketQuote & {
   themeId: ThemeId;
 };
 
+export type RestrictionMarketImpact = CardMarketMover & {
+  decisionDay: number;
+  kind: "restriction-drop" | "no-change-relief";
+  reactionLabel: "금제 적용 매도" | "금제 회피 안도 매수";
+  sourceEventId: string;
+};
+
 export function getThemeCardMarketMovers(
   state: GameState,
   minimumAbsoluteChange = 12,
@@ -375,4 +477,124 @@ export function getThemeCardMarketMovers(
       Math.abs(right.changeRate) - Math.abs(left.changeRate) ||
       left.cardId.localeCompare(right.cardId),
   );
+}
+
+/**
+ * Returns the theme-card market beat caused by yesterday's restriction review.
+ * Applied cuts choose the actual target with the steepest one-day decline. A
+ * no-change list returns its deterministic at-risk survivor and its relief bid.
+ */
+export function getNextDayRestrictionMarketImpact(
+  state: GameState,
+  observationDay = state.day,
+): RestrictionMarketImpact | null {
+  if (
+    !Number.isInteger(observationDay) ||
+    observationDay < 2 ||
+    observationDay > state.day
+  ) {
+    return null;
+  }
+  const decisionDay = observationDay - 1;
+  const applied = state.community
+    .filter(
+      (event) =>
+        event.day === decisionDay &&
+        event.type === "restriction-applied" &&
+        event.genericCardId === undefined &&
+        typeof event.partId === "string" &&
+        typeof event.value === "number" &&
+        typeof event.previousValue === "number" &&
+        event.value < event.previousValue,
+    )
+    .flatMap((event) => {
+      const theme = THEME_BY_ID[event.themeId];
+      const runtime = state.themes[event.themeId];
+      const part = theme?.parts.find((candidate) => candidate.id === event.partId);
+      if (
+        !theme ||
+        !runtime ||
+        !part ||
+        !runtime.releasedPartIds.includes(part.id)
+      ) {
+        return [];
+      }
+      const quote = getThemeCardMarketQuoteAtDay(
+        state,
+        event.themeId,
+        part.id,
+        observationDay,
+        1,
+      );
+      if (!quote) return [];
+      return [{ event, part, quote }];
+    })
+    .sort(
+      (left, right) =>
+        left.quote.changeRate - right.quote.changeRate ||
+        left.part.id.localeCompare(right.part.id) ||
+        left.event.id.localeCompare(right.event.id),
+    )[0];
+  if (applied) {
+    return {
+      ...applied.quote,
+      cardName: applied.part.name,
+      themeId: applied.event.themeId,
+      decisionDay,
+      kind: "restriction-drop",
+      reactionLabel: "금제 적용 매도",
+      sourceEventId: applied.event.id,
+    };
+  }
+
+  const survivor = state.community
+    .filter(
+      (event) =>
+        event.day === decisionDay &&
+        event.type === "restriction-no-change" &&
+        typeof event.partId === "string",
+    )
+    .flatMap((event) => {
+      const theme = THEME_BY_ID[event.themeId];
+      const runtime = state.themes[event.themeId];
+      const part = theme?.parts.find((candidate) => candidate.id === event.partId);
+      if (
+        !theme ||
+        !runtime ||
+        !part ||
+        !runtime.releasedPartIds.includes(part.id)
+      ) {
+        return [];
+      }
+      const quote = getThemeCardMarketQuoteAtDay(
+        state,
+        event.themeId,
+        part.id,
+        observationDay,
+        1,
+      );
+      if (!quote) return [];
+      const history = historyAtOrBefore(state, decisionDay);
+      const risk =
+        (history?.shares[event.themeId] ?? runtime.share) *
+        part.powerWeight *
+        part.inclusion;
+      return [{ event, part, quote, risk }];
+    })
+    .sort(
+      (left, right) =>
+        right.risk - left.risk ||
+        left.part.id.localeCompare(right.part.id) ||
+        left.event.id.localeCompare(right.event.id),
+    )[0];
+  if (!survivor) return null;
+  return {
+    ...survivor.quote,
+    cardName: survivor.part.name,
+    themeId: survivor.event.themeId,
+    decisionDay,
+    kind: "no-change-relief",
+    reactionLabel: "금제 회피 안도 매수",
+    sourceEventId: survivor.event.id,
+  };
 }

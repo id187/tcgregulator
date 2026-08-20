@@ -77,7 +77,10 @@ export function HeaderReferenceTools({
               }}
               type="button"
             >
-              {tool.label}
+              <span>{tool.label}</span>
+              <span aria-hidden="true" className="header-reference-info-mark">
+                ⓘ
+              </span>
             </button>
           );
         })}

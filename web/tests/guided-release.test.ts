@@ -3,9 +3,10 @@ import test from "node:test";
 
 import {
   createCampaignStart,
-  createFirstBanGame,
+  createInitialGame,
   getPrologueReleaseCommand,
   getPrologueReleasePlan,
+  getPrologueRestrictionChanges,
   isPrologueReleaseSubmission,
   reduceGame,
 } from "../app/game/engine.ts";
@@ -19,10 +20,16 @@ import type {
 function reachGuidedRelease(state: GameState): GameState {
   let next = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
   next = reduceGame(next, {
+    type: "SUBMIT_BAN",
+    changes: getPrologueRestrictionChanges(next),
+  });
+  next = reduceGame(next, { type: "ADVANCE_DAYS", days: 7 });
+  assert.equal(next.day, 22);
+  next = reduceGame(next, {
     type: "RUN_BUSINESS_ACTION",
     action: "tv-cm",
   });
-  next = reduceGame(next, { type: "ADVANCE_DAYS", days: 15 });
+  next = reduceGame(next, { type: "ADVANCE_DAYS", days: 8 });
   assert.equal(next.day, 30);
   assert.equal(next.phase, "release-edit");
   assert.ok(next.releaseSlate);
@@ -92,8 +99,9 @@ test("the guided DAY 30 plan is fixed, save-stable, and uses a legal two-theme m
   assert.deepEqual(getPrologueReleasePlan(reordered), plan);
 
   let manual = reduceGame(state, getPrologueReleaseCommand(state));
-  manual = reduceGame(manual, { type: "ADVANCE_DAYS", days: 15 });
-  assert.deepEqual(manual, createFirstBanGame(seed));
+  manual = reduceGame(manual, { type: "ADVANCE_DAYS", days: 1 });
+  manual = reduceGame(manual, { type: "COMPLETE_HANDOVER" });
+  assert.deepEqual(manual, createInitialGame(seed));
 });
 
 test("a locked reprint leaves exactly one direct pick in every core category", () => {

@@ -4,7 +4,9 @@ import test from "node:test";
 import { THEMES } from "../app/game/content.ts";
 import {
   CAMPAIGN_END_DAY,
+  FIRST_BAN_DAY,
   LAST_RELEASE_DAY,
+  TUTORIAL_END_DAY,
 } from "../app/game/campaign.ts";
 import { getBusinessEventChoice } from "../app/game/business-events.ts";
 import { getBusinessEnvironmentHealth } from "../app/game/business-actions.ts";
@@ -284,6 +286,24 @@ function advanceThroughDecisions(state: GameState, targetDay: number): GameState
   return next;
 }
 
+function advanceToNextRelease(state: GameState): GameState {
+  let next = state;
+  for (let guard = 0; guard < 1_000; guard += 1) {
+    if (next.operations.pendingEvent) {
+      next = choosePendingBusinessEvent(next);
+    } else if (next.phase === "release-edit") {
+      return next;
+    } else if (next.phase === "ban-edit") {
+      next = reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
+    } else if (next.phase === "ended") {
+      break;
+    } else {
+      next = reduceGame(next, { type: "ADVANCE_DAYS", days: 1_000 });
+    }
+  }
+  throw new Error("A release review did not appear before the campaign ended.");
+}
+
 function reachFormerCampaignEnd(seed: number): GameState {
   let state = createInitialGame(seed);
   while (state.day < 419) {
@@ -312,18 +332,9 @@ test("accepts schema v8 saves and preserves deterministic continuation", () => {
   assert.deepEqual(restored, initial);
   assert.ok(Buffer.byteLength(JSON.stringify(restored), "utf8") < MAX_SAVE_BYTES);
 
-  let originalAtGate = createCampaignStart(7301);
-  originalAtGate = reduceGame(originalAtGate, {
-    type: "ADVANCE_DAYS",
-    days: 29,
-  });
-  originalAtGate = submitThree(originalAtGate);
-  originalAtGate = reduceGame(originalAtGate, {
-    type: "ADVANCE_DAYS",
-    days: 15,
-  });
+  const originalAtGate = createFirstBanGame(7301);
   const restoredAtGate = parseGameState(jsonRoundTrip(originalAtGate));
-  assert.equal(restoredAtGate.day, 45);
+  assert.equal(restoredAtGate.day, FIRST_BAN_DAY);
   assert.equal(restoredAtGate.phase, "ban-edit");
 
   const command = {
@@ -353,7 +364,17 @@ test("migrates v7 generic state at the next strictly future release", () => {
 test("lets a migrated v7 six-option review finish before generic rules begin", () => {
   let source = createCampaignStart(7_308);
   source.genericReleaseStartDay = 60;
-  source = reduceGame(source, { type: "ADVANCE_DAYS", days: 29 });
+  source = reduceGame(source, { type: "ADVANCE_DAYS", days: 14 });
+  source = reduceGame(source, {
+    type: "SUBMIT_BAN",
+    changes: getPrologueRestrictionChanges(source),
+  });
+  source = reduceGame(source, { type: "ADVANCE_DAYS", days: 7 });
+  source = reduceGame(source, {
+    type: "RUN_BUSINESS_ACTION",
+    action: "tv-cm",
+  });
+  source = reduceGame(source, { type: "ADVANCE_DAYS", days: 8 });
   assert.equal(source.day, 30);
   assert.equal(source.phase, "release-edit");
   assert.equal(source.releaseSlate?.options.length, 6);
@@ -390,7 +411,7 @@ test("deep-migrates v0.1.5 future theme and part IDs in schema v3-v7 saves", () 
     themeId: futureThemeId,
     direction: "recovery",
   });
-  current = advanceWhileRunning(current, 100);
+  current = advanceToNextRelease(current);
   assert.equal(current.phase, "release-edit");
   assert.ok(
     current.releaseSlate?.options.some(
@@ -712,7 +733,20 @@ test("round-trips every guided prologue gate without tutorial-only save data", (
 
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
   state = parseGameState(jsonRoundTrip(state));
-  assert.equal(state.day, 15);
+  assert.equal(state.day, FIRST_BAN_DAY);
+  assert.equal(state.phase, "ban-edit");
+
+  state = reduceGame(state, {
+    type: "SUBMIT_BAN",
+    changes: getPrologueRestrictionChanges(state),
+  });
+  state = parseGameState(jsonRoundTrip(state));
+  assert.equal(state.day, FIRST_BAN_DAY);
+  assert.equal(state.phase, "running");
+
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 7 });
+  state = parseGameState(jsonRoundTrip(state));
+  assert.equal(state.day, 22);
 
   state = reduceGame(state, {
     type: "RUN_BUSINESS_ACTION",
@@ -722,7 +756,7 @@ test("round-trips every guided prologue gate without tutorial-only save data", (
   assert.equal(state.operations.records[0].id, "business-action-1");
   assert.equal(state.operations.records[0].outcome, "active");
 
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 8 });
   state = parseGameState(jsonRoundTrip(state));
   assert.equal(state.day, 30);
   assert.equal(state.phase, "release-edit");
@@ -733,30 +767,64 @@ test("round-trips every guided prologue gate without tutorial-only save data", (
   assert.equal(state.day, 30);
   assert.equal(state.phase, "running");
 
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
-  state = parseGameState(jsonRoundTrip(state));
-  assert.equal(state.day, 45);
-  assert.equal(state.phase, "ban-edit");
-  const changes = getPrologueRestrictionChanges(state);
-
-  state = reduceGame(state, { type: "SUBMIT_BAN", changes });
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(state.day, TUTORIAL_END_DAY);
   state = reduceGame(state, { type: "COMPLETE_HANDOVER" });
   state = parseGameState(jsonRoundTrip(state));
   assert.deepEqual(state, createInitialGame(1000));
 });
 
-test("round-trips the published DAY 45 handover and rejects a forged early completion", () => {
+test("round-trips the completed DAY 31 handover and rejects an early completion", () => {
   const review = createFirstBanGame(1_002);
   const forged = structuredClone(review);
   forged.handoverComplete = true;
   assert.throws(() => parseGameState(forged), SaveSchemaError);
 
-  const published = reduceGame(review, { type: "SUBMIT_BAN", changes: {} });
+  let published = reduceGame(review, { type: "SUBMIT_BAN", changes: {} });
+  assert.throws(
+    () => reduceGame(published, { type: "COMPLETE_HANDOVER" }),
+    /DAY 30 release/,
+  );
+  published = reduceGame(published, { type: "ADVANCE_DAYS", days: 7 });
+  published = reduceGame(published, {
+    type: "RUN_BUSINESS_ACTION",
+    action: "tv-cm",
+  });
+  published = reduceGame(published, { type: "ADVANCE_DAYS", days: 8 });
+  published = reduceGame(published, {
+    type: "SUBMIT_RELEASE",
+    selections: getPrologueReleaseSelections(published),
+  });
+  published = reduceGame(published, { type: "ADVANCE_DAYS", days: 1 });
   const completed = reduceGame(published, { type: "COMPLETE_HANDOVER" });
   const restored = parseGameState(jsonRoundTrip(completed));
-  assert.equal(restored.day, 45);
+  assert.equal(restored.day, TUTORIAL_END_DAY);
   assert.equal(restored.handoverComplete, true);
+});
+
+test("lets a v0.2.0 save paused on the former DAY 45 board finish safely", () => {
+  let legacy = createInitialGame(1_003);
+  legacy = reduceGame(legacy, { type: "ADVANCE_DAYS", days: 13 });
+  legacy.day = 45;
+  legacy.phase = "ban-edit";
+  legacy.handoverComplete = false;
+  legacy.community = legacy.community.filter(
+    (event) => !(event.day === FIRST_BAN_DAY && event.category === "restriction"),
+  );
+
+  const restoredBoard = parseGameState(jsonRoundTrip(legacy));
+  assert.equal(restoredBoard.day, 45);
+  assert.equal(restoredBoard.phase, "ban-edit");
+
+  let published = reduceGame(restoredBoard, {
+    type: "SUBMIT_BAN",
+    changes: {},
+  });
+  published = reduceGame(published, { type: "ADVANCE_DAYS", days: 1 });
+  const completed = reduceGame(published, { type: "COMPLETE_HANDOVER" });
+  assert.equal(completed.day, 46);
+  assert.equal(completed.handoverComplete, true);
+  assert.doesNotThrow(() => parseGameState(jsonRoundTrip(completed)));
 });
 
 test("accepts legacy history rows while preserving the new dashboard metrics", () => {
@@ -1154,7 +1222,10 @@ test("normalizes stale schema-v7 new-theme forecasts and same-day products", () 
 test("keeps the historical share floor closed across advance and reparse", () => {
   const initial = createInitialGame(5_151);
   const floorSave = structuredClone(initial);
-  const weekSnapshot = floorSave.history.find((entry) => entry.day === 40);
+  const weekSnapshotDay = initial.day - 6;
+  const weekSnapshot = floorSave.history.find(
+    (entry) => entry.day === weekSnapshotDay,
+  );
   assert.ok(weekSnapshot);
   const targetId = Object.keys(weekSnapshot.shares).find(
     (themeId) => themeId !== weekSnapshot.topThemeId,
@@ -1170,7 +1241,9 @@ test("keeps the historical share floor closed across advance and reparse", () =>
   parseGameState(advanced);
 
   const zeroHistory = structuredClone(floorSave);
-  const zeroSnapshot = zeroHistory.history.find((entry) => entry.day === 40)!;
+  const zeroSnapshot = zeroHistory.history.find(
+    (entry) => entry.day === weekSnapshotDay,
+  )!;
   zeroSnapshot.shares[zeroSnapshot.topThemeId] += 0.001;
   zeroSnapshot.shares[targetId] = 0;
   assert.throws(() => parseGameState(zeroHistory), SaveSchemaError);
@@ -1200,7 +1273,7 @@ test("cross-validates applied support waves and rejects a malformed release mix"
     if (wave < 3) {
       state = advanceWhileRunning(state, 15);
       if (state.phase === "ban-edit") {
-        assert.equal(state.day, 105);
+        assert.equal(state.day, 75);
         state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
         state = advanceWhileRunning(state, 1);
       }
@@ -1220,7 +1293,7 @@ test("cross-validates applied support waves and rejects a malformed release mix"
   }
   assert.throws(() => parseGameState(mismatchedRuntime), SaveSchemaError);
 
-  state = advanceWhileRunning(state, 100);
+  state = advanceToNextRelease(state);
   assert.equal(state.day, 150);
   const forgedFourth = structuredClone(state);
   const otherThemeIds = state.activeThemeIds.filter((id) => id !== targetId).slice(0, 2);
@@ -1291,8 +1364,12 @@ test("accepts every decision gate through campaign termination", () => {
 });
 
 test("round-trips business-action lifecycles and permits net-negative daily cash flow", () => {
-  let state = createCampaignStart(6201);
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
+  let state = createFirstBanGame(6201);
+  state = reduceGame(state, {
+    type: "SUBMIT_BAN",
+    changes: getPrologueRestrictionChanges(state),
+  });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 7 });
   state = reduceGame(state, {
     type: "RUN_BUSINESS_ACTION",
     action: "tv-cm",
@@ -1302,11 +1379,11 @@ test("round-trips business-action lifecycles and permits net-negative daily cash
   assert.deepEqual(state.operations.records[0], {
     id: "business-action-1",
     type: "tv-cm",
-    startedDay: 15,
-    endsDay: 36,
+    startedDay: 22,
+    endsDay: 43,
     cost: 0.6,
     outcome: "active",
-    risk: 0.3242,
+    risk: 0.3378,
   });
 
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
@@ -1324,10 +1401,10 @@ test("round-trips business-action lifecycles and permits net-negative daily cash
       startedDay: state.operations.records[1].startedDay,
       endsDay: state.operations.records[1].endsDay,
     },
-    { outcome: "pending", startedDay: 16, endsDay: 59 },
+    { outcome: "pending", startedDay: 23, endsDay: 59 },
   );
 
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 7 });
   assert.equal(state.day, 30);
   assert.equal(state.phase, "release-edit");
   assert.equal(state.operations.records[1].outcome, "pending");
@@ -1379,8 +1456,12 @@ test("round-trips strategic risk snapshots and rejects forged project results", 
 });
 
 test("rejects malformed business-action records and finance totals", () => {
-  let valid = createCampaignStart(6202);
-  valid = reduceGame(valid, { type: "ADVANCE_DAYS", days: 14 });
+  let valid = createFirstBanGame(6202);
+  valid = reduceGame(valid, {
+    type: "SUBMIT_BAN",
+    changes: getPrologueRestrictionChanges(valid),
+  });
+  valid = reduceGame(valid, { type: "ADVANCE_DAYS", days: 7 });
   valid = reduceGame(valid, {
     type: "RUN_BUSINESS_ACTION",
     action: "tv-cm",
@@ -1404,8 +1485,8 @@ test("rejects malformed business-action records and finance totals", () => {
   const duplicate = structuredClone(valid);
   duplicate.operations.records.push({
     ...duplicate.operations.records[0],
-    startedDay: 16,
-    endsDay: 37,
+    startedDay: 23,
+    endsDay: 44,
   });
   duplicate.operations.nextActionId = 3;
   duplicate.finance.cumulativeExpenses = 1.2;
@@ -1441,7 +1522,7 @@ test("rejects malformed business-action records and finance totals", () => {
     resolvedOrdinary.operations.records[0].outcome === "success" ||
       resolvedOrdinary.operations.records[0].outcome === "backlash",
   );
-  assert.equal(resolvedOrdinary.operations.records[0].resolvedDay, 16);
+  assert.equal(resolvedOrdinary.operations.records[0].resolvedDay, 23);
   assert.deepEqual(
     parseGameState(jsonRoundTrip(resolvedOrdinary)),
     resolvedOrdinary,

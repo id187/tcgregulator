@@ -1,10 +1,13 @@
-import { PLAYER_START_DAY } from "./campaign.ts";
-
 /** Monetary values are expressed in eok won (KRW 100,000,000). */
 export const MONTHLY_BASE_OPERATING_COST = 1.45;
 export const MONTHLY_OPERATING_COST_PER_USER_KRW = 2_500;
 export const OPERATING_COST_MONTH_DAYS = 30;
-export const OPERATING_COST_START_DAY = PLAYER_START_DAY + 1;
+/**
+ * Keep the original DAY 47 operating-cost grace period even though the guided
+ * handover now ends on DAY 31. This avoids charging recurring overhead while
+ * the player is still learning the free-operation surfaces.
+ */
+export const OPERATING_COST_START_DAY = 47;
 export const OPERATING_CASH_MARGIN = 0.32;
 
 /**
@@ -102,7 +105,7 @@ export function getMonthlyOperatingCost(activeUsers: number): number {
   );
 }
 
-/** DAY 46 is the handover balance; recurring costs begin on DAY 47. */
+/** Recurring operating costs intentionally begin on DAY 47 after the grace period. */
 export function getDailyOperatingCost(day: number, activeUsers: number): number {
   if (!Number.isInteger(day) || day < OPERATING_COST_START_DAY) return 0;
   return round(getMonthlyOperatingCost(activeUsers) / OPERATING_COST_MONTH_DAYS);

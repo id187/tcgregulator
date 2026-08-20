@@ -44,6 +44,20 @@ function challengeRecord(
   };
 }
 
+function advanceThroughFirstRestriction(
+  state: GameState,
+  targetDay: 29 | 30,
+): GameState {
+  let next = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
+  assert.equal(next.day, 15);
+  assert.equal(next.phase, "ban-edit");
+  next = reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
+  return reduceGame(next, {
+    type: "ADVANCE_DAYS",
+    days: targetDay - next.day,
+  });
+}
+
 test("strategic challenges persist readable progress and resolve only at their deadline", () => {
   for (const type of [
     "season-overhaul",
@@ -91,7 +105,7 @@ test("engine advancement is chunk-independent and applies a material championshi
   const prepare = (seed: number): GameState => {
     let state = createCampaignStart(seed);
     state.finance.cash = 10;
-    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 29 });
+    state = advanceThroughFirstRestriction(state, 30);
     state = reduceGame(state, {
       type: "SUBMIT_RELEASE",
       selections: getPrologueReleaseSelections(state),
@@ -143,7 +157,7 @@ test("engine advancement is chunk-independent and applies a material championshi
 test("save validation round-trips challenge progress and rejects forged thresholds", () => {
   let state = createCampaignStart(82_003);
   state.finance.cash = 10;
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 29 });
+  state = advanceThroughFirstRestriction(state, 30);
   state = reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: getPrologueReleaseSelections(state),
@@ -170,7 +184,7 @@ test("save validation round-trips challenge progress and rejects forged threshol
 test("challenge actions open only after a scheduled decision is submitted", () => {
   let day29 = createCampaignStart(82_004);
   day29.finance.cash = 10;
-  day29 = reduceGame(day29, { type: "ADVANCE_DAYS", days: 28 });
+  day29 = advanceThroughFirstRestriction(day29, 29);
   const before = getBusinessActionAvailability(day29, "championship");
   assert.equal(before.available, false);
   assert.equal(before.nextEligibleDay, 30);
@@ -193,13 +207,16 @@ test("challenge actions open only after a scheduled decision is submitted", () =
   const day31 = reduceGame(submitted, { type: "ADVANCE_DAYS", days: 1 });
   const after = getBusinessActionAvailability(day31, "championship");
   assert.equal(after.available, false);
-  assert.equal(after.nextEligibleDay, 45);
-  assert.match(after.reason ?? "", /DAY 45/);
+  assert.equal(after.nextEligibleDay, 60);
+  assert.match(after.reason ?? "", /DAY 60/);
 
+  assert.equal(isBusinessChallengeDecisionDay(15), true);
   assert.equal(isBusinessChallengeDecisionDay(29), false);
   assert.equal(isBusinessChallengeDecisionDay(30), true);
-  assert.equal(isBusinessChallengeDecisionDay(45), true);
+  assert.equal(isBusinessChallengeDecisionDay(45), false);
   assert.equal(isBusinessChallengeDecisionDay(46), false);
+  assert.equal(isBusinessChallengeDecisionDay(60), true);
+  assert.equal(isBusinessChallengeDecisionDay(75), true);
   assert.equal(isBusinessChallengeDecisionDay(120), true);
-  assert.equal(getNextBusinessChallengeDecisionDay(121), 150);
+  assert.equal(getNextBusinessChallengeDecisionDay(121), 135);
 });

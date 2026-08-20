@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { THEME_BY_ID } from "../app/game/content.ts";
+import {
+  FIRST_BAN_DAY,
+  PLAYER_START_DAY,
+} from "../app/game/campaign.ts";
 import { getBusinessEventChoice } from "../app/game/business-events.ts";
 import {
   getDailyCommunitySentiment,
@@ -45,18 +49,17 @@ function fixturePost(body: string): Pick<
   };
 }
 
-function finishFirstRestriction(
+function resolveFirstRestrictionImpact(
   state: GameState,
   changes: Readonly<Record<string, RestrictionLimit>>,
   campaignSeed = 0x5151,
 ): GameState {
-  let next = reduceGame(state, {
+  const published = reduceGame(state, {
     type: "SUBMIT_BAN",
     changes,
     campaignSeed,
   });
-  next = reduceGame(next, { type: "ADVANCE_DAYS", days: 1 });
-  return reduceGame(next, { type: "COMPLETE_HANDOVER" });
+  return reduceGame(published, { type: "ADVANCE_DAYS", days: 1 });
 }
 
 function lowerOnlyState(seed = 1000): GameState {
@@ -74,12 +77,12 @@ function lowerOnlyState(seed = 1000): GameState {
   );
   assert.ok(part);
   const limit = (part.preferredCopies >= 3 ? 2 : 1) as RestrictionLimit;
-  return finishFirstRestriction(atReview, { [part.id]: limit }, 0x1000);
+  return resolveFirstRestrictionImpact(atReview, { [part.id]: limit }, 0x1000);
 }
 
 function balancedState(seed = 1000): GameState {
   const atReview = createFirstBanGame(seed);
-  return finishFirstRestriction(
+  return resolveFirstRestrictionImpact(
     atReview,
     getPrologueRestrictionChanges(atReview),
     0x2000,
@@ -163,7 +166,11 @@ function noChangeState(
     atReview.themes[topThemeId].topStreakDays = 100;
     atReview.purchaseTrust = 25;
   }
-  return finishFirstRestriction(atReview, {}, health === "healthy" ? 0x3000 : 0x4000);
+  return resolveFirstRestrictionImpact(
+    atReview,
+    {},
+    health === "healthy" ? 0x3000 : 0x4000,
+  );
 }
 
 test("weighted Korean phrases keep positive, neutral, and negated copy aligned", () => {
@@ -171,7 +178,9 @@ test("weighted Korean phrases keep positive, neutral, and negated copy aligned",
     fixturePost("상위권 두 구간을 함께 눌렀고 균형이 잘 잡혔다. 방향이 좋고 납득함"),
   );
   const neutral = scoreCommunityPostSentiment(
-    fixturePost("DAY 46 점유율 수치를 비교하고 다음 대회까지 관찰할 예정"),
+    fixturePost(
+      `DAY ${FIRST_BAN_DAY + 1} 점유율 수치를 비교하고 다음 대회까지 관찰할 예정`,
+    ),
   );
   const negative = scoreCommunityPostSentiment(
     fixturePost("상위 1티어는 그대로 두고 하위권 파츠는 잘라 놓은 기준은 납득이 안 됨"),
@@ -187,9 +196,14 @@ test("weighted Korean phrases keep positive, neutral, and negated copy aligned",
 });
 
 test("collapses the actual twenty posts into bounded deterministic totals", () => {
-  const state = createFirstBanGame(1000);
+  const state = createInitialGame(1000);
   const untouched = structuredClone(state);
-  for (const day of [1, 15, 30, 45]) {
+  for (const day of [
+    1,
+    FIRST_BAN_DAY,
+    PLAYER_START_DAY - 1,
+    PLAYER_START_DAY,
+  ]) {
     const first = getDailyCommunitySentiment(state, day);
     const second = getDailyCommunitySentiment(state, day);
     assert.deepEqual(first, second);
@@ -203,8 +217,9 @@ test("collapses the actual twenty posts into bounded deterministic totals", () =
 });
 
 test("lower-only and upper-ignored D+1 boards are strongly negative", () => {
-  const lower = getDailyCommunitySentiment(lowerOnlyState(), 46);
-  const balanced = getDailyCommunitySentiment(balancedState(), 46);
+  const impactDay = FIRST_BAN_DAY + 1;
+  const lower = getDailyCommunitySentiment(lowerOnlyState(), impactDay);
+  const balanced = getDailyCommunitySentiment(balancedState(), impactDay);
 
   assert.ok(lower.score <= -30, JSON.stringify(lower));
   assert.ok(lower.negative >= 10, JSON.stringify(lower));
@@ -221,8 +236,12 @@ test("lower-only and upper-ignored D+1 boards are strongly negative", () => {
 });
 
 test("healthy no-change is positive while unhealthy no-change is negative", () => {
-  const healthy = getDailyCommunitySentiment(noChangeState("healthy"), 46);
-  const unhealthy = getDailyCommunitySentiment(noChangeState("unhealthy"), 46);
+  const impactDay = FIRST_BAN_DAY + 1;
+  const healthy = getDailyCommunitySentiment(noChangeState("healthy"), impactDay);
+  const unhealthy = getDailyCommunitySentiment(
+    noChangeState("unhealthy"),
+    impactDay,
+  );
 
   assert.ok(healthy.score >= 20, JSON.stringify(healthy));
   assert.ok(healthy.positive > healthy.negative);
@@ -234,8 +253,9 @@ test("healthy no-change is positive while unhealthy no-change is negative", () =
 });
 
 test("historical sentiment is stable after current runtime mutation", () => {
-  const state = advanceToDay(balancedState(1004), 55);
-  const baseline = getDailyCommunitySentiment(state, 46);
+  const impactDay = FIRST_BAN_DAY + 1;
+  const state = advanceToDay(balancedState(1004), PLAYER_START_DAY - 2);
+  const baseline = getDailyCommunitySentiment(state, impactDay);
   const later = structuredClone(state);
 
   for (const themeId of later.activeThemeIds) {
@@ -254,20 +274,21 @@ test("historical sentiment is stable after current runtime mutation", () => {
   later.currentTopThemeId = later.activeThemeIds[0];
   later.purchaseTrust = 0;
 
-  assert.deepEqual(getDailyCommunitySentiment(later, 46), baseline);
+  assert.deepEqual(getDailyCommunitySentiment(later, impactDay), baseline);
 });
 
 test("engine history freezes each daily sentiment instead of rebuilding ninety boards", () => {
+  const impactDay = FIRST_BAN_DAY + 1;
   const state = lowerOnlyState(1007);
-  const day46 = state.history.find((entry) => entry.day === 46);
-  assert.ok(day46);
-  const live = getDailyCommunitySentiment(state, 46);
-  assert.equal(day46.communitySentiment, live.index);
-  assert.equal(day46.communityPositive, live.positive);
-  assert.equal(day46.communityNegative, live.negative);
+  const impactEntry = state.history.find((entry) => entry.day === impactDay);
+  assert.ok(impactEntry);
+  const live = getDailyCommunitySentiment(state, impactDay);
+  assert.equal(impactEntry.communitySentiment, live.index);
+  assert.equal(impactEntry.communityPositive, live.positive);
+  assert.equal(impactEntry.communityNegative, live.negative);
 
-  const advanced = advanceToDay(state, 55);
-  const frozen = advanced.history.find((entry) => entry.day === 46);
+  const advanced = advanceToDay(state, PLAYER_START_DAY - 2);
+  const frozen = advanced.history.find((entry) => entry.day === impactDay);
   assert.ok(frozen);
   assert.deepEqual(
     {
@@ -276,9 +297,9 @@ test("engine history freezes each daily sentiment instead of rebuilding ninety b
       negative: frozen.communityNegative,
     },
     {
-      index: day46.communitySentiment,
-      positive: day46.communityPositive,
-      negative: day46.communityNegative,
+      index: impactEntry.communitySentiment,
+      positive: impactEntry.communityPositive,
+      negative: impactEntry.communityNegative,
     },
   );
 });

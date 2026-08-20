@@ -65,6 +65,7 @@ import {
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
   RELEASE_INTERVAL,
+  TUTORIAL_END_DAY,
 } from "./campaign.ts";
 import {
   getDailyOperatingCost,
@@ -413,15 +414,21 @@ function prologueBandRestrictionChanges(
 }
 
 /**
- * Builds the guided first list from the live DAY 45 ranking. The first review
+ * Builds the guided first list from the live first-review ranking. The review
  * has no prior restrictions to release, so it demonstrates broad, shallow
  * coverage instead: two meaningful cuts in ranks 0-2 and two in ranks 3-5.
  */
 export function getPrologueRestrictionChanges(
   state: GameState,
 ): Record<string, RestrictionLimit> {
-  if (state.day !== 45 || state.phase !== "ban-edit" || !isBanDay(state.day)) {
-    throw new Error("Prologue restriction choices are only available at the DAY 45 review.");
+  if (
+    state.day !== FIRST_BAN_DAY ||
+    state.phase !== "ban-edit" ||
+    !isBanDay(state.day)
+  ) {
+    throw new Error(
+      `Prologue restriction choices are only available at the DAY ${FIRST_BAN_DAY} review.`,
+    );
   }
   const ranked = [...state.activeThemeIds].sort(
     (left, right) =>
@@ -439,7 +446,7 @@ export function getPrologueRestrictionChanges(
   return changes;
 }
 
-/** Returns whether a single restriction edit matches the guided DAY 45 edit. */
+/** Returns whether a single restriction edit matches the guided first review. */
 export function isPrologueRestrictionChange(
   state: GameState,
   partId: string,
@@ -997,6 +1004,16 @@ export function isBanDay(day: number): boolean {
     day >= FIRST_BAN_DAY &&
     day <= LAST_DECISION_DAY &&
     (day - FIRST_BAN_DAY) % BAN_INTERVAL === 0
+  );
+}
+
+/** Former v0.2.0 calendar gate, accepted only to finish an in-progress save. */
+function isLegacyRestrictionDay(day: number): boolean {
+  return (
+    Number.isInteger(day) &&
+    day >= 45 &&
+    day <= 465 &&
+    (day - 45) % BAN_INTERVAL === 0
   );
 }
 
@@ -3110,6 +3127,34 @@ function isRestrictionDecisionEvent(event: CommunityEvent): boolean {
   );
 }
 
+/** Whether the redesigned DAY 31 handover has shown every core loop once. */
+export function isHandoverReady(state: GameState): boolean {
+  const firstBanPublished = state.community.some(
+    (event) =>
+      event.day === FIRST_BAN_DAY && isRestrictionDecisionEvent(event),
+  );
+  const firstReleasePublished = state.releaseHistory.some(
+    (batch) => batch.day === RELEASE_INTERVAL && !batch.baseline,
+  );
+  const redesignedHandoverReady =
+    state.day >= TUTORIAL_END_DAY &&
+    state.phase === "running" &&
+    firstBanPublished &&
+    firstReleasePublished;
+  return redesignedHandoverReady || isLegacyDay46HandoverReady(state);
+}
+
+/** Loads completed saves made by the former DAY 45→46 handover calendar. */
+function isLegacyDay46HandoverReady(state: GameState): boolean {
+  return (
+    state.day >= 46 &&
+    state.phase !== "ended" &&
+    state.community.some(
+      (event) => event.day === 45 && isRestrictionDecisionEvent(event),
+    )
+  );
+}
+
 function finalizedRestrictionDecisionDays(
   state: GameState,
   throughDecisionDay: number,
@@ -3220,7 +3265,7 @@ function assignMandateSeed(state: GameState, campaignSeed: number): void {
 
   state.seed = campaignSeed >>> 0;
 
-  // No surprise event can have appeared before the DAY 45 handover, so its
+  // No surprise event can have appeared before the first guided review, so its
   // first date and type can safely move to the newly minted mandate timeline.
   if (
     state.operations.nextEventId === 1 &&
@@ -3967,7 +4012,10 @@ function submitBan(
   state: GameState,
   changes: Record<string, RestrictionLimit>,
 ): void {
-  if (state.phase !== "ban-edit" || !isBanDay(state.day)) {
+  if (
+    state.phase !== "ban-edit" ||
+    (!isBanDay(state.day) && !isLegacyRestrictionDay(state.day))
+  ) {
     throw new Error("Restrictions can only be submitted on a regular restriction day.");
   }
 
@@ -4424,17 +4472,13 @@ export function createCampaignStart(seed = 0x5eed1234): GameState {
   return state;
 }
 
-/** Replays the fixed onboarding up to the player's first free restriction list. */
+/** Replays the fixed onboarding up to the player's first restriction list. */
 export function createFirstBanGame(seed = 0x5eed1234): GameState {
   let state = createCampaignStart(seed);
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
   state = reduceGame(state, {
-    type: "RUN_BUSINESS_ACTION",
-    action: "tv-cm",
+    type: "ADVANCE_DAYS",
+    days: FIRST_BAN_DAY - 1,
   });
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
-  state = reduceGame(state, getPrologueReleaseCommand(state));
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
   if (state.day !== FIRST_BAN_DAY || state.phase !== "ban-edit") {
     throw new Error("The prologue must stop at the first restriction review.");
   }
@@ -4443,7 +4487,7 @@ export function createFirstBanGame(seed = 0x5eed1234): GameState {
 
 /**
  * Deterministic convenience state used by engine tests and simulations.
- * The actual UI now stops at DAY 45 and lets the player author this list.
+ * The actual UI lets the player author both decisions before DAY 31.
  */
 export function createInitialGame(seed = 0x5eed1234): GameState {
   let state = createFirstBanGame(seed);
@@ -4451,9 +4495,18 @@ export function createInitialGame(seed = 0x5eed1234): GameState {
     type: "SUBMIT_BAN",
     changes: getPrologueRestrictionChanges(state),
   });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 7 });
+  state = reduceGame(state, {
+    type: "RUN_BUSINESS_ACTION",
+    action: "tv-cm",
+  });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 8 });
+  state = reduceGame(state, getPrologueReleaseCommand(state));
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
-  if (state.day !== 46 || state.phase !== "running") {
-    throw new Error("The prologue must hand control over on DAY 46.");
+  if (state.day !== TUTORIAL_END_DAY || state.phase !== "running") {
+    throw new Error(
+      `The prologue must hand control over on DAY ${TUTORIAL_END_DAY}.`,
+    );
   }
   return reduceGame(state, { type: "COMPLETE_HANDOVER" });
 }
@@ -4490,20 +4543,12 @@ export function reduceGame(state: GameState, command: GameCommand): GameState {
       break;
     case "COMPLETE_HANDOVER":
       {
-        const firstBanPublished =
-          next.day === FIRST_BAN_DAY &&
-          next.phase === "running" &&
-          next.community.some(
-            (event) =>
-              event.day === FIRST_BAN_DAY && isRestrictionDecisionEvent(event),
-          );
-        const legacyDay46Path = next.day >= 46 && next.phase !== "ended";
         if (
           next.handoverComplete ||
-          (!firstBanPublished && !legacyDay46Path)
+          !isHandoverReady(next)
         ) {
           throw new Error(
-            "The handover requires the published DAY 45 restriction or a legacy DAY 46 save.",
+            `The handover requires the DAY ${FIRST_BAN_DAY} restriction, DAY ${RELEASE_INTERVAL} release, and DAY ${TUTORIAL_END_DAY} impact review.`,
           );
         }
         next.handoverComplete = true;

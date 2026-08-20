@@ -6,6 +6,7 @@ import {
   getDailyTopCutPlacements,
   getDeterministicDailyTopCutPlacements,
   getPlacementTier,
+  getRecentPlacementLeader,
   getRecentPlacementReport,
   getThemeDebutDay,
   getTopCutPropensity,
@@ -141,6 +142,34 @@ test("aggregates an inclusive recent-14-day report with observed conversion", ()
     ),
     1,
   );
+});
+
+test("rolling placement leader ties resolve by stable theme id", () => {
+  const forward = {
+    day: 1,
+    shares: {
+      [whiteNight]: 0.5,
+      [cycle]: 0.5,
+    },
+    topCutPlacements: {
+      [whiteNight]: 16,
+      [cycle]: 16,
+    },
+  } as PlacementHistoryEntry;
+  const reverse = {
+    ...forward,
+    shares: Object.fromEntries(Object.entries(forward.shares).reverse()),
+    topCutPlacements: Object.fromEntries(
+      Object.entries(forward.topCutPlacements!).reverse(),
+    ),
+  } as PlacementHistoryEntry;
+
+  assert.equal(getRecentPlacementLeader([forward], 404, 1, 1)?.themeId, cycle);
+  assert.deepEqual(
+    getRecentPlacementLeader([reverse], 404, 1, 1),
+    getRecentPlacementLeader([forward], 404, 1, 1),
+  );
+  assert.equal(getRecentPlacementLeader([], 404, 1, 1), null);
 });
 
 test("reports each theme's actual observed days without filling the window", () => {

@@ -5,7 +5,16 @@ import {
   THEMES,
   THEME_BY_ID,
 } from "./content.ts";
-import { BUSINESS_ACTION_BY_TYPE } from "./business-actions.ts";
+import {
+  BUSINESS_ACTION_BY_TYPE,
+  getProbabilisticBusinessActionOutcome,
+  isProbabilisticBusinessAction,
+} from "./business-actions.ts";
+import {
+  BUSINESS_CHALLENGE_BY_TYPE,
+  isBusinessChallengeDecisionDay,
+  isChallengeBusinessAction,
+} from "./business-challenges.ts";
 import {
   BUSINESS_EVENT_START_DAY,
   BUSINESS_EVENT_TYPES,
@@ -34,18 +43,35 @@ import {
 } from "./finance.ts";
 import {
   getExpectedTier,
+  getNextReleaseDay,
   getNewThemeExpectedPower,
   getNewThemeLaunchPower,
 } from "./engine.ts";
+import {
+  GENERIC_CARD_CATALOG,
+  type GenericCardId,
+} from "./generic-card-catalog.ts";
+import {
+  INITIAL_GENERIC_CARD_IDS,
+  INITIAL_GENERIC_RELEASE_DAY,
+  createInitialGenericReleaseBatch,
+  isInitialGenericReleaseBatch,
+} from "./initial-generic-cards.ts";
 import { META_ADOPTION_SHARE_FLOOR } from "./meta-tiers.ts";
 import { DAILY_TOP_CUT_SLOTS } from "./placement-meta.ts";
 import { ENVIRONMENT_HEALTH_MODEL } from "./environment-health.ts";
+import {
+  getKeywordMatchupEdgeScore,
+  PLAY_KEYWORD_IDS,
+  type PlayKeyword,
+} from "./play-keywords.ts";
 import type {
   BusinessEventChoice,
   BusinessEventOutcome,
   BusinessEventType,
   BusinessActionOutcome,
   BusinessActionType,
+  BusinessChallengeMetric,
   BusinessRiskFactor,
   CommunityCategory,
   CommunityEventType,
@@ -55,6 +81,7 @@ import type {
   PartRole,
   PowerAdjustment,
   ReleaseOption,
+  ReleaseRequestKind,
   SupportDirection,
   SupportRequest,
   ThemeId,
@@ -95,6 +122,8 @@ const TOP_LEVEL_KEYS = [
   "supportRequests",
   "releaseSlate",
   "releaseHistory",
+  "genericLimits",
+  "genericReleaseStartDay",
   "history",
   "recentRevenue",
   "lastSupportProposalDay",
@@ -106,7 +135,11 @@ const TOP_LEVEL_KEYS = [
   "handoverComplete",
 ] as const;
 
-const LEGACY_V3_TOP_LEVEL_KEYS = TOP_LEVEL_KEYS.filter(
+const LEGACY_TOP_LEVEL_KEYS = TOP_LEVEL_KEYS.filter(
+  (key) => key !== "genericLimits" && key !== "genericReleaseStartDay",
+);
+
+const LEGACY_V3_TOP_LEVEL_KEYS = LEGACY_TOP_LEVEL_KEYS.filter(
   (key) => key !== "operations",
 );
 
@@ -155,6 +188,7 @@ const COMMUNITY_REQUIRED_KEYS = [
 
 const COMMUNITY_OPTIONAL_KEYS = [
   "partId",
+  "genericCardId",
   "relatedThemeId",
   "proposalId",
   "value",
@@ -236,6 +270,12 @@ const BUSINESS_ACTION_OUTCOMES = new Set<BusinessActionOutcome>([
   "detected",
 ]);
 
+const BUSINESS_CHALLENGE_METRICS = new Set<BusinessChallengeMetric>([
+  "environment-health",
+  "purchase-trust",
+  "release-quality",
+]);
+
 const BUSINESS_EVENT_TYPE_SET = new Set<BusinessEventType>(
   BUSINESS_EVENT_TYPES,
 );
@@ -272,11 +312,24 @@ const SUPPORT_STATUSES = new Set<SupportRequest["status"]>([
   "offered",
   "released",
   "skipped",
+  "cancelled",
+  "replaced",
 ]);
+
+const RELEASE_REQUEST_KINDS = new Set<ReleaseRequestKind>([
+  "support",
+  "indirect-support",
+  "environment-target",
+  "reprint",
+]);
+
+const PLAY_KEYWORDS = new Set<PlayKeyword>(PLAY_KEYWORD_IDS);
 
 const RELEASE_KINDS = new Set<ReleaseOption["kind"]>([
   "new-theme",
   "support",
+  "generic",
+  "reprint",
 ]);
 
 const EXPECTED_TIERS = new Set<ExpectedTier>([
@@ -302,6 +355,9 @@ const PHASES = new Set<GameState["phase"]>([
 ]);
 
 const THEME_IDS = new Set<ThemeId>(THEMES.map((theme) => theme.id));
+const GENERIC_CARD_IDS = new Set<GenericCardId>(
+  GENERIC_CARD_CATALOG.map((card) => card.id),
+);
 const PART_THEME = new Map(
   THEMES.flatMap((theme) =>
     theme.parts.map((part) => [part.id, theme.id] as const),
@@ -310,15 +366,7 @@ const PART_THEME = new Map(
 
 type UnknownRecord = Record<string, unknown>;
 
-type ValidatedSupportRequest = {
-  id: string;
-  themeId: ThemeId;
-  direction: SupportDirection;
-  proposedDay: number;
-  eligibleReleaseDay: number;
-  status: SupportRequest["status"];
-  releasedDay: number | null;
-};
+type ValidatedSupportRequest = SupportRequest;
 
 export class SaveSchemaError extends Error {
   constructor(message: string) {
@@ -427,6 +475,14 @@ function expectThemeId(value: unknown, path: string): ThemeId {
   return themeId;
 }
 
+function expectGenericCardId(value: unknown, path: string): GenericCardId {
+  const genericCardId = expectString(value, path, 100) as GenericCardId;
+  if (!GENERIC_CARD_IDS.has(genericCardId)) {
+    fail(path, "references an unknown generic card");
+  }
+  return genericCardId;
+}
+
 function expectNullableDay(
   value: unknown,
   path: string,
@@ -474,6 +530,23 @@ function migrateLegacyOperations(
   };
 }
 
+function migratedGenericReleaseStartDay(currentDay: number): number | null {
+  const nextReleaseDay = getNextReleaseDay(currentDay);
+  return nextReleaseDay <= LAST_RELEASE_DAY ? nextReleaseDay : null;
+}
+
+function withMigratedGenericState(
+  legacy: UnknownRecord,
+  currentDay: number,
+): UnknownRecord {
+  return {
+    ...legacy,
+    schemaVersion: 8,
+    genericLimits: {},
+    genericReleaseStartDay: migratedGenericReleaseStartDay(currentDay),
+  };
+}
+
 function migrateLegacyV3(value: UnknownRecord): UnknownRecord {
   const legacy = expectRecord(value, "$", LEGACY_V3_TOP_LEVEL_KEYS);
   const seed = expectNumber(legacy.seed, "$.seed", 0, 0xffffffff, true);
@@ -498,9 +571,8 @@ function migrateLegacyV3(value: UnknownRecord): UnknownRecord {
     MAX_FINANCE_VALUE,
   );
 
-  return {
+  return withMigratedGenericState({
     ...legacy,
-    schemaVersion: 7,
     phase,
     finance: {
       ...finance,
@@ -515,7 +587,7 @@ function migrateLegacyV3(value: UnknownRecord): UnknownRecord {
       records: [],
       ...createMigratedBusinessEventState(seed, day, phase === "ended"),
     },
-  };
+  }, day);
 }
 
 function reopenFormerCampaignEnd(legacy: UnknownRecord): unknown {
@@ -533,7 +605,7 @@ function reopenFormerCampaignEnd(legacy: UnknownRecord): unknown {
 }
 
 function migrateLegacyV4(value: UnknownRecord): UnknownRecord {
-  const legacy = expectRecord(value, "$", TOP_LEVEL_KEYS);
+  const legacy = expectRecord(value, "$", LEGACY_TOP_LEVEL_KEYS);
   const seed = expectNumber(legacy.seed, "$.seed", 0, 0xffffffff, true);
   const day = expectNumber(legacy.day, "$.day", 1, 419, true);
   expectString(legacy.phase, "$.phase", 20);
@@ -543,9 +615,8 @@ function migrateLegacyV4(value: UnknownRecord): UnknownRecord {
     "$.finance",
     LEGACY_V4_FINANCE_KEYS,
   );
-  return {
+  return withMigratedGenericState({
     ...legacy,
-    schemaVersion: 7,
     phase,
     finance: {
       ...finance,
@@ -558,19 +629,18 @@ function migrateLegacyV4(value: UnknownRecord): UnknownRecord {
       day,
       phase === "ended",
     ),
-  };
+  }, day);
 }
 
 function migrateLegacyV5(value: UnknownRecord): UnknownRecord {
-  const legacy = expectRecord(value, "$", TOP_LEVEL_KEYS);
+  const legacy = expectRecord(value, "$", LEGACY_TOP_LEVEL_KEYS);
   const seed = expectNumber(legacy.seed, "$.seed", 0, 0xffffffff, true);
   const day = expectNumber(legacy.day, "$.day", 1, 419, true);
   expectString(legacy.phase, "$.phase", 20);
   const phase = reopenFormerCampaignEnd(legacy);
 
-  return {
+  return withMigratedGenericState({
     ...legacy,
-    schemaVersion: 7,
     phase,
     operations: migrateLegacyOperations(
       legacy.operations,
@@ -578,25 +648,30 @@ function migrateLegacyV5(value: UnknownRecord): UnknownRecord {
       day,
       phase === "ended",
     ),
-  };
+  }, day);
 }
 
 function migrateLegacyV6(value: UnknownRecord): UnknownRecord {
-  const legacy = expectRecord(value, "$", TOP_LEVEL_KEYS);
+  const legacy = expectRecord(value, "$", LEGACY_TOP_LEVEL_KEYS);
   const seed = expectNumber(legacy.seed, "$.seed", 0, 0xffffffff, true);
   const day = expectNumber(legacy.day, "$.day", 1, MAX_DAY, true);
   const phase = expectString(legacy.phase, "$.phase", 20);
 
-  return {
+  return withMigratedGenericState({
     ...legacy,
-    schemaVersion: 7,
     operations: migrateLegacyOperations(
       legacy.operations,
       seed,
       day,
       phase === "ended",
     ),
-  };
+  }, day);
+}
+
+function migrateLegacyV7(value: UnknownRecord): UnknownRecord {
+  const legacy = expectRecord(value, "$", LEGACY_TOP_LEVEL_KEYS);
+  const day = expectNumber(legacy.day, "$.day", 1, MAX_DAY, true);
+  return withMigratedGenericState(legacy, day);
 }
 
 function normalizeSaveVersion(value: unknown): UnknownRecord {
@@ -604,14 +679,15 @@ function normalizeSaveVersion(value: unknown): UnknownRecord {
     fail("$", "must be an object");
   }
   const record = value as UnknownRecord;
-  if (record.schemaVersion === 7) return record;
+  if (record.schemaVersion === 8) return record;
+  if (record.schemaVersion === 7) return migrateLegacyV7(record);
   if (record.schemaVersion === 6) return migrateLegacyV6(record);
   if (record.schemaVersion === 5) return migrateLegacyV5(record);
   if (record.schemaVersion === 4) return migrateLegacyV4(record);
   if (record.schemaVersion === 3) return migrateLegacyV3(record);
   fail(
     "$.schemaVersion",
-    "must equal 7 or be a migratable schema v3/v4/v5/v6 save",
+    "must equal 8 or be a migratable schema v3/v4/v5/v6/v7 save",
   );
 }
 
@@ -658,6 +734,56 @@ function mutableRecord(value: unknown): UnknownRecord | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as UnknownRecord
     : null;
+}
+
+/**
+ * Safely upgrades saves that predate the DAY 1 tutorial pool. If any canonical
+ * card is already present in history or limits, the save is left untouched so
+ * a later real release is never rewritten or duplicated.
+ */
+function normalizeInitialGenericCards(state: UnknownRecord): UnknownRecord {
+  if (!Array.isArray(state.releaseHistory)) return state;
+  if (
+    state.releaseHistory.some((batchValue) => {
+      const batch = mutableRecord(batchValue);
+      return batch?.baseline === true;
+    })
+  ) {
+    return state;
+  }
+  const genericLimits = mutableRecord(state.genericLimits);
+  if (!genericLimits) return state;
+  const hasCanonicalLimit = INITIAL_GENERIC_CARD_IDS.some((cardId) =>
+    Object.prototype.hasOwnProperty.call(genericLimits, cardId)
+  );
+  const hasCanonicalRelease = state.releaseHistory.some((batchValue) => {
+    const batch = mutableRecord(batchValue);
+    return Array.isArray(batch?.products) && batch.products.some((productValue) => {
+      const product = mutableRecord(productValue);
+      return (
+        product?.kind === "generic" &&
+        typeof product.genericCardId === "string" &&
+        INITIAL_GENERIC_CARD_IDS.includes(
+          product.genericCardId as (typeof INITIAL_GENERIC_CARD_IDS)[number],
+        )
+      );
+    });
+  });
+  if (hasCanonicalLimit || hasCanonicalRelease) return state;
+
+  return {
+    ...state,
+    releaseHistory: [
+      createInitialGenericReleaseBatch(),
+      ...state.releaseHistory,
+    ],
+    genericLimits: {
+      ...genericLimits,
+      ...Object.fromEntries(
+        INITIAL_GENERIC_CARD_IDS.map((cardId) => [cardId, 3]),
+      ),
+    },
+  };
 }
 
 /**
@@ -1242,6 +1368,7 @@ function validateOperations(
         "risk",
         "environmentHealth",
         "riskContext",
+        "challenge",
         "cashReturn",
         "appliedDay",
         "resolvedDay",
@@ -1327,6 +1454,16 @@ function validateOperations(
       record.risk === undefined
         ? undefined
         : expectNumber(record.risk, `${path}.risk`, 0, 1);
+    if (
+      isChallengeBusinessAction(type) &&
+      risk === undefined &&
+      !isBusinessChallengeDecisionDay(startedDay)
+    ) {
+      fail(
+        `${path}.startedDay`,
+        "new challenge actions must start on a release or restriction decision day",
+      );
+    }
     const environmentHealth =
       record.environmentHealth === undefined
         ? undefined
@@ -1387,6 +1524,129 @@ function validateOperations(
         BUSINESS_RISK_FACTORS,
       );
     }
+    const challenge = record.challenge === undefined
+      ? undefined
+      : expectRecord(record.challenge, `${path}.challenge`, [
+          "metric",
+          "threshold",
+          "requiredQualifyingDays",
+          "qualifyingDays",
+          "observedDays",
+          "deadlineDay",
+          "lastEvaluatedDay",
+          "lastValue",
+        ]);
+    if (challenge) {
+      if (!isChallengeBusinessAction(type)) {
+        fail(`${path}.challenge`, "is only valid for deterministic challenge actions");
+      }
+      const configured = BUSINESS_CHALLENGE_BY_TYPE[
+        type as keyof typeof BUSINESS_CHALLENGE_BY_TYPE
+      ];
+      const metric = expectEnum(
+        challenge.metric,
+        `${path}.challenge.metric`,
+        BUSINESS_CHALLENGE_METRICS,
+      );
+      if (metric !== configured.metric) {
+        fail(`${path}.challenge.metric`, "must match the configured challenge metric");
+      }
+      const threshold = expectNumber(
+        challenge.threshold,
+        `${path}.challenge.threshold`,
+        0,
+        100,
+      );
+      if (Math.abs(threshold - configured.threshold) > 1e-9) {
+        fail(`${path}.challenge.threshold`, "must match the configured threshold");
+      }
+      const requiredQualifyingDays = expectNumber(
+        challenge.requiredQualifyingDays,
+        `${path}.challenge.requiredQualifyingDays`,
+        1,
+        configured.deadlineOffset,
+        true,
+      );
+      if (requiredQualifyingDays !== configured.requiredQualifyingDays) {
+        fail(
+          `${path}.challenge.requiredQualifyingDays`,
+          "must match the configured challenge duration",
+        );
+      }
+      const observedDays = expectNumber(
+        challenge.observedDays,
+        `${path}.challenge.observedDays`,
+        0,
+        configured.deadlineOffset,
+        true,
+      );
+      const qualifyingDays = expectNumber(
+        challenge.qualifyingDays,
+        `${path}.challenge.qualifyingDays`,
+        0,
+        observedDays,
+        true,
+      );
+      const deadlineDay = expectNumber(
+        challenge.deadlineDay,
+        `${path}.challenge.deadlineDay`,
+        startedDay + 1,
+        LAST_DECISION_DAY,
+        true,
+      );
+      if (deadlineDay !== startedDay + configured.deadlineOffset) {
+        fail(`${path}.challenge.deadlineDay`, "must match the configured deadline");
+      }
+      const lastEvaluatedDay = challenge.lastEvaluatedDay === null
+        ? null
+        : expectNumber(
+            challenge.lastEvaluatedDay,
+            `${path}.challenge.lastEvaluatedDay`,
+            startedDay + 1,
+            Math.min(currentDay, deadlineDay),
+            true,
+          );
+      const lastValue = challenge.lastValue === null
+        ? null
+        : expectNumber(
+            challenge.lastValue,
+            `${path}.challenge.lastValue`,
+            0,
+            100,
+          );
+      if (
+        (observedDays === 0) !==
+          (lastEvaluatedDay === null && lastValue === null) ||
+        (observedDays > 0 && (lastEvaluatedDay === null || lastValue === null))
+      ) {
+        fail(`${path}.challenge`, "progress and last observation must agree");
+      }
+      if (
+        lastEvaluatedDay !== null &&
+        observedDays > lastEvaluatedDay - startedDay
+      ) {
+        fail(`${path}.challenge.observedDays`, "cannot exceed elapsed challenge days");
+      }
+      if (
+        outcome === "success" &&
+        qualifyingDays < requiredQualifyingDays
+      ) {
+        fail(`${path}.challenge.qualifyingDays`, "is insufficient for success");
+      }
+      if (
+        outcome === "backlash" &&
+        qualifyingDays >= requiredQualifyingDays
+      ) {
+        fail(`${path}.challenge.qualifyingDays`, "must resolve as success at this progress");
+      }
+    }
+    if (
+      isChallengeBusinessAction(type) &&
+      risk === undefined &&
+      challenge === undefined
+    ) {
+      fail(`${path}.challenge`, "is required for new challenge records");
+    }
     const cashReturn = record.cashReturn === undefined
       ? undefined
       : expectNumber(
@@ -1417,8 +1677,8 @@ function validateOperations(
           );
 
     if (type === "championship") {
-      if (risk === undefined || environmentHealth === undefined) {
-        fail(path, "championship records require risk and environmentHealth");
+      if (environmentHealth === undefined) {
+        fail(path, "championship records require environmentHealth");
       }
       if (
         appliedDay !== undefined ||
@@ -1440,6 +1700,9 @@ function validateOperations(
             `${path}.resolvedDay`,
             "must be the day after championship execution",
           );
+        }
+        if (challenge && challenge.lastEvaluatedDay !== resolvedDay) {
+          fail(`${path}.challenge.lastEvaluatedDay`, "must equal resolvedDay");
         }
       } else {
         fail(`${path}.outcome`, "is not valid for a championship");
@@ -1471,8 +1734,8 @@ function validateOperations(
       ) {
         fail(`${path}.startedDay`, "must be a regular release day");
       }
-      if (risk === undefined || riskContext === undefined) {
-        fail(path, "strategic projects require risk and a launch-day riskContext");
+      if (riskContext === undefined) {
+        fail(path, "strategic projects require a launch-day riskContext");
       }
       if (environmentHealth !== undefined || appliedDay !== undefined) {
         fail(path, "strategic projects cannot contain unrelated result fields");
@@ -1488,6 +1751,9 @@ function validateOperations(
       } else if (outcome === "success" || outcome === "backlash") {
         if (resolvedDay !== resolutionDay) {
           fail(`${path}.resolvedDay`, "must equal the configured strategic result day");
+        }
+        if (challenge && challenge.lastEvaluatedDay !== resolvedDay) {
+          fail(`${path}.challenge.lastEvaluatedDay`, "must equal resolvedDay");
         }
         if (
           outcome === "success"
@@ -1509,6 +1775,7 @@ function validateOperations(
       if (
         environmentHealth !== undefined ||
         riskContext !== undefined ||
+        challenge !== undefined ||
         cashReturn !== undefined
       ) {
         fail(
@@ -1554,25 +1821,59 @@ function validateOperations(
     }
 
     if (
-      risk !== undefined ||
       environmentHealth !== undefined ||
       riskContext !== undefined ||
+      challenge !== undefined ||
       cashReturn !== undefined ||
-      appliedDay !== undefined ||
-      resolvedDay !== undefined
+      appliedDay !== undefined
     ) {
-      fail(path, `${type} records cannot contain risk or result snapshot fields`);
+      fail(path, `${type} records contain unsupported result metadata`);
+    }
+    if (risk === undefined) {
+      if (resolvedDay !== undefined) {
+        fail(`${path}.resolvedDay`, "is not valid for legacy duration actions");
+      }
+      if (outcome === "active") {
+        if (currentDay > endsDay) {
+          fail(`${path}.outcome`, "cannot remain active after endsDay");
+        }
+      } else if (outcome === "completed") {
+        if (currentDay <= endsDay) {
+          fail(`${path}.outcome`, "cannot complete on or before endsDay");
+        }
+      } else {
+        fail(`${path}.outcome`, `is not valid for legacy ${type}`);
+      }
+      return;
+    }
+    if (!isProbabilisticBusinessAction(type)) {
+      fail(`${path}.risk`, "is not valid for this action type");
     }
     if (outcome === "active") {
-      if (currentDay > endsDay) {
-        fail(`${path}.outcome`, "cannot remain active after endsDay");
+      if (currentDay !== startedDay || resolvedDay !== undefined) {
+        fail(
+          `${path}.outcome`,
+          "a probabilistic action can remain active only on its launch day",
+        );
       }
-    } else if (outcome === "completed") {
-      if (currentDay <= endsDay) {
-        fail(`${path}.outcome`, "cannot complete on or before endsDay");
-      }
-    } else {
-      fail(`${path}.outcome`, `is not valid for ${type}`);
+      return;
+    }
+    if (outcome !== "success" && outcome !== "backlash") {
+      fail(`${path}.outcome`, `is not valid for probabilistic ${type}`);
+    }
+    if (resolvedDay !== startedDay + 1) {
+      fail(`${path}.resolvedDay`, "must be the day after execution");
+    }
+    if (
+      outcome !==
+        getProbabilisticBusinessActionOutcome({
+          id,
+          type,
+          startedDay,
+          risk,
+        })
+    ) {
+      fail(`${path}.outcome`, "does not match the seeded launch result");
     }
   });
 
@@ -1599,24 +1900,44 @@ function validateSupportRequests(
     const path = `$.supportRequests[${index}]`;
     const request = expectRecord(requestValue, path, [
       "id",
-      "themeId",
-      "direction",
       "proposedDay",
       "eligibleReleaseDay",
       "status",
       "releasedDay",
-    ]);
+    ], ["kind", "themeId", "direction", "cardId"]);
     const id = expectString(request.id, `${path}.id`, 128);
     if (byId.has(id)) fail(`${path}.id`, "must be unique");
-    const themeId = expectThemeId(request.themeId, `${path}.themeId`);
-    if (!activeThemeIds.has(themeId)) {
+    const kind = request.kind === undefined
+      ? "support"
+      : expectEnum(request.kind, `${path}.kind`, RELEASE_REQUEST_KINDS);
+    const themeId = request.themeId === undefined
+      ? undefined
+      : expectThemeId(request.themeId, `${path}.themeId`);
+    const direction = request.direction === undefined
+      ? undefined
+      : expectEnum(request.direction, `${path}.direction`, SUPPORT_DIRECTIONS);
+    const cardId = request.cardId === undefined
+      ? undefined
+      : expectString(request.cardId, `${path}.cardId`, 128);
+    if (kind === "support") {
+      if (themeId === undefined || direction === undefined) {
+        fail(path, "support requests require themeId and direction");
+      }
+      if (cardId !== undefined) fail(`${path}.cardId`, "is only valid for reprints");
+    } else if (kind === "indirect-support" || kind === "environment-target") {
+      if (themeId === undefined) fail(`${path}.themeId`, "is required");
+      if (direction !== undefined || cardId !== undefined) {
+        fail(path, "generic-pool requests only contain themeId");
+      }
+    } else {
+      if (cardId === undefined) fail(`${path}.cardId`, "is required for reprints");
+      if (themeId !== undefined || direction !== undefined) {
+        fail(path, "reprint requests only contain cardId");
+      }
+    }
+    if (themeId !== undefined && !activeThemeIds.has(themeId)) {
       fail(`${path}.themeId`, "must reference an active theme");
     }
-    const direction = expectEnum(
-      request.direction,
-      `${path}.direction`,
-      SUPPORT_DIRECTIONS,
-    );
     const proposedDay = expectNumber(
       request.proposedDay,
       `${path}.proposedDay`,
@@ -1626,9 +1947,9 @@ function validateSupportRequests(
     );
     if (
       previousProposedDay !== null &&
-      proposedDay - previousProposedDay < RELEASE_INTERVAL
+      proposedDay < previousProposedDay
     ) {
-      fail(`${path}.proposedDay`, "must respect the 30-day proposal cooldown");
+      fail(`${path}.proposedDay`, "must not precede the prior request");
     }
     previousProposedDay = proposedDay;
 
@@ -1669,42 +1990,117 @@ function validateSupportRequests(
       fail(`${path}.releasedDay`, `must be null while status is ${status}`);
     }
 
-    byId.set(id, {
+    const validatedBase = {
       id,
-      themeId,
-      direction,
       proposedDay,
       eligibleReleaseDay,
       status,
       releasedDay,
-    });
+    };
+    byId.set(
+      id,
+      kind === "support"
+        ? {
+            ...validatedBase,
+            kind: request.kind === undefined ? undefined : "support",
+            themeId: themeId!,
+            direction: direction!,
+          }
+        : kind === "indirect-support"
+          ? { ...validatedBase, kind, themeId: themeId! }
+          : kind === "environment-target"
+            ? { ...validatedBase, kind, themeId: themeId! }
+            : { ...validatedBase, kind, cardId: cardId! },
+    );
   });
 
   return byId;
 }
 
+type ValidatedReleaseHistory = {
+  releasedRequestDays: Map<string, number>;
+  releasedGenericDays: Map<GenericCardId, number>;
+};
+
+function usesGenericReleaseRules(
+  day: number,
+  genericReleaseStartDay: number | null,
+): boolean {
+  return genericReleaseStartDay !== null && day >= genericReleaseStartDay;
+}
+
 function validateReleaseHistory(
   value: unknown,
   currentDay: number,
+  genericReleaseStartDay: number | null,
   activeThemeIds: ReadonlySet<ThemeId>,
   supportRequests: ReadonlyMap<string, ValidatedSupportRequest>,
   seenOptionIds: Set<string>,
-): Map<string, number> {
+): ValidatedReleaseHistory {
   const batches = expectArray(value, "$.releaseHistory", 64);
   const releasedRequestDays = new Map<string, number>();
+  const releasedGenericDays = new Map<GenericCardId, number>();
   const releasedNewThemes = new Set<ThemeId>();
+  const releasedThemeCardIds = new Set(
+    [...STARTING_THEME_IDS].flatMap((themeId) =>
+      THEME_BY_ID[themeId].parts
+        .slice(0, INITIAL_THEME_PART_COUNT)
+        .map((part) => part.id)
+    ),
+  );
+  const releasedSupportCountByTheme = new Map<ThemeId, number>();
   let previousDay = -1;
 
   batches.forEach((batchValue, batchIndex) => {
     const path = `$.releaseHistory[${batchIndex}]`;
-    const batch = expectRecord(batchValue, path, ["day", "products"]);
+    const batch = expectRecord(
+      batchValue,
+      path,
+      ["day", "products"],
+      ["baseline"],
+    );
     const day = expectNumber(batch.day, `${path}.day`, 1, currentDay, true);
-    if (!isReleaseDay(day)) fail(`${path}.day`, "must be a release day");
+    const baseline = batch.baseline === undefined
+      ? false
+      : expectBoolean(batch.baseline, `${path}.baseline`);
+    if (baseline && batchIndex !== 0) {
+      fail(`${path}.baseline`, "must be the first release-history batch");
+    }
+    if (baseline) {
+      if (day !== INITIAL_GENERIC_RELEASE_DAY) {
+        fail(`${path}.day`, "baseline generics must be available on DAY 1");
+      }
+    } else if (!isReleaseDay(day)) {
+      fail(`${path}.day`, "must be a release day");
+    }
     if (day <= previousDay) fail(`${path}.day`, "must be strictly increasing");
     previousDay = day;
 
-    const products = expectArray(batch.products, `${path}.products`, 3, 3);
+    const genericRules = !baseline &&
+      usesGenericReleaseRules(day, genericReleaseStartDay);
+    const expectedProductCount = baseline
+      ? INITIAL_GENERIC_CARD_IDS.length
+      : genericRules
+        ? 4
+        : 3;
+    const products = expectArray(
+      batch.products,
+      `${path}.products`,
+      expectedProductCount,
+      expectedProductCount,
+    );
     const batchThemeIds = new Set<ThemeId>();
+    const batchGenericIds = new Set<GenericCardId>();
+    const themeProductsToApply: Array<{
+      kind: "new-theme" | "support";
+      themeId: ThemeId;
+    }> = [];
+    const kindCounts: Record<ReleaseOption["kind"], number> = {
+      "new-theme": 0,
+      support: 0,
+      generic: 0,
+      reprint: 0,
+    };
     products.forEach((productValue, productIndex) => {
       const productPath = `${path}.products[${productIndex}]`;
       const product = expectRecord(
@@ -1713,11 +2109,21 @@ function validateReleaseHistory(
         [
           "optionId",
           "kind",
-          "themeId",
           "expectedTier",
           "powerAdjustment",
         ],
-        ["direction", "requestId"],
+        [
+          "themeId",
+          "genericCardId",
+          "direction",
+          "requestId",
+          "cardId",
+          "referencePrice",
+          "trustDelta",
+          "accessibilityUserGain",
+          "collectorUserLoss",
+          "releaseRevenueBoost",
+        ],
       );
       const optionId = expectString(
         product.optionId,
@@ -1730,15 +2136,7 @@ function validateReleaseHistory(
       seenOptionIds.add(optionId);
 
       const kind = expectEnum(product.kind, `${productPath}.kind`, RELEASE_KINDS);
-      const themeId = expectThemeId(product.themeId, `${productPath}.themeId`);
-      const pendingNewTheme = kind === "new-theme" && day === currentDay;
-      if (!activeThemeIds.has(themeId) && !pendingNewTheme) {
-        fail(`${productPath}.themeId`, "must reference an active theme");
-      }
-      if (batchThemeIds.has(themeId)) {
-        fail(`${productPath}.themeId`, "must be unique within its release batch");
-      }
-      batchThemeIds.add(themeId);
+      kindCounts[kind] += 1;
       expectEnum(
         product.expectedTier,
         `${productPath}.expectedTier`,
@@ -1751,6 +2149,178 @@ function validateReleaseHistory(
         3,
         true,
       );
+
+      if (kind === "reprint") {
+        if (!genericRules) {
+          fail(productPath, "reprints cannot precede generic release rules");
+        }
+        const cardId = expectString(product.cardId, `${productPath}.cardId`, 128);
+        const themeId = expectThemeId(product.themeId, `${productPath}.themeId`);
+        if (!activeThemeIds.has(themeId)) {
+          fail(`${productPath}.themeId`, "must reference an active display theme");
+        }
+        const requestId = expectString(
+          product.requestId,
+          `${productPath}.requestId`,
+          128,
+        );
+        const request = supportRequests.get(requestId);
+        if (
+          !request ||
+          request.kind !== "reprint" ||
+          request.cardId !== cardId ||
+          request.status !== "released" ||
+          request.releasedDay !== day
+        ) {
+          fail(`${productPath}.requestId`, "does not match the released reprint request");
+        }
+        if (releasedRequestDays.has(requestId)) {
+          fail(`${productPath}.requestId`, "cannot be released more than once");
+        }
+        const genericCardId = GENERIC_CARD_IDS.has(cardId as GenericCardId)
+          ? cardId as GenericCardId
+          : null;
+        if (genericCardId !== null) {
+          const originalDay = releasedGenericDays.get(genericCardId);
+          if (originalDay === undefined || originalDay >= day) {
+            fail(`${productPath}.cardId`, "generic reprints require a prior release");
+          }
+        } else {
+          const cardThemeId = PART_THEME.get(cardId);
+          if (cardThemeId === undefined) {
+            fail(`${productPath}.cardId`, "references an unknown card");
+          }
+          if (!releasedThemeCardIds.has(cardId)) {
+            fail(`${productPath}.cardId`, "theme-part reprints require a prior release");
+          }
+          if (themeId !== cardThemeId) {
+            fail(`${productPath}.themeId`, "must match the reprinted theme card");
+          }
+        }
+        if (
+          product.genericCardId !== undefined ||
+          product.direction !== undefined
+        ) {
+          fail(productPath, "reprint products cannot contain support/generic fields");
+        }
+        if (product.powerAdjustment !== 0) {
+          fail(`${productPath}.powerAdjustment`, "must be zero for reprints");
+        }
+        expectNumber(product.referencePrice, `${productPath}.referencePrice`, 100, 10_000_000);
+        expectNumber(product.trustDelta, `${productPath}.trustDelta`, -10, -0.01);
+        expectNumber(
+          product.accessibilityUserGain,
+          `${productPath}.accessibilityUserGain`,
+          0,
+          MAX_SAFE_COUNTER,
+          true,
+        );
+        expectNumber(
+          product.collectorUserLoss,
+          `${productPath}.collectorUserLoss`,
+          0,
+          MAX_SAFE_COUNTER,
+          true,
+        );
+        expectNumber(
+          product.releaseRevenueBoost,
+          `${productPath}.releaseRevenueBoost`,
+          0,
+          MAX_FINANCE_VALUE,
+        );
+        releasedRequestDays.set(requestId, day);
+        return;
+      }
+
+      if (kind === "generic") {
+        if (!genericRules && !baseline) {
+          fail(productPath, "generic products cannot precede genericReleaseStartDay");
+        }
+        if (product.themeId !== undefined) {
+          fail(`${productPath}.themeId`, "is not valid for generic products");
+        }
+        const genericCardId = expectGenericCardId(
+          product.genericCardId,
+          `${productPath}.genericCardId`,
+        );
+        if (baseline) {
+          if (!INITIAL_GENERIC_CARD_IDS.includes(
+            genericCardId as (typeof INITIAL_GENERIC_CARD_IDS)[number],
+          )) {
+            fail(
+              `${productPath}.genericCardId`,
+              "must be one of the canonical DAY 1 generic cards",
+            );
+          }
+          if (product.requestId !== undefined) {
+            fail(`${productPath}.requestId`, "is not valid for baseline products");
+          }
+          if (product.powerAdjustment !== 0) {
+            fail(`${productPath}.powerAdjustment`, "must be zero for baseline products");
+          }
+        }
+        if (product.direction !== undefined) {
+          fail(productPath, "generic products cannot contain support direction");
+        }
+        if (
+          batchGenericIds.has(genericCardId) ||
+          releasedGenericDays.has(genericCardId)
+        ) {
+          fail(`${productPath}.genericCardId`, "cannot release a generic card twice");
+        }
+        batchGenericIds.add(genericCardId);
+        releasedGenericDays.set(genericCardId, day);
+        if (product.requestId !== undefined) {
+          const requestId = expectString(
+            product.requestId,
+            `${productPath}.requestId`,
+            128,
+          );
+          const request = supportRequests.get(requestId);
+          const target = request?.themeId ? THEME_BY_ID[request.themeId] : undefined;
+          const card = GENERIC_CARD_CATALOG.find(
+            (candidate) => candidate.id === genericCardId,
+          );
+          const matchesRequest = request?.kind === "indirect-support"
+            ? Boolean(target && card && target.playKeywords.includes(card.keyword))
+            : request?.kind === "environment-target"
+              ? Boolean(
+                  target &&
+                  card &&
+                  getKeywordMatchupEdgeScore([card.keyword], target.playKeywords) > 0,
+                )
+              : false;
+          if (
+            !request ||
+            !matchesRequest ||
+            request.status !== "released" ||
+            request.releasedDay !== day
+          ) {
+            fail(`${productPath}.requestId`, "does not match the released generic request");
+          }
+          if (releasedRequestDays.has(requestId)) {
+            fail(`${productPath}.requestId`, "cannot be released more than once");
+          }
+          releasedRequestDays.set(requestId, day);
+        }
+        return;
+      }
+
+      if (product.genericCardId !== undefined) {
+        fail(
+          `${productPath}.genericCardId`,
+          "is only valid for generic products",
+        );
+      }
+      const themeId = expectThemeId(product.themeId, `${productPath}.themeId`);
+      const pendingNewTheme = kind === "new-theme" && day === currentDay;
+      if (!activeThemeIds.has(themeId) && !pendingNewTheme) {
+        fail(`${productPath}.themeId`, "must reference an active theme");
+      }
+      if (batchThemeIds.has(themeId)) {
+        fail(`${productPath}.themeId`, "must be unique within its release batch");
+      }
+      batchThemeIds.add(themeId);
 
       const direction =
         product.direction === undefined
@@ -1773,18 +2343,21 @@ function validateReleaseHistory(
           fail(`${productPath}.themeId`, "cannot release a new theme twice");
         }
         releasedNewThemes.add(themeId);
+        themeProductsToApply.push({ kind, themeId });
         return;
       }
 
       if (direction === undefined) {
         fail(`${productPath}.direction`, "is required for support products");
       }
+      themeProductsToApply.push({ kind: "support", themeId });
       if (requestId === undefined) return;
       const request = supportRequests.get(requestId);
       if (!request) {
         fail(`${productPath}.requestId`, "references an unknown support request");
       }
       if (
+        (request.kind ?? "support") !== "support" ||
         request.status !== "released" ||
         request.themeId !== themeId ||
         request.direction !== direction ||
@@ -1797,17 +2370,89 @@ function validateReleaseHistory(
       }
       releasedRequestDays.set(requestId, day);
     });
+
+    // A product's cards enter the live pool after the batch decision. Apply
+    // them only after validating every product so a reprint cannot point at a
+    // debut or support card from its own release batch.
+    for (const product of themeProductsToApply) {
+      const content = THEME_BY_ID[product.themeId];
+      if (product.kind === "new-theme") {
+        for (const part of content.parts.slice(0, INITIAL_THEME_PART_COUNT)) {
+          releasedThemeCardIds.add(part.id);
+        }
+        releasedSupportCountByTheme.set(product.themeId, 0);
+        continue;
+      }
+      const supportCount = releasedSupportCountByTheme.get(product.themeId) ?? 0;
+      const start = INITIAL_THEME_PART_COUNT +
+        supportCount * SUPPORT_PARTS_PER_RELEASE;
+      for (const part of content.parts.slice(
+        start,
+        start + SUPPORT_PARTS_PER_RELEASE,
+      )) {
+        releasedThemeCardIds.add(part.id);
+      }
+      releasedSupportCountByTheme.set(product.themeId, supportCount + 1);
+    }
+
+    if (baseline) {
+      const parsedBatch = {
+        day,
+        baseline: true as const,
+        products: batch.products,
+      } as GameState["releaseHistory"][number];
+      if (!isInitialGenericReleaseBatch(parsedBatch)) {
+        fail(
+          `${path}.products`,
+          "must contain the exact canonical DAY 1 generic-card set",
+        );
+      }
+      if (
+        kindCounts.generic !== INITIAL_GENERIC_CARD_IDS.length ||
+        kindCounts["new-theme"] !== 0 ||
+        kindCounts.support !== 0 ||
+        kindCounts.reprint !== 0
+      ) {
+        fail(`${path}.products`, "baseline products must all be generic cards");
+      }
+    }
+
+    if (
+      genericRules &&
+      (kindCounts["new-theme"] < 1 ||
+        kindCounts.support < 1 ||
+        kindCounts.generic < 1)
+    ) {
+      fail(
+        `${path}.products`,
+        "must include at least one new theme, support, and generic product",
+      );
+    }
+    if (
+      kindCounts.reprint > 1 ||
+      (kindCounts.reprint === 1 &&
+        (kindCounts["new-theme"] !== 1 ||
+          kindCounts.support !== 1 ||
+          kindCounts.generic !== 1))
+    ) {
+      fail(
+        `${path}.products`,
+        "a locked reprint must accompany exactly one core product of each kind",
+      );
+    }
   });
 
-  return releasedRequestDays;
+  return { releasedRequestDays, releasedGenericDays };
 }
 
 function validateReleaseSlate(
   value: unknown,
   currentDay: number,
+  genericReleaseStartDay: number | null,
   activeThemeIds: ReadonlySet<ThemeId>,
   supportRequests: ReadonlyMap<string, ValidatedSupportRequest>,
   seenOptionIds: Set<string>,
+  releasedGenericDays: ReadonlyMap<GenericCardId, number>,
 ): Set<string> {
   const offeredRequestIds = new Set<string>();
   if (value === null) return offeredRequestIds;
@@ -1817,8 +2462,21 @@ function validateReleaseSlate(
   if (day !== currentDay || !isReleaseDay(day)) {
     fail("$.releaseSlate.day", "must equal the current release day");
   }
-  const options = expectArray(slate.options, "$.releaseSlate.options", 6, 3);
+  const genericRules = usesGenericReleaseRules(day, genericReleaseStartDay);
+  const options = expectArray(
+    slate.options,
+    "$.releaseSlate.options",
+    genericRules ? 10 : 6,
+    genericRules ? 9 : 6,
+  );
   const optionThemeIds = new Set<ThemeId>();
+  const optionGenericIds = new Set<GenericCardId>();
+  const kindCounts: Record<ReleaseOption["kind"], number> = {
+    "new-theme": 0,
+    support: 0,
+    generic: 0,
+    reprint: 0,
+  };
 
   options.forEach((optionValue, index) => {
     const path = `$.releaseSlate.options[${index}]`;
@@ -1828,23 +2486,28 @@ function validateReleaseSlate(
       [
         "id",
         "kind",
-        "themeId",
         "expectedPower",
         "expectedTier",
         "requested",
       ],
-      ["direction", "requestId"],
+      [
+        "themeId",
+        "genericCardId",
+        "direction",
+        "requestId",
+        "requestKind",
+        "requestThemeId",
+        "requestKeyword",
+        "cardId",
+        "locked",
+      ],
     );
     const id = expectString(option.id, `${path}.id`, 128);
     if (seenOptionIds.has(id)) fail(`${path}.id`, "must be globally unique");
     seenOptionIds.add(id);
 
     const kind = expectEnum(option.kind, `${path}.kind`, RELEASE_KINDS);
-    const themeId = expectThemeId(option.themeId, `${path}.themeId`);
-    if (optionThemeIds.has(themeId)) {
-      fail(`${path}.themeId`, "must be unique within the release slate");
-    }
-    optionThemeIds.add(themeId);
+    kindCounts[kind] += 1;
     const expectedPower = expectNumber(
       option.expectedPower,
       `${path}.expectedPower`,
@@ -1860,6 +2523,132 @@ function validateReleaseSlate(
       fail(`${path}.expectedTier`, "does not match expectedPower");
     }
     const requested = expectBoolean(option.requested, `${path}.requested`);
+
+    if (kind === "reprint") {
+      if (!genericRules || !requested) {
+        fail(path, "reprint options must be requested under current release rules");
+      }
+      const cardId = expectString(option.cardId, `${path}.cardId`, 128);
+      const themeId = expectThemeId(option.themeId, `${path}.themeId`);
+      if (!activeThemeIds.has(themeId)) {
+        fail(`${path}.themeId`, "must reference an active display theme");
+      }
+      if (expectBoolean(option.locked, `${path}.locked`) !== true) {
+        fail(`${path}.locked`, "must be true for reprints");
+      }
+      const requestId = expectString(option.requestId, `${path}.requestId`, 128);
+      const request = supportRequests.get(requestId);
+      if (
+        !request ||
+        request.kind !== "reprint" ||
+        request.cardId !== cardId ||
+        request.status !== "offered" ||
+        request.eligibleReleaseDay > day
+      ) {
+        fail(`${path}.requestId`, "does not match the offered reprint request");
+      }
+      if (
+        option.genericCardId !== undefined ||
+        option.direction !== undefined ||
+        option.requestKind !== undefined ||
+        option.requestThemeId !== undefined ||
+        option.requestKeyword !== undefined
+      ) {
+        fail(path, "reprint options cannot contain support/generic request fields");
+      }
+      if (offeredRequestIds.has(requestId)) {
+        fail(`${path}.requestId`, "cannot be offered more than once");
+      }
+      offeredRequestIds.add(requestId);
+      return;
+    }
+
+    if (kind === "generic") {
+      if (!genericRules) {
+        fail(path, "generic options cannot precede genericReleaseStartDay");
+      }
+      if (option.themeId !== undefined) {
+        fail(`${path}.themeId`, "is not valid for generic options");
+      }
+      const genericCardId = expectGenericCardId(
+        option.genericCardId,
+        `${path}.genericCardId`,
+      );
+      if (
+        optionGenericIds.has(genericCardId) ||
+        releasedGenericDays.has(genericCardId)
+      ) {
+        fail(`${path}.genericCardId`, "must be unreleased and unique in the slate");
+      }
+      optionGenericIds.add(genericCardId);
+      if (
+        option.direction !== undefined ||
+        option.cardId !== undefined ||
+        option.locked !== undefined
+      ) {
+        fail(path, "generic options cannot contain support/reprint fields");
+      }
+      if (!requested) {
+        if (
+          option.requestId !== undefined ||
+          option.requestKind !== undefined ||
+          option.requestThemeId !== undefined ||
+          option.requestKeyword !== undefined
+        ) {
+          fail(path, "unrequested generic options cannot contain request fields");
+        }
+        return;
+      }
+      const requestId = expectString(option.requestId, `${path}.requestId`, 128);
+      const requestKind = expectEnum(
+        option.requestKind,
+        `${path}.requestKind`,
+        new Set(["indirect-support", "environment-target"] as const),
+      );
+      const requestThemeId = expectThemeId(
+        option.requestThemeId,
+        `${path}.requestThemeId`,
+      );
+      const requestKeyword = expectEnum(
+        option.requestKeyword,
+        `${path}.requestKeyword`,
+        PLAY_KEYWORDS,
+      );
+      const request = supportRequests.get(requestId);
+      const target = THEME_BY_ID[requestThemeId];
+      const card = GENERIC_CARD_CATALOG.find(
+        (candidate) => candidate.id === genericCardId,
+      );
+      const matchesPool = requestKind === "indirect-support"
+        ? target.playKeywords.includes(requestKeyword) &&
+          card?.keyword === requestKeyword
+        : card?.keyword === requestKeyword &&
+          getKeywordMatchupEdgeScore([requestKeyword], target.playKeywords) > 0;
+      if (
+        !request ||
+        request.kind !== requestKind ||
+        request.themeId !== requestThemeId ||
+        request.status !== "offered" ||
+        request.eligibleReleaseDay > day ||
+        !matchesPool
+      ) {
+        fail(`${path}.requestId`, "does not match the offered generic request");
+      }
+      if (offeredRequestIds.has(requestId)) {
+        fail(`${path}.requestId`, "cannot be offered more than once");
+      }
+      offeredRequestIds.add(requestId);
+      return;
+    }
+
+    if (option.genericCardId !== undefined) {
+      fail(`${path}.genericCardId`, "is only valid for generic options");
+    }
+    const themeId = expectThemeId(option.themeId, `${path}.themeId`);
+    if (optionThemeIds.has(themeId)) {
+      fail(`${path}.themeId`, "must be unique within the release slate");
+    }
+    optionThemeIds.add(themeId);
     const direction =
       option.direction === undefined
         ? undefined
@@ -1873,7 +2662,16 @@ function validateReleaseSlate(
       if (activeThemeIds.has(themeId)) {
         fail(`${path}.themeId`, "new-theme options must target inactive themes");
       }
-      if (direction !== undefined || requestId !== undefined || requested) {
+      if (
+        direction !== undefined ||
+        requestId !== undefined ||
+        requested ||
+        option.cardId !== undefined ||
+        option.locked !== undefined ||
+        option.requestKind !== undefined ||
+        option.requestThemeId !== undefined ||
+        option.requestKeyword !== undefined
+      ) {
         fail(path, "new-theme options cannot contain support request fields");
       }
       return;
@@ -1884,6 +2682,15 @@ function validateReleaseSlate(
     }
     if (direction === undefined) {
       fail(`${path}.direction`, "is required for support options");
+    }
+    if (
+      option.cardId !== undefined ||
+      option.locked !== undefined ||
+      option.requestKind !== undefined ||
+      option.requestThemeId !== undefined ||
+      option.requestKeyword !== undefined
+    ) {
+      fail(path, "support options cannot contain generic/reprint request fields");
     }
     if (!requested) {
       if (requestId !== undefined) {
@@ -1898,6 +2705,7 @@ function validateReleaseSlate(
     if (!request) fail(`${path}.requestId`, "references an unknown support request");
     if (
       request.status !== "offered" ||
+      (request.kind ?? "support") !== "support" ||
       request.themeId !== themeId ||
       request.direction !== direction ||
       request.eligibleReleaseDay > day
@@ -1910,7 +2718,52 @@ function validateReleaseSlate(
     offeredRequestIds.add(requestId);
   });
 
+  if (
+    genericRules &&
+    (kindCounts["new-theme"] !== 3 ||
+      kindCounts.support !== 3 ||
+      kindCounts.generic !== 3 ||
+      kindCounts.reprint > 1)
+  ) {
+    fail(
+      "$.releaseSlate.options",
+      "must contain exactly three new-theme, support, and generic options",
+    );
+  }
+
   return offeredRequestIds;
+}
+
+function validateGenericLimits(
+  value: unknown,
+  currentDay: number,
+  releasedGenericDays: ReadonlyMap<GenericCardId, number>,
+): void {
+  const appliedGenericIds = [...releasedGenericDays.entries()]
+    .filter(
+      ([genericCardId, releaseDay]) =>
+        releaseDay < currentDay ||
+        (releaseDay === INITIAL_GENERIC_RELEASE_DAY &&
+          INITIAL_GENERIC_CARD_IDS.includes(
+            genericCardId as (typeof INITIAL_GENERIC_CARD_IDS)[number],
+          )),
+    )
+    .map(([genericCardId]) => genericCardId)
+    .sort();
+  const limits = expectRecord(
+    value,
+    "$.genericLimits",
+    appliedGenericIds,
+  );
+  for (const genericCardId of appliedGenericIds) {
+    expectNumber(
+      limits[genericCardId],
+      `$.genericLimits.${genericCardId}`,
+      0,
+      3,
+      true,
+    );
+  }
 }
 
 function validateCommunity(
@@ -1918,6 +2771,7 @@ function validateCommunity(
   currentDay: number,
   activeThemeIds: ReadonlySet<ThemeId>,
   supportRequests: ReadonlyMap<string, ValidatedSupportRequest>,
+  releasedGenericDays: ReadonlyMap<GenericCardId, number>,
 ) {
   const events = expectArray(value, "$.community", 500);
   const seenIds = new Set<string>();
@@ -1948,6 +2802,19 @@ function validateCommunity(
       const partId = expectString(event.partId, `${path}.partId`, 128);
       if (PART_THEME.get(partId) !== themeId) {
         fail(`${path}.partId`, "does not belong to the event theme");
+      }
+    }
+    if (event.genericCardId !== undefined) {
+      const genericCardId = expectGenericCardId(
+        event.genericCardId,
+        `${path}.genericCardId`,
+      );
+      const releaseDay = releasedGenericDays.get(genericCardId);
+      if (releaseDay === undefined || releaseDay > day) {
+        fail(
+          `${path}.genericCardId`,
+          "must reference a generic card released by the event day",
+        );
       }
     }
     if (event.relatedThemeId !== undefined) {
@@ -2180,17 +3047,34 @@ function validateHistory(
 
 export function parseGameState(value: unknown): GameState {
   const normalized = normalizePendingNewThemePredictions(
-    migrateLegacyFutureIdentifiersDeep(
-      normalizeSaveVersion(value),
-    ) as UnknownRecord,
+    normalizeInitialGenericCards(
+      migrateLegacyFutureIdentifiersDeep(
+        normalizeSaveVersion(value),
+      ) as UnknownRecord,
+    ),
   );
   const state = expectRecord(normalized, "$", TOP_LEVEL_KEYS);
-  if (state.schemaVersion !== 7) {
-    fail("$.schemaVersion", "must equal 7 after migration");
+  if (state.schemaVersion !== 8) {
+    fail("$.schemaVersion", "must equal 8 after migration");
   }
   const seed = expectNumber(state.seed, "$.seed", 0, 0xffffffff, true);
   const day = expectNumber(state.day, "$.day", 0, MAX_DAY, true);
   const phase = expectEnum(state.phase, "$.phase", PHASES);
+  const genericReleaseStartDay = state.genericReleaseStartDay === null
+    ? null
+    : expectNumber(
+        state.genericReleaseStartDay,
+        "$.genericReleaseStartDay",
+        RELEASE_INTERVAL,
+        LAST_RELEASE_DAY,
+        true,
+      );
+  if (
+    genericReleaseStartDay !== null &&
+    !isReleaseDay(genericReleaseStartDay)
+  ) {
+    fail("$.genericReleaseStartDay", "must be a regular release day");
+  }
 
   const activeThemeIds = validateActiveThemeIds(state.activeThemeIds);
   const activeThemeSet = new Set(activeThemeIds);
@@ -2304,20 +3188,42 @@ export function parseGameState(value: unknown): GameState {
     activeThemeSet,
   );
   const seenReleaseOptionIds = new Set<string>();
-  const releasedRequestDays = validateReleaseHistory(
+  const { releasedRequestDays, releasedGenericDays } = validateReleaseHistory(
     state.releaseHistory,
     day,
+    genericReleaseStartDay,
     activeThemeSet,
     supportRequests,
     seenReleaseOptionIds,
   );
+  const currentlyReleasedThemeCardIds = new Set(
+    activeThemeIds.flatMap((themeId) =>
+      ((themes[themeId] as UnknownRecord).releasedPartIds as string[])
+    ),
+  );
+  for (const request of supportRequests.values()) {
+    if (request.kind !== "reprint") continue;
+    const cardId = request.cardId;
+    const released = GENERIC_CARD_IDS.has(cardId as GenericCardId)
+      ? releasedGenericDays.has(cardId as GenericCardId)
+      : currentlyReleasedThemeCardIds.has(cardId);
+    if (!released) {
+      fail(
+        `$.supportRequests.${request.id}.cardId`,
+        "reprint requests must reference a currently released card",
+      );
+    }
+  }
   const offeredRequestIds = validateReleaseSlate(
     state.releaseSlate,
     day,
+    genericReleaseStartDay,
     activeThemeSet,
     supportRequests,
     seenReleaseOptionIds,
+    releasedGenericDays,
   );
+  validateGenericLimits(state.genericLimits, day, releasedGenericDays);
 
   const supportDaysByTheme = new Map<ThemeId, number[]>();
   const debutDayByTheme = new Map<ThemeId, number>();
@@ -2325,7 +3231,7 @@ export function parseGameState(value: unknown): GameState {
     for (const product of batch.products) {
       if (product.kind === "new-theme") {
         debutDayByTheme.set(product.themeId, batch.day);
-      } else {
+      } else if (product.kind === "support") {
         const supportDays = supportDaysByTheme.get(product.themeId) ?? [];
         supportDays.push(batch.day);
         supportDaysByTheme.set(product.themeId, supportDays);
@@ -2396,6 +3302,7 @@ export function parseGameState(value: unknown): GameState {
 
     const reservedRequests = [...supportRequests.values()].filter(
       (request) =>
+        (request.kind ?? "support") === "support" &&
         request.themeId === themeId &&
         (request.status === "queued" || request.status === "offered"),
     ).length;
@@ -2407,7 +3314,20 @@ export function parseGameState(value: unknown): GameState {
     }
   }
 
+  const activeRequestLanes = new Set<string>();
   for (const request of supportRequests.values()) {
+    if (request.status === "queued" || request.status === "offered") {
+      const kind = request.kind ?? "support";
+      const lane = kind === "support"
+        ? "support"
+        : kind === "reprint"
+          ? "reprint"
+          : "generic";
+      if (activeRequestLanes.has(lane)) {
+        fail(`$.supportRequests.${request.id}.status`, `duplicates active ${lane} lane`);
+      }
+      activeRequestLanes.add(lane);
+    }
     if (request.status === "offered" && !offeredRequestIds.has(request.id)) {
       fail(
         `$.supportRequests.${request.id}.status`,
@@ -2429,7 +3349,13 @@ export function parseGameState(value: unknown): GameState {
     }
   }
 
-  validateCommunity(state.community, day, activeThemeSet, supportRequests);
+  validateCommunity(
+    state.community,
+    day,
+    activeThemeSet,
+    supportRequests,
+    releasedGenericDays,
+  );
 
   const recentRevenue = expectArray(state.recentRevenue, "$.recentRevenue", 30);
   recentRevenue.forEach((revenue, index) => {
@@ -2446,7 +3372,9 @@ export function parseGameState(value: unknown): GameState {
     "$.lastSupportProposalDay",
     day,
   );
-  const latestRequest = [...supportRequests.values()].at(-1);
+  const latestRequest = [...supportRequests.values()]
+    .filter((request) => (request.kind ?? "support") === "support")
+    .at(-1);
   if (
     (latestRequest === undefined && lastSupportProposalDay !== null) ||
     (latestRequest !== undefined &&
@@ -2491,8 +3419,24 @@ export function parseGameState(value: unknown): GameState {
     state.handoverComplete,
     "$.handoverComplete",
   );
-  if (handoverComplete && day < 46) {
-    fail("$.handoverComplete", "cannot be true before DAY 46");
+  if (handoverComplete && day < FIRST_BAN_DAY) {
+    fail("$.handoverComplete", `cannot be true before DAY ${FIRST_BAN_DAY}`);
+  }
+  if (
+    handoverComplete &&
+    day === FIRST_BAN_DAY &&
+    !(state.community as GameState["community"]).some(
+      (event) =>
+        event.day === FIRST_BAN_DAY &&
+        (event.type === "restriction-applied" ||
+          event.type === "cosmetic-restriction" ||
+          event.type === "restriction-no-change"),
+    )
+  ) {
+    fail(
+      "$.handoverComplete",
+      "requires a published DAY 45 restriction decision",
+    );
   }
 
   if (
@@ -2526,7 +3470,7 @@ export function isGameState(value: unknown): value is GameState {
     typeof value !== "object" ||
     value === null ||
     Array.isArray(value) ||
-    (value as UnknownRecord).schemaVersion !== 7
+    (value as UnknownRecord).schemaVersion !== 8
   ) {
     return false;
   }

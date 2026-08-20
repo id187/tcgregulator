@@ -4,203 +4,49 @@ import test from "node:test";
 import {
   evaluateCampaignEnding,
   getCampaignCashBand,
+  getCampaignEndingHints,
   getCampaignEnvironmentBand,
   getCampaignEnvironmentStability,
-  getCampaignEndingHints,
-  getCampaignStewardshipEvaluation,
+  getCampaignTrustBand,
+  getCampaignUserBand,
 } from "../app/game/campaign-ending.ts";
-import { THEME_BY_ID } from "../app/game/content.ts";
 import { createInitialGame } from "../app/game/engine.ts";
-import { getBusinessEnvironmentHealth } from "../app/game/business-actions.ts";
+import type { GameState } from "../app/game/types.ts";
 
-function setEnvironmentStability(
-  state: ReturnType<typeof createInitialGame>,
-  target: number,
+function setEnvironment(
+  state: GameState,
+  band: "danger" | "caution" | "stable",
 ): void {
+  const value = band === "danger" ? 100 : band === "caution" ? 55 : 1;
   for (const themeId of state.activeThemeIds) {
-    state.themes[themeId].unpleasantness = 1;
+    state.themes[themeId].unpleasantness = value;
+    state.themes[themeId].fatigue = value;
   }
-  state.purchaseTrust = 100;
-  const baseHealth = getBusinessEnvironmentHealth(state);
-  assert.ok(baseHealth >= target);
-  state.purchaseTrust = 50 - (baseHealth - target) / 0.8;
-  assert.equal(getCampaignEnvironmentStability(state), target);
+  assert.equal(evaluateCampaignEnding(state).bands.environment, band);
 }
 
-function createCompleteStewardshipState() {
+function handoverUsers(state: GameState): number {
+  const baseline = state.history.find((entry) => entry.day === 46)?.totalUsers;
+  assert.ok(baseline && baseline > 0);
+  return baseline;
+}
+
+function setUserRatio(state: GameState, ratio: number): void {
+  state.users.tier = handoverUsers(state) * ratio;
+  state.users.casual = 0;
+  state.users.collector = 0;
+}
+
+function makeStableFoundation(): GameState {
   const state = createInitialGame(101);
   state.finance.cash = 14;
-  state.purchaseTrust = 85;
-  for (const themeId of state.activeThemeIds) {
-    state.themes[themeId].unpleasantness = 30;
-  }
-
-  const supportThemeIds = state.activeThemeIds.slice(0, 2);
-  state.supportRequests = [
-    {
-      id: "support-request-1",
-      themeId: supportThemeIds[0],
-      direction: "consistency",
-      proposedDay: 46,
-      eligibleReleaseDay: 60,
-      status: "released",
-      releasedDay: 60,
-    },
-    {
-      id: "support-request-2",
-      themeId: supportThemeIds[1],
-      direction: "counterplay",
-      proposedDay: 76,
-      eligibleReleaseDay: 90,
-      status: "released",
-      releasedDay: 90,
-    },
-    {
-      id: "support-request-3",
-      themeId: supportThemeIds[0],
-      direction: "recovery",
-      proposedDay: 106,
-      eligibleReleaseDay: 120,
-      status: "released",
-      releasedDay: 120,
-    },
-  ];
-
-  const latestShares = state.history.at(-1)?.shares ?? {};
-  const rankedThemeIds = Object.entries(latestShares)
-    .sort((left, right) => right[1] - left[1])
-    .map(([themeId]) => themeId);
-  const policyThemeIds = [
-    ...rankedThemeIds.slice(0, 2),
-    ...rankedThemeIds.slice(3, 5),
-  ];
-  const meaningfulParts = new Map(
-    policyThemeIds.map((themeId) => [
-      themeId,
-      THEME_BY_ID[themeId].parts.filter(
-        (part) =>
-          state.themes[themeId].releasedPartIds.includes(part.id) &&
-          part.preferredCopies >= 2,
-      ),
-    ]),
-  );
-  const decisionDays = [105, 165, 225, 285, 345];
-  for (const [decisionIndex, day] of decisionDays.entries()) {
-    const cutPartIds = new Set<string>();
-    for (const themeId of policyThemeIds) {
-      const parts = meaningfulParts.get(themeId) ?? [];
-      const part = parts[decisionIndex % parts.length];
-      cutPartIds.add(part.id);
-      state.community.push({
-        id: `stewardship-cut-${day}-${themeId}`,
-        day,
-        category: "restriction",
-        type: "restriction-applied",
-        themeId,
-        partId: part.id,
-        previousValue: 3,
-        value: 1,
-        body: "",
-      });
-    }
-    if (decisionIndex >= 1) {
-      const tutorialRelief = state.community.find(
-        (event) =>
-          event.day === 45 &&
-          Boolean(event.partId) &&
-          (event.value ?? 3) < 3 &&
-          !cutPartIds.has(event.partId!),
-      );
-      const reliefThemeId = decisionIndex === 1
-        ? tutorialRelief?.themeId
-        : policyThemeIds[decisionIndex - 2];
-      const reliefPartId = decisionIndex === 1
-        ? tutorialRelief?.partId
-        : meaningfulParts.get(reliefThemeId!)?.[decisionIndex - 2]?.id;
-      assert.ok(reliefThemeId);
-      assert.ok(reliefPartId);
-      state.community.push({
-        id: `stewardship-relief-${day}-${reliefThemeId}`,
-        day,
-        category: "restriction",
-        type: "restriction-applied",
-        themeId: reliefThemeId,
-        partId: reliefPartId,
-        previousValue: 1,
-        value: 3,
-        body: "",
-      });
-    }
-  }
-
-  state.operations.records = [
-    {
-      id: "business-action-1",
-      type: "season-overhaul",
-      startedDay: 120,
-      endsDay: 210,
-      cost: 3.5,
-      outcome: "success",
-      risk: 0.4,
-      cashReturn: 6.5,
-      resolvedDay: 150,
-    },
-    {
-      id: "business-action-2",
-      type: "reprint-campaign",
-      startedDay: 121,
-      endsDay: 151,
-      cost: 0.55,
-      outcome: "completed",
-    },
-    {
-      id: "business-action-3",
-      type: "local-league",
-      startedDay: 122,
-      endsDay: 143,
-      cost: 0.5,
-      outcome: "completed",
-    },
-    {
-      id: "business-action-4",
-      type: "collector-fair",
-      startedDay: 123,
-      endsDay: 137,
-      cost: 0.65,
-      outcome: "completed",
-    },
-    {
-      id: "business-action-5",
-      type: "beginner-camp",
-      startedDay: 124,
-      endsDay: 138,
-      cost: 0.4,
-      outcome: "completed",
-    },
-    {
-      id: "business-action-6",
-      type: "store-tour",
-      startedDay: 145,
-      endsDay: 159,
-      cost: 0.35,
-      outcome: "completed",
-    },
-  ];
-  state.operations.eventRecords = Array.from({ length: 20 }, (_, index) => ({
-    id: `business-event-${index + 1}`,
-    type: "starter-shortage" as const,
-    appearedDay: 53 + index * 15,
-    choice: "a" as const,
-    cost: 0,
-    risk: 0.2,
-    resolutionDay: 55 + index * 15,
-    outcome: index < 14 ? "success" as const : "backlash" as const,
-    resolvedDay: 55 + index * 15,
-  }));
+  state.purchaseTrust = 80;
+  setEnvironment(state, "stable");
+  setUserRatio(state, 1);
   return state;
 }
 
-test("cash and environment thresholds use the intended inclusive boundaries", () => {
+test("all four result bands use the intended inclusive boundaries", () => {
   assert.equal(getCampaignCashBand(4.94), "crisis");
   assert.equal(getCampaignCashBand(4.95), "tight");
   assert.equal(getCampaignCashBand(13.94), "tight");
@@ -210,180 +56,194 @@ test("cash and environment thresholds use the intended inclusive boundaries", ()
   assert.equal(getCampaignEnvironmentBand(49.95), "caution");
   assert.equal(getCampaignEnvironmentBand(64.94), "caution");
   assert.equal(getCampaignEnvironmentBand(64.95), "stable");
+
+  assert.equal(getCampaignTrustBand(64.94), "low");
+  assert.equal(getCampaignTrustBand(64.95), "guarded");
+  assert.equal(getCampaignTrustBand(79.94), "guarded");
+  assert.equal(getCampaignTrustBand(79.95), "trusted");
+
+  assert.equal(getCampaignUserBand(0.89989), "contracted");
+  assert.equal(getCampaignUserBand(0.89995), "steady");
+  assert.equal(getCampaignUserBand(1.09989), "steady");
+  assert.equal(getCampaignUserBand(1.09995), "grown");
 });
 
-test("all nine cash and environment combinations produce distinct endings", () => {
-  const cashScores = [4, 5, 14];
-  const environmentScores = [49, 50, 65];
-  const endings = new Set<string>();
-
-  for (const cash of cashScores) {
-    for (const environmentHealth of environmentScores) {
-      const state = createInitialGame(13);
-      state.finance.cash = cash;
-      setEnvironmentStability(state, environmentHealth);
-
-      const ending = evaluateCampaignEnding(state);
-
-      assert.equal(ending.scores.cash, cash);
-      assert.equal(ending.scores.environmentHealth, environmentHealth);
-      endings.add(`${ending.title}\n${ending.body}`);
-    }
-  }
-
-  assert.equal(endings.size, 9);
-});
-
-test("collapsed purchase trust lowers an otherwise healthy environment ending", () => {
-  const state = createInitialGame(19);
-  for (const themeId of state.activeThemeIds) {
-    state.themes[themeId].unpleasantness = 1;
-  }
-  state.purchaseTrust = 100;
-  const trustedHealth = getCampaignEnvironmentStability(state);
-  assert.ok(trustedHealth >= 65);
-  state.purchaseTrust = 0;
+test("purchase trust is an independent axis and no longer lowers environment health twice", () => {
+  const trusted = makeStableFoundation();
+  trusted.purchaseTrust = 100;
+  const lowTrust = structuredClone(trusted);
+  lowTrust.purchaseTrust = 0;
 
   assert.equal(
-    getCampaignEnvironmentStability(state),
-    Math.round(Math.max(0, trustedHealth - 40) * 10) / 10,
+    getCampaignEnvironmentStability(lowTrust),
+    getCampaignEnvironmentStability(trusted),
   );
-  assert.notEqual(evaluateCampaignEnding(state).bands.environment, "stable");
+  assert.equal(evaluateCampaignEnding(lowTrust).bands.environment, "stable");
+  assert.equal(evaluateCampaignEnding(lowTrust).bands.trust, "low");
 });
 
-test("user count is context and does not change the core ending", () => {
-  const state = createInitialGame(17);
-  state.finance.cash = 14;
-  state.activeThemeIds = [state.currentTopThemeId];
-  state.themes[state.currentTopThemeId].share = 1;
-  state.themes[state.currentTopThemeId].unpleasantness = 30;
-  const initialTotalUsers =
-    state.users.tier + state.users.casual + state.users.collector;
+test("DAY 46 active users define the audience ratio and delta", () => {
+  const state = makeStableFoundation();
+  const baseline = handoverUsers(state);
+  setUserRatio(state, 1.25);
 
-  const populated = evaluateCampaignEnding(state);
-  state.users = { tier: 0, casual: 0, collector: 0 };
-  const empty = evaluateCampaignEnding(state);
-
-  assert.deepEqual(empty.bands, populated.bands);
-  assert.equal(empty.title, populated.title);
-  assert.equal(empty.body, populated.body);
-  assert.equal(populated.totalUsers, initialTotalUsers);
-  assert.equal(empty.totalUsers, 0);
-});
-
-test("the best ending requires all four stewardship pillars", () => {
-  const state = createCompleteStewardshipState();
-  const stewardship = getCampaignStewardshipEvaluation(state);
   const ending = evaluateCampaignEnding(state);
+  assert.equal(ending.handoverUsers, baseline);
+  assert.equal(ending.scores.userRatio, 1.25);
+  assert.equal(
+    ending.scores.userDelta,
+    Math.round((state.users.tier - baseline) * 100) / 100,
+  );
+  assert.equal(ending.bands.users, "grown");
+});
 
-  assert.equal(stewardship.complete, true, JSON.stringify(stewardship));
-  assert.equal(stewardship.passedPillars, 4);
-  assert.equal(stewardship.pillars.support.releasedRequests, 3);
-  assert.equal(stewardship.pillars.policy.balancedReviews, 5);
-  assert.ok(stewardship.pillars.policy.staleFullyReleased >= 2);
-  assert.equal(stewardship.pillars.business.qualifyingActions, 6);
-  assert.equal(stewardship.pillars.business.distinctTypes, 6);
-  assert.equal(stewardship.pillars.business.distinctTones, 4);
-  assert.equal(stewardship.pillars.events.successes, 14);
+test("the best ending uses only reserve, stable, trusted, and a non-contracted audience", () => {
+  const steady = makeStableFoundation();
+  const steadyEnding = evaluateCampaignEnding(steady);
+  assert.equal(steadyEnding.qualifiedForBestEnding, true);
+  assert.equal(steadyEnding.title, "지속 가능한 리그");
+
+  const grown = structuredClone(steady);
+  setUserRatio(grown, 1.1);
+  const grownEnding = evaluateCampaignEnding(grown);
+  assert.equal(grownEnding.qualifiedForBestEnding, true);
+  assert.equal(grownEnding.title, "함께 커진 리그");
+
+  const contracted = structuredClone(steady);
+  setUserRatio(contracted, 0.89);
+  const contractedEnding = evaluateCampaignEnding(contracted);
+  assert.equal(contractedEnding.qualifiedForBestEnding, false);
+  assert.equal(contractedEnding.title, "좋은 판, 줄어든 관중");
+
+  const guarded = structuredClone(grown);
+  guarded.purchaseTrust = 79.9;
+  const guardedEnding = evaluateCampaignEnding(guarded);
+  assert.equal(guardedEnding.qualifiedForBestEnding, false);
+  assert.equal(guardedEnding.title, "성장과 남은 경계");
+
+  const low = structuredClone(grown);
+  low.purchaseTrust = 62;
+  const lowEnding = evaluateCampaignEnding(low);
+  assert.equal(lowEnding.qualifiedForBestEnding, false);
+  assert.equal(lowEnding.title, "성장에 남은 불신");
+});
+
+test("high cash has no upper reserve penalty", () => {
+  const state = makeStableFoundation();
+  state.finance.cash = 1_000_000;
+
+  const ending = evaluateCampaignEnding(state);
+  assert.equal(ending.bands.cash, "reserve");
   assert.equal(ending.qualifiedForBestEnding, true);
   assert.equal(ending.title, "지속 가능한 리그");
-
-  const missingSupport = structuredClone(state);
-  missingSupport.supportRequests.pop();
-  const incomplete = evaluateCampaignEnding(missingSupport);
-  assert.equal(incomplete.stewardship.pillars.support.passed, false);
-  assert.equal(incomplete.qualifiedForBestEnding, false);
-  assert.equal(incomplete.title, "성장 뒤의 숙제");
-  assert.match(incomplete.body, /운영 체계에 빈틈/);
 });
 
-test("ending hints expose missed directions without revealing thresholds", () => {
-  const complete = evaluateCampaignEnding(createCompleteStewardshipState());
-  assert.equal(complete.qualifiedForBestEnding, true);
-  assert.deepEqual(getCampaignEndingHints(complete), []);
+test("identical final results ignore support, policy, business, and event checklists", () => {
+  const plain = makeStableFoundation();
+  plain.finance.cash = 20;
+  const recorded = structuredClone(plain);
+  const themeId = recorded.activeThemeIds[0];
 
-  const mixedState = createCompleteStewardshipState();
-  mixedState.finance.cash = 10;
-  mixedState.purchaseTrust = 0;
-  mixedState.supportRequests.pop();
-  const mixedHints = getCampaignEndingHints(evaluateCampaignEnding(mixedState));
-  assert.deepEqual(
-    mixedHints.map((hint) => hint.id),
-    ["cash", "environment", "support"],
-  );
+  recorded.supportRequests = [
+    {
+      id: "irrelevant-support",
+      themeId,
+      direction: "counterplay",
+      proposedDay: 60,
+      eligibleReleaseDay: 90,
+      status: "released",
+      releasedDay: 90,
+    },
+  ];
+  recorded.community.push({
+    id: "irrelevant-policy",
+    day: 105,
+    category: "restriction",
+    type: "restriction-no-change",
+    themeId,
+    body: "",
+  });
+  recorded.operations.records.push({
+    id: "irrelevant-business",
+    type: "store-tour",
+    startedDay: 60,
+    endsDay: 74,
+    cost: 0.35,
+    outcome: "completed",
+  });
+  recorded.operations.eventRecords.push({
+    id: "irrelevant-event",
+    type: "starter-shortage",
+    appearedDay: 70,
+    choice: "a",
+    cost: 0,
+    risk: 0,
+    resolutionDay: 72,
+    outcome: "success",
+    resolvedDay: 72,
+  });
 
-  const unpreparedState = createInitialGame(202);
-  unpreparedState.purchaseTrust = 0;
-  const unpreparedHints = getCampaignEndingHints(
-    evaluateCampaignEnding(unpreparedState),
-  );
-  assert.deepEqual(
-    new Set(unpreparedHints.map((hint) => hint.id)),
-    new Set(["cash", "environment", "support", "policy", "business", "events"]),
-  );
-  for (const hint of [...mixedHints, ...unpreparedHints]) {
-    assert.doesNotMatch(`${hint.title} ${hint.body}`, /\d/);
-  }
+  assert.deepEqual(evaluateCampaignEnding(recorded), evaluateCampaignEnding(plain));
 });
 
-test("stewardship pillars reject shallow policy, action, and event play", () => {
-  const state = createCompleteStewardshipState();
+test("trust and audience outcomes still change non-stable ending copy", () => {
+  const weak = makeStableFoundation();
+  weak.finance.cash = 10;
+  weak.purchaseTrust = 50;
+  setEnvironment(weak, "danger");
+  setUserRatio(weak, 0.8);
 
-  const shallowPolicy = structuredClone(state);
-  shallowPolicy.community = shallowPolicy.community.filter(
-    (event) => event.day !== 345,
-  );
-  assert.equal(
-    getCampaignStewardshipEvaluation(shallowPolicy).pillars.policy.passed,
-    false,
+  const strong = structuredClone(weak);
+  strong.purchaseTrust = 90;
+  setUserRatio(strong, 1.2);
+
+  const weakEnding = evaluateCampaignEnding(weak);
+  const strongEnding = evaluateCampaignEnding(strong);
+  assert.equal(weakEnding.title, strongEnding.title);
+  assert.notEqual(weakEnding.body, strongEnding.body);
+  assert.match(weakEnding.body, /신뢰.*낮은 구간/);
+  assert.match(strongEnding.body, /신뢰.*견고/);
+});
+
+test("ending hints contain only result axes that missed their standards", () => {
+  const allLow = makeStableFoundation();
+  allLow.finance.cash = 4;
+  allLow.purchaseTrust = 60;
+  setEnvironment(allLow, "danger");
+  setUserRatio(allLow, 0.8);
+
+  assert.deepEqual(
+    getCampaignEndingHints(evaluateCampaignEnding(allLow)).map((hint) => hint.id),
+    ["cash", "environment", "trust", "users"],
   );
 
-  const failedProject = structuredClone(state);
-  failedProject.operations.records[0].outcome = "backlash";
-  assert.equal(
-    getCampaignStewardshipEvaluation(failedProject).pillars.business.passed,
-    false,
+  const guardedGrowth = makeStableFoundation();
+  guardedGrowth.purchaseTrust = 70;
+  setUserRatio(guardedGrowth, 1.2);
+  assert.deepEqual(
+    getCampaignEndingHints(evaluateCampaignEnding(guardedGrowth)).map(
+      (hint) => hint.id,
+    ),
+    ["trust"],
   );
 
-  const powerCreep = structuredClone(state);
-  const guidedProducts = powerCreep.releaseHistory[0].products;
-  powerCreep.releaseHistory.push(
-    {
-      day: 60,
-      products: guidedProducts.map((product, index) => ({
-        ...product,
-        optionId: `pressure-60-${index}`,
-        expectedTier: "Tier 1",
-        powerAdjustment: 3,
-        requestId: undefined,
-      })),
-    },
-    {
-      day: 90,
-      products: guidedProducts.map((product, index) => ({
-        ...product,
-        optionId: `pressure-90-${index}`,
-        expectedTier: "Tier 1",
-        powerAdjustment: 3,
-        requestId: undefined,
-      })),
-    },
-  );
-  const recklessRelease = getCampaignStewardshipEvaluation(powerCreep);
-  assert.equal(recklessRelease.pillars.support.positivePowerPressure, 18);
-  assert.equal(recklessRelease.pillars.support.passed, false);
+  assert.deepEqual(getCampaignEndingHints(evaluateCampaignEnding(makeStableFoundation())), []);
+});
 
-  const unluckyButTrusted = structuredClone(state);
-  unluckyButTrusted.operations.eventRecords[13].outcome = "backlash";
-  unluckyButTrusted.purchaseTrust = 80;
-  const recovered = getCampaignStewardshipEvaluation(unluckyButTrusted);
-  assert.equal(recovered.pillars.events.successes, 13);
-  assert.equal(recovered.pillars.events.usedTrustRecoveryPath, true);
-  assert.equal(recovered.pillars.events.passed, true);
+test("the former high-growth low-trust result receives a distinct trust ending", () => {
+  const state = makeStableFoundation();
+  state.finance.cash = 36.69;
+  state.purchaseTrust = 62;
+  const baseline = handoverUsers(state);
+  state.users = { tier: baseline + 13_277, casual: 0, collector: 0 };
 
-  unluckyButTrusted.purchaseTrust = 79.99;
-  assert.equal(
-    getCampaignStewardshipEvaluation(unluckyButTrusted).pillars.events.passed,
-    false,
-  );
+  const ending = evaluateCampaignEnding(state);
+  assert.equal(ending.scores.cash, 36.7);
+  assert.equal(ending.bands.cash, "reserve");
+  assert.equal(ending.bands.environment, "stable");
+  assert.equal(ending.bands.trust, "low");
+  assert.equal(ending.bands.users, "grown");
+  assert.equal(ending.title, "성장에 남은 불신");
+  assert.notEqual(ending.title, "성장 뒤의 숙제");
+  assert.equal(ending.qualifiedForBestEnding, false);
 });

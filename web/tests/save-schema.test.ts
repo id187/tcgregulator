@@ -15,6 +15,7 @@ import {
 import { DAILY_TOP_CUT_SLOTS } from "../app/game/placement-meta.ts";
 import {
   createCampaignStart,
+  createFirstBanGame,
   createInitialGame,
   getExpectedTier,
   getNewThemeExpectedPower,
@@ -33,6 +34,7 @@ import {
   CURRENT_FUTURE_PART_ID_MAP,
   CURRENT_FUTURE_THEME_ID_MAP,
 } from "../app/game/future-theme-id-migration.ts";
+import { INITIAL_GENERIC_CARD_IDS } from "../app/game/initial-generic-cards.ts";
 import type {
   GameState,
   PowerAdjustment,
@@ -42,6 +44,10 @@ import type {
 function jsonRoundTrip(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value)) as unknown;
 }
+
+const INITIAL_GENERIC_LIMITS = Object.fromEntries(
+  INITIAL_GENERIC_CARD_IDS.map((cardId) => [cardId, 3]),
+);
 
 function asLegacyFutureIdentifiers(value: unknown): unknown {
   if (typeof value === "string") {
@@ -65,6 +71,7 @@ function asLegacyFutureIdentifiers(value: unknown): unknown {
 
 function asLegacyV3(state: GameState): Record<string, unknown> {
   const legacy = jsonRoundTrip(state) as Record<string, unknown>;
+  stripGenericReleaseState(legacy);
   legacy.schemaVersion = 3;
   delete legacy.operations;
   const finance = legacy.finance as Record<string, unknown>;
@@ -78,6 +85,7 @@ function asLegacyV3(state: GameState): Record<string, unknown> {
 
 function asLegacyV4(state: GameState): Record<string, unknown> {
   const legacy = jsonRoundTrip(state) as Record<string, unknown>;
+  stripGenericReleaseState(legacy);
   legacy.schemaVersion = 4;
   stripBusinessEventState(legacy);
   const finance = legacy.finance as Record<string, unknown>;
@@ -88,6 +96,7 @@ function asLegacyV4(state: GameState): Record<string, unknown> {
 
 function asLegacyV5(state: GameState): Record<string, unknown> {
   const legacy = jsonRoundTrip(state) as Record<string, unknown>;
+  stripGenericReleaseState(legacy);
   legacy.schemaVersion = 5;
   stripBusinessEventState(legacy);
   return legacy;
@@ -95,9 +104,52 @@ function asLegacyV5(state: GameState): Record<string, unknown> {
 
 function asLegacyV6(state: GameState): Record<string, unknown> {
   const legacy = jsonRoundTrip(state) as Record<string, unknown>;
+  stripGenericReleaseState(legacy);
   legacy.schemaVersion = 6;
   stripBusinessEventState(legacy);
   return legacy;
+}
+
+function asLegacyV7(state: GameState): Record<string, unknown> {
+  const legacy = jsonRoundTrip(state) as Record<string, unknown>;
+  stripGenericReleaseState(legacy);
+  legacy.schemaVersion = 7;
+  return legacy;
+}
+
+/**
+ * Test-only inverse of the schema-v8 generic fields. Every generated test
+ * release selects one generic, so removing it reconstructs the old 3-of-6
+ * release shape without rewriting unrelated legacy fixture data.
+ */
+function stripGenericReleaseState(state: Record<string, unknown>): void {
+  delete state.genericLimits;
+  delete state.genericReleaseStartDay;
+
+  const releaseHistory = state.releaseHistory as
+    | Array<{ baseline?: boolean; products: Array<{ kind: string }> }>
+    | undefined;
+  if (releaseHistory) {
+    state.releaseHistory = releaseHistory.filter((batch) => !batch.baseline);
+  }
+  for (const batch of (state.releaseHistory as typeof releaseHistory) ?? []) {
+    batch.products = batch.products.filter((product) => product.kind !== "generic");
+  }
+
+  const releaseSlate = state.releaseSlate as
+    | { options: Array<{ kind: string }> }
+    | null
+    | undefined;
+  if (releaseSlate) {
+    releaseSlate.options = releaseSlate.options.filter(
+      (option) => option.kind !== "generic",
+    );
+  }
+
+  const community = state.community as
+    | Array<Record<string, unknown>>
+    | undefined;
+  for (const event of community ?? []) delete event.genericCardId;
 }
 
 function stripBusinessEventState(state: Record<string, unknown>): void {
@@ -171,18 +223,40 @@ function reachFirstRelease(seed: number, requestSupport = false): GameState {
 
 function submitThree(
   state: GameState,
-  adjustments: PowerAdjustment[] = [0, 0, 0],
+  adjustments: PowerAdjustment[] = [0, 0, 0, 0],
   includeRequested = false,
 ): GameState {
   assert.ok(state.releaseSlate);
-  const requested = state.releaseSlate.options.find((option) => option.requested);
-  const ordered = includeRequested && requested
-    ? [requested, ...state.releaseSlate.options.filter((option) => option !== requested)]
-    : state.releaseSlate.options;
-  const selections: ReleaseSelection[] = ordered.slice(0, 3).map((option, index) => ({
+  const options = state.releaseSlate.options;
+  const requested = options.find(
+    (option) => option.kind === "support" && option.requested,
+  );
+  const generic = options.find((option) => option.kind === "generic");
+  let ordered = includeRequested && requested
+    ? [requested, ...options.filter((option) => option !== requested)]
+    : options;
+  let selectionCount = 3;
+  if (generic) {
+    const required = [
+      includeRequested && requested
+        ? requested
+        : options.find((option) => option.kind === "support"),
+      options.find((option) => option.kind === "new-theme"),
+      generic,
+    ].filter((option) => option !== undefined);
+    assert.equal(required.length, 3);
+    ordered = [
+      ...required,
+      ...options.filter((option) => !required.includes(option)),
+    ];
+    selectionCount = 4;
+  }
+  const selections: ReleaseSelection[] = ordered
+    .slice(0, selectionCount)
+    .map((option, index) => ({
     optionId: option.id,
     powerAdjustment: adjustments[index] ?? 0,
-  }));
+    }));
   return reduceGame(state, { type: "SUBMIT_RELEASE", selections });
 }
 
@@ -231,10 +305,10 @@ function reachFormerCampaignEnd(seed: number): GameState {
   return state;
 }
 
-test("accepts schema v7 saves and preserves deterministic continuation", () => {
+test("accepts schema v8 saves and preserves deterministic continuation", () => {
   const initial = createInitialGame(7301);
   const restored = parseGameState(jsonRoundTrip(initial));
-  assert.equal(restored.schemaVersion, 7);
+  assert.equal(restored.schemaVersion, 8);
   assert.deepEqual(restored, initial);
   assert.ok(Buffer.byteLength(JSON.stringify(restored), "utf8") < MAX_SAVE_BYTES);
 
@@ -262,6 +336,49 @@ test("accepts schema v7 saves and preserves deterministic continuation", () => {
   parseGameState(continued);
 });
 
+test("migrates v7 generic state at the next strictly future release", () => {
+  const source = createInitialGame(7_307);
+  const legacy = asLegacyV7(source);
+  const untouched = structuredClone(legacy);
+
+  const migrated = parseGameState(legacy);
+
+  assert.equal(migrated.schemaVersion, 8);
+  assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
+  assert.equal(migrated.genericReleaseStartDay, 60);
+  assert.ok(migrated.releaseHistory.every((batch) => batch.products.length === 3));
+  assert.deepEqual(legacy, untouched, "migration must not mutate its input");
+});
+
+test("lets a migrated v7 six-option review finish before generic rules begin", () => {
+  let source = createCampaignStart(7_308);
+  source.genericReleaseStartDay = 60;
+  source = reduceGame(source, { type: "ADVANCE_DAYS", days: 29 });
+  assert.equal(source.day, 30);
+  assert.equal(source.phase, "release-edit");
+  assert.equal(source.releaseSlate?.options.length, 6);
+
+  const migrated = parseGameState(asLegacyV7(source));
+
+  assert.equal(migrated.genericReleaseStartDay, 60);
+  assert.equal(migrated.releaseSlate?.options.length, 6);
+  const submitted = submitThree(migrated);
+  assert.equal(submitted.releaseHistory.at(-1)?.products.length, 3);
+  parseGameState(submitted);
+});
+
+test("migrates late v7 campaigns with no remaining release to a null start", () => {
+  const source = advanceThroughDecisions(createInitialGame(7_309), 451);
+  assert.equal(source.day, 451);
+
+  const migrated = parseGameState(asLegacyV7(source));
+
+  assert.equal(migrated.schemaVersion, 8);
+  assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
+  assert.equal(migrated.genericReleaseStartDay, null);
+  assert.ok(migrated.releaseHistory.every((batch) => batch.products.length === 3));
+});
+
 test("deep-migrates v0.1.5 future theme and part IDs in schema v3-v7 saves", () => {
   let current = advanceThroughDecisions(createInitialGame(7319), 61);
   const futureThemeId = current.activeThemeIds.find((id) =>
@@ -277,7 +394,10 @@ test("deep-migrates v0.1.5 future theme and part IDs in schema v3-v7 saves", () 
   assert.equal(current.phase, "release-edit");
   assert.ok(
     current.releaseSlate?.options.some(
-      (option) => option.themeId === futureThemeId && option.requested,
+      (option) =>
+        option.kind === "support" &&
+        option.themeId === futureThemeId &&
+        option.requested,
     ),
   );
 
@@ -296,7 +416,7 @@ test("deep-migrates v0.1.5 future theme and part IDs in schema v3-v7 saves", () 
     { version: 4, make: asLegacyV4 },
     { version: 5, make: asLegacyV5 },
     { version: 6, make: asLegacyV6 },
-    { version: 7, make: jsonRoundTrip },
+    { version: 7, make: asLegacyV7 },
   ];
 
   for (const { version, make } of legacyFactories) {
@@ -307,7 +427,9 @@ test("deep-migrates v0.1.5 future theme and part IDs in schema v3-v7 saves", () 
     assert.match(serializedLegacy, new RegExp(legacyPartId));
 
     const migrated = parseGameState(legacy);
-    assert.equal(migrated.schemaVersion, 7, `schema v${version}`);
+    assert.equal(migrated.schemaVersion, 8, `schema v${version}`);
+    assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
+    assert.equal(migrated.genericReleaseStartDay, 120);
     assert.ok(migrated.activeThemeIds.includes(futureThemeId));
     assert.equal(migrated.themes[legacyThemeId], undefined);
     assert.deepEqual(
@@ -324,7 +446,10 @@ test("deep-migrates v0.1.5 future theme and part IDs in schema v3-v7 saves", () 
     );
     assert.ok(
       migrated.releaseHistory.some((batch) =>
-        batch.products.some((product) => product.themeId === futureThemeId),
+        batch.products.some(
+          (product) =>
+            product.kind !== "generic" && product.themeId === futureThemeId,
+        ),
       ),
     );
     assert.ok(
@@ -340,7 +465,6 @@ test("deep-migrates v0.1.5 future theme and part IDs in schema v3-v7 saves", () 
     assert.equal(JSON.stringify(migrated).includes(legacyThemeId), false);
     assert.equal(JSON.stringify(migrated).includes(legacyPartId), false);
     assert.deepEqual(legacy, untouched, "migration must not mutate its input");
-    if (version === 7) assert.deepEqual(migrated, current);
   }
 });
 
@@ -364,7 +488,7 @@ test("rejects legacy/current future-ID key collisions instead of losing data", (
   );
 });
 
-test("migrates strict schema v3 saves to v7 finance and event state", () => {
+test("migrates strict schema v3 saves to v8 finance and event state", () => {
   let source = createCampaignStart(7302);
   source = reduceGame(source, { type: "ADVANCE_DAYS", days: 9 });
   const legacy = asLegacyV3(source);
@@ -374,7 +498,9 @@ test("migrates strict schema v3 saves to v7 finance and event state", () => {
   const migrated = parseGameState(legacy);
   assert.equal(isGameState(legacy), false);
   assert.equal(isGameState(migrated), true);
-  assert.equal(migrated.schemaVersion, 7);
+  assert.equal(migrated.schemaVersion, 8);
+  assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
+  assert.equal(migrated.genericReleaseStartDay, 30);
   assert.equal(
     migrated.finance.cash,
     round4(2.5 + legacyFinance.cumulative * 0.32),
@@ -401,7 +527,7 @@ test("migrates strict schema v3 saves to v7 finance and event state", () => {
   assert.deepEqual(
     parseGameState(jsonRoundTrip(migrated)),
     migrated,
-    "a migrated save must round-trip as schema v7",
+    "a migrated save must round-trip as schema v8",
   );
 
   const extraLegacyField = structuredClone(legacy);
@@ -419,7 +545,9 @@ test("migrates schema v4 saves without retroactively charging operating costs", 
   const migrated = parseGameState(legacy);
 
   assert.equal(isGameState(legacy), false);
-  assert.equal(migrated.schemaVersion, 7);
+  assert.equal(migrated.schemaVersion, 8);
+  assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
+  assert.equal(migrated.genericReleaseStartDay, 60);
   assert.equal(migrated.finance.cash, legacyCash);
   assert.equal(migrated.finance.todayOperatingCost, 0);
   assert.equal(migrated.finance.cumulativeOperatingCosts, 0);
@@ -435,7 +563,9 @@ test("migrates strict schema v6 saves to neutral business-event state", () => {
   const migrated = parseGameState(legacy);
 
   assert.equal(isGameState(legacy), false);
-  assert.equal(migrated.schemaVersion, 7);
+  assert.equal(migrated.schemaVersion, 8);
+  assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
+  assert.equal(migrated.genericReleaseStartDay, 60);
   assert.equal(migrated.operations.nextActionId, source.operations.nextActionId);
   assert.deepEqual(migrated.operations.records, source.operations.records);
   assert.equal(migrated.operations.nextEventId, 1);
@@ -547,7 +677,9 @@ test("migrates schema v5 and reopens former DAY 419 endings for v3-v5", () => {
     const untouched = structuredClone(legacy);
 
     const migrated = parseGameState(legacy);
-    assert.equal(migrated.schemaVersion, 7);
+    assert.equal(migrated.schemaVersion, 8);
+    assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
+    assert.equal(migrated.genericReleaseStartDay, 420);
     assert.equal(migrated.day, 419);
     assert.equal(migrated.phase, "running");
     assert.deepEqual(legacy, untouched, "migration must not mutate its input");
@@ -567,7 +699,7 @@ test("migrates schema v5 and reopens former DAY 419 endings for v3-v5", () => {
       collapsedFinance.todayOperatingCost = 0;
     }
     const collapsed = parseGameState(collapsedLegacy);
-    assert.equal(collapsed.schemaVersion, 7, `legacy index ${index}`);
+    assert.equal(collapsed.schemaVersion, 8, `legacy index ${index}`);
     assert.equal(collapsed.day, 419);
     assert.equal(collapsed.phase, "ended");
   }
@@ -612,6 +744,19 @@ test("round-trips every guided prologue gate without tutorial-only save data", (
   state = reduceGame(state, { type: "COMPLETE_HANDOVER" });
   state = parseGameState(jsonRoundTrip(state));
   assert.deepEqual(state, createInitialGame(1000));
+});
+
+test("round-trips the published DAY 45 handover and rejects a forged early completion", () => {
+  const review = createFirstBanGame(1_002);
+  const forged = structuredClone(review);
+  forged.handoverComplete = true;
+  assert.throws(() => parseGameState(forged), SaveSchemaError);
+
+  const published = reduceGame(review, { type: "SUBMIT_BAN", changes: {} });
+  const completed = reduceGame(published, { type: "COMPLETE_HANDOVER" });
+  const restored = parseGameState(jsonRoundTrip(completed));
+  assert.equal(restored.day, 45);
+  assert.equal(restored.handoverComplete, true);
 });
 
 test("accepts legacy history rows while preserving the new dashboard metrics", () => {
@@ -724,22 +869,38 @@ test("accepts legacy-v7 health values but excludes them from the current chart m
 test("round-trips release editing, support requests, and dynamic theme history", () => {
   const atRelease = reachFirstRelease(8123, true);
   const restoredAtRelease = parseGameState(jsonRoundTrip(atRelease));
-  assert.equal(restoredAtRelease.releaseSlate?.options.length, 6);
+  assert.equal(restoredAtRelease.releaseSlate?.options.length, 9);
   assert.equal(restoredAtRelease.supportRequests[0].status, "offered");
 
   const requested = restoredAtRelease.releaseSlate?.options.find(
-    (option) => option.requested,
+    (option) => option.kind === "support" && option.requested,
   );
-  assert.ok(requested?.requestId);
-  const selections: ReleaseSelection[] = [
+  if (!requested || requested.kind !== "support") {
+    assert.fail("the requested support option must be present");
+  }
+  assert.ok(requested.requestId);
+  const requiredOptions: ReleaseSelection[] = [
     { optionId: requested.id, powerAdjustment: -3 },
-    ...restoredAtRelease.releaseSlate!.options
-      .filter((option) => option.id !== requested.id)
-      .slice(0, 2)
-      .map((option, index) => ({
-        optionId: option.id,
-        powerAdjustment: (index === 0 ? 0 : 3) as PowerAdjustment,
-      })),
+    {
+      optionId: restoredAtRelease.releaseSlate!.options.find(
+        (option) => option.kind === "new-theme",
+      )!.id,
+      powerAdjustment: 0 as const,
+    },
+    {
+      optionId: restoredAtRelease.releaseSlate!.options.find(
+        (option) => option.kind === "generic",
+      )!.id,
+      powerAdjustment: 3 as const,
+    },
+  ];
+  const fourthOption = restoredAtRelease.releaseSlate!.options.find(
+    (option) => !requiredOptions.some((selection) => selection.optionId === option.id),
+  );
+  assert.ok(fourthOption);
+  const selections: ReleaseSelection[] = [
+    ...requiredOptions,
+    { optionId: fourthOption.id, powerAdjustment: 0 as const },
   ];
   const uninterrupted = reduceGame(atRelease, {
     type: "SUBMIT_RELEASE",
@@ -750,7 +911,7 @@ test("round-trips release editing, support requests, and dynamic theme history",
     selections,
   });
   assert.deepEqual(continued, uninterrupted);
-  assert.equal(continued.releaseHistory[1].products.length, 3);
+  assert.equal(continued.releaseHistory[1].products.length, 4);
   assert.equal(continued.supportRequests[0].status, "released");
   assert.equal(continued.supportRequests[0].releasedDay, 60);
 
@@ -760,6 +921,147 @@ test("round-trips release editing, support requests, and dynamic theme history",
   assert.equal(historicalWidths[0], 5);
   assert.ok(historicalWidths.at(-1)! > historicalWidths[0]);
   parseGameState(jsonRoundTrip(continued));
+});
+
+test("validates generic catalog IDs, release uniqueness, and D+1 limits", () => {
+  const atRelease = reachFirstRelease(8_125);
+  const firstReleasedGeneric = atRelease.releaseHistory
+    .flatMap((batch) => batch.products)
+    .find((product) => product.kind === "generic");
+  const offeredGenerics = atRelease.releaseSlate!.options.filter(
+    (option) => option.kind === "generic",
+  );
+  assert.ok(firstReleasedGeneric);
+  assert.equal(offeredGenerics.length, 3);
+  assert.deepEqual(
+    Object.fromEntries(
+      ["new-theme", "support", "generic"].map((kind) => [
+        kind,
+        atRelease.releaseSlate!.options.filter((option) => option.kind === kind)
+          .length,
+      ]),
+    ),
+    { "new-theme": 3, support: 3, generic: 3 },
+  );
+  assert.equal(atRelease.genericLimits[firstReleasedGeneric.genericCardId], 3);
+
+  const missingAppliedLimit = structuredClone(atRelease);
+  delete missingAppliedLimit.genericLimits[firstReleasedGeneric.genericCardId];
+  assert.throws(() => parseGameState(missingAppliedLimit), SaveSchemaError);
+
+  const limitForUnreleasedCard = structuredClone(atRelease);
+  limitForUnreleasedCard.genericLimits[offeredGenerics[0].genericCardId] = 3;
+  assert.throws(() => parseGameState(limitForUnreleasedCard), SaveSchemaError);
+
+  const unknownCatalogId = structuredClone(atRelease);
+  const unknownOption = unknownCatalogId.releaseSlate!.options.find(
+    (option) => option.kind === "generic",
+  );
+  assert.ok(unknownOption);
+  unknownOption.genericCardId = "generic-unknown-enabler" as typeof unknownOption.genericCardId;
+  assert.throws(() => parseGameState(unknownCatalogId), SaveSchemaError);
+
+  const duplicateSlateCard = structuredClone(atRelease);
+  const duplicateOptions = duplicateSlateCard.releaseSlate!.options.filter(
+    (option) => option.kind === "generic",
+  );
+  duplicateOptions[1].genericCardId = duplicateOptions[0].genericCardId;
+  assert.throws(() => parseGameState(duplicateSlateCard), SaveSchemaError);
+
+  const wrongSlateMix = structuredClone(atRelease);
+  const offeredThemeIds = new Set(
+    wrongSlateMix.releaseSlate!.options.flatMap((option) =>
+      option.kind === "generic" ? [] : [option.themeId],
+    ),
+  );
+  const replacementThemeId = wrongSlateMix.activeThemeIds.find(
+    (themeId) => !offeredThemeIds.has(themeId),
+  );
+  assert.ok(replacementThemeId);
+  const replacedGenericOption = wrongSlateMix.releaseSlate!.options.find(
+    (option) => option.kind === "generic",
+  );
+  assert.ok(replacedGenericOption);
+  const forgedSupportOption = replacedGenericOption as unknown as Record<
+    string,
+    unknown
+  >;
+  forgedSupportOption.kind = "support";
+  forgedSupportOption.themeId = replacementThemeId;
+  forgedSupportOption.direction = "consistency";
+  delete forgedSupportOption.genericCardId;
+  assert.throws(() => parseGameState(wrongSlateMix), SaveSchemaError);
+
+  const unreleasedCommunityCard = structuredClone(atRelease);
+  unreleasedCommunityCard.community.push({
+    id: "fixture-unreleased-generic",
+    day: unreleasedCommunityCard.day,
+    category: "release",
+    type: "release-reaction",
+    themeId: unreleasedCommunityCard.currentTopThemeId,
+    genericCardId: offeredGenerics[0].genericCardId,
+    body: "아직 발매되지 않은 범용 카드에 관한 위조 게시물",
+  });
+  assert.throws(() => parseGameState(unreleasedCommunityCard), SaveSchemaError);
+
+  const submitted = submitThree(atRelease);
+  const sameDayGeneric = submitted.releaseHistory
+    .at(-1)!
+    .products.find((product) => product.kind === "generic");
+  assert.ok(sameDayGeneric);
+  assert.ok(
+    ["new-theme", "support", "generic"].every((kind) =>
+      submitted.releaseHistory.at(-1)!.products.some(
+        (product) => product.kind === kind,
+      ),
+    ),
+  );
+  assert.equal(submitted.genericLimits[sameDayGeneric.genericCardId], undefined);
+
+  const prematureLimit = structuredClone(submitted);
+  prematureLimit.genericLimits[sameDayGeneric.genericCardId] = 3;
+  assert.throws(() => parseGameState(prematureLimit), SaveSchemaError);
+
+  const duplicateHistoricalCard = structuredClone(submitted);
+  const newestGeneric = duplicateHistoricalCard.releaseHistory
+    .at(-1)!
+    .products.find((product) => product.kind === "generic");
+  assert.ok(newestGeneric);
+  newestGeneric.genericCardId = firstReleasedGeneric.genericCardId;
+  assert.throws(() => parseGameState(duplicateHistoricalCard), SaveSchemaError);
+
+  const wrongProductMix = structuredClone(submitted);
+  const newestBatch = wrongProductMix.releaseHistory.at(-1)!;
+  const batchThemeIds = new Set(
+    newestBatch.products.flatMap((product) =>
+      product.kind === "generic" ? [] : [product.themeId],
+    ),
+  );
+  const supportThemeId = wrongProductMix.activeThemeIds.find(
+    (themeId) => !batchThemeIds.has(themeId),
+  );
+  assert.ok(supportThemeId);
+  const genericProduct = newestBatch.products.find(
+    (product) => product.kind === "generic",
+  );
+  assert.ok(genericProduct);
+  const forgedSupportProduct = genericProduct as unknown as Record<
+    string,
+    unknown
+  >;
+  forgedSupportProduct.kind = "support";
+  forgedSupportProduct.themeId = supportThemeId;
+  forgedSupportProduct.direction = "consistency";
+  delete forgedSupportProduct.genericCardId;
+  assert.throws(() => parseGameState(wrongProductMix), SaveSchemaError);
+
+  const applied = advanceThroughDecisions(submitted, submitted.day + 1);
+  assert.equal(applied.genericLimits[sameDayGeneric.genericCardId], 3);
+  parseGameState(applied);
+
+  const missingNextDayLimit = structuredClone(applied);
+  delete missingNextDayLimit.genericLimits[sameDayGeneric.genericCardId];
+  assert.throws(() => parseGameState(missingNextDayLimit), SaveSchemaError);
 });
 
 test("normalizes stale schema-v7 new-theme forecasts and same-day products", () => {
@@ -788,9 +1090,23 @@ test("normalizes stale schema-v7 new-theme forecasts and same-day products", () 
   assert.equal(normalizedOption?.expectedPower, expectedPower);
   assert.equal(normalizedOption?.expectedTier, getExpectedTier(expectedPower));
 
-  const selections = restoredReleaseEdit.releaseSlate!.options
-    .slice(0, 3)
-    .map((option) => ({
+  const selectedOptions = [
+    restoredReleaseEdit.releaseSlate!.options.find(
+      (option) => option.id === newOption.id,
+    )!,
+    restoredReleaseEdit.releaseSlate!.options.find(
+      (option) => option.kind === "support",
+    )!,
+    restoredReleaseEdit.releaseSlate!.options.find(
+      (option) => option.kind === "generic",
+    )!,
+  ];
+  selectedOptions.push(
+    restoredReleaseEdit.releaseSlate!.options.find(
+      (option) => !selectedOptions.includes(option),
+    )!,
+  );
+  const selections = selectedOptions.map((option) => ({
       optionId: option.id,
       powerAdjustment: 0 as const,
     }));
@@ -860,7 +1176,7 @@ test("keeps the historical share floor closed across advance and reparse", () =>
   assert.throws(() => parseGameState(zeroHistory), SaveSchemaError);
 });
 
-test("cross-validates applied support waves and rejects a forged fourth product", () => {
+test("cross-validates applied support waves and rejects a malformed release mix", () => {
   let state = createInitialGame(4802);
   const targetId = state.activeThemeIds[0];
   const content = THEMES.find((theme) => theme.id === targetId)!;
@@ -873,20 +1189,13 @@ test("cross-validates applied support waves and rejects a forged fourth product"
     });
     state = advanceWhileRunning(state, 100);
     const requested = state.releaseSlate?.options.find(
-      (option) => option.requested && option.themeId === targetId,
+      (option) =>
+        option.kind === "support" &&
+        option.requested &&
+        option.themeId === targetId,
     );
     assert.ok(requested);
-    const selected = [
-      requested,
-      ...state.releaseSlate!.options.filter((option) => option.id !== requested.id),
-    ].slice(0, 3);
-    state = reduceGame(state, {
-      type: "SUBMIT_RELEASE",
-      selections: selected.map((option) => ({
-        optionId: option.id,
-        powerAdjustment: 3,
-      })),
-    });
+    state = submitThree(state, [3, 3, 3, 3], true);
     state = advanceWhileRunning(state, 1);
     if (wave < 3) {
       state = advanceWhileRunning(state, 15);
@@ -970,7 +1279,11 @@ test("accepts every decision gate through campaign termination", () => {
   }
   assert.equal(checkedLatePackOdds, true);
   assert.equal(game.day, CAMPAIGN_END_DAY);
-  assert.ok(game.releaseHistory.every((batch) => batch.products.length === 3));
+  assert.ok(
+    game.releaseHistory
+      .filter((batch) => !batch.baseline)
+      .every((batch) => batch.products.length === 4),
+  );
   const serialized = JSON.stringify(game);
   assert.ok(Buffer.byteLength(serialized, "utf8") < MAX_SAVE_BYTES);
   const jsonValue = JSON.parse(serialized) as unknown;
@@ -993,45 +1306,46 @@ test("round-trips business-action lifecycles and permits net-negative daily cash
     endsDay: 36,
     cost: 0.6,
     outcome: "active",
+    risk: 0.3242,
   });
 
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
-  state = reduceGame(state, {
-    type: "RUN_BUSINESS_ACTION",
-    action: "championship",
-  });
-  assert.equal(state.operations.records[1].outcome, "active");
-  assert.equal(state.operations.records[1].resolvedDay, undefined);
-  assert.deepEqual(parseGameState(jsonRoundTrip(state)), state);
-
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
-  assert.ok(["success", "backlash"].includes(state.operations.records[1].outcome));
-  assert.equal(state.operations.records[1].resolvedDay, 17);
   state = reduceGame(state, {
     type: "RUN_BUSINESS_ACTION",
     action: "pack-odds",
   });
-  assert.deepEqual(
-    {
-      outcome: state.operations.records[2].outcome,
-      startedDay: state.operations.records[2].startedDay,
-      endsDay: state.operations.records[2].endsDay,
-    },
-    { outcome: "pending", startedDay: 17, endsDay: 59 },
-  );
+  assert.equal(state.operations.records[1].outcome, "pending");
+  assert.equal(state.operations.records[1].resolvedDay, undefined);
   assert.deepEqual(parseGameState(jsonRoundTrip(state)), state);
 
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 13 });
+  assert.deepEqual(
+    {
+      outcome: state.operations.records[1].outcome,
+      startedDay: state.operations.records[1].startedDay,
+      endsDay: state.operations.records[1].endsDay,
+    },
+    { outcome: "pending", startedDay: 16, endsDay: 59 },
+  );
+
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
   assert.equal(state.day, 30);
   assert.equal(state.phase, "release-edit");
-  assert.equal(state.operations.records[2].outcome, "pending");
+  assert.equal(state.operations.records[1].outcome, "pending");
   state = submitThree(state);
+  assert.equal(state.operations.records[1].outcome, "active");
+  assert.equal(state.operations.records[1].appliedDay, 30);
+  state = reduceGame(state, {
+    type: "RUN_BUSINESS_ACTION",
+    action: "championship",
+  });
   assert.equal(state.operations.records[2].outcome, "active");
-  assert.equal(state.operations.records[2].appliedDay, 30);
+  assert.equal(state.operations.records[2].risk, undefined);
   assert.deepEqual(parseGameState(jsonRoundTrip(state)), state);
 
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
-  assert.ok(["clean", "detected"].includes(state.operations.records[2].outcome));
+  assert.ok(["clean", "detected"].includes(state.operations.records[1].outcome));
+  assert.equal(state.operations.records[1].resolvedDay, 31);
+  assert.ok(["success", "backlash"].includes(state.operations.records[2].outcome));
   assert.equal(state.operations.records[2].resolvedDay, 31);
   assert.deepEqual(parseGameState(jsonRoundTrip(state)), state);
 });
@@ -1111,9 +1425,36 @@ test("rejects malformed business-action records and finance totals", () => {
   badCost.finance.cumulativeExpenses = 0.5;
   assert.throws(() => parseGameState(badCost), SaveSchemaError);
 
-  const forbiddenRisk = structuredClone(valid);
-  forbiddenRisk.operations.records[0].risk = 0.1;
-  assert.throws(() => parseGameState(forbiddenRisk), SaveSchemaError);
+  const invalidRisk = structuredClone(valid);
+  invalidRisk.operations.records[0].risk = -0.1;
+  assert.throws(() => parseGameState(invalidRisk), SaveSchemaError);
+
+  const legacyRiskless = structuredClone(valid);
+  delete legacyRiskless.operations.records[0].risk;
+  assert.deepEqual(parseGameState(jsonRoundTrip(legacyRiskless)), legacyRiskless);
+
+  const resolvedOrdinary = reduceGame(valid, {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
+  assert.ok(
+    resolvedOrdinary.operations.records[0].outcome === "success" ||
+      resolvedOrdinary.operations.records[0].outcome === "backlash",
+  );
+  assert.equal(resolvedOrdinary.operations.records[0].resolvedDay, 16);
+  assert.deepEqual(
+    parseGameState(jsonRoundTrip(resolvedOrdinary)),
+    resolvedOrdinary,
+  );
+  const forgedOrdinaryOutcome = structuredClone(resolvedOrdinary);
+  forgedOrdinaryOutcome.operations.records[0].outcome =
+    resolvedOrdinary.operations.records[0].outcome === "success"
+      ? "backlash"
+      : "success";
+  assert.throws(
+    () => parseGameState(forgedOrdinaryOutcome),
+    SaveSchemaError,
+  );
 
   let appliedPackOdds = createInitialGame(6203);
   appliedPackOdds = reduceGame(appliedPackOdds, {
@@ -1329,12 +1670,17 @@ test("rejects invalid support cooldowns, slate options, and request links", () =
   assert.throws(() => parseGameState(wrongTier), SaveSchemaError);
 
   const requestedOptionIndex = atRelease.releaseSlate!.options.findIndex(
-    (option) => option.requested,
+    (option) => option.kind === "support" && option.requested,
   );
   assert.ok(requestedOptionIndex >= 0);
   const brokenRequestLink = structuredClone(atRelease);
-  brokenRequestLink.releaseSlate!.options[requestedOptionIndex].requestId =
-    "support-request-missing";
+  const brokenRequestedOption = brokenRequestLink.releaseSlate!.options[
+    requestedOptionIndex
+  ];
+  assert.equal(brokenRequestedOption.kind, "support");
+  if (brokenRequestedOption.kind === "support") {
+    brokenRequestedOption.requestId = "support-request-missing";
+  }
   assert.throws(() => parseGameState(brokenRequestLink), SaveSchemaError);
 
   const slateOutsideReleaseEdit = structuredClone(atRelease);
@@ -1359,13 +1705,19 @@ test("rejects malformed release batches and historical share maps", () => {
   const requestedProductIndex = released.releaseHistory[
     requestedBatchIndex
   ].products.findIndex(
-    (product) => product.requestId,
+    (product) => product.kind === "support" && product.requestId,
   );
   assert.ok(requestedProductIndex >= 0);
   const brokenReleasedRequest = structuredClone(released);
-  brokenReleasedRequest.releaseHistory[requestedBatchIndex].products[
+  const brokenRequestedProduct = brokenReleasedRequest.releaseHistory[
+    requestedBatchIndex
+  ].products[
     requestedProductIndex
-  ].requestId = "support-request-missing";
+  ];
+  assert.equal(brokenRequestedProduct.kind, "support");
+  if (brokenRequestedProduct.kind === "support") {
+    brokenRequestedProduct.requestId = "support-request-missing";
+  }
   assert.throws(() => parseGameState(brokenReleasedRequest), SaveSchemaError);
 
   const invalidHistoryTotal = structuredClone(released);

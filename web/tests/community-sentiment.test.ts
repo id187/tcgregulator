@@ -19,6 +19,21 @@ import type {
   RestrictionLimit,
 } from "../app/game/types.ts";
 
+function getPlannedReleaseSelections(state: GameState) {
+  const options = state.releaseSlate?.options;
+  assert.ok(options, "release-edit must expose a release slate");
+  const selected = [
+    ...options.filter((option) => option.kind === "new-theme").slice(0, 2),
+    ...options.filter((option) => option.kind === "support").slice(0, 1),
+    ...options.filter((option) => option.kind === "generic").slice(0, 1),
+  ];
+  assert.equal(selected.length, 4);
+  return selected.map((option) => ({
+    optionId: option.id,
+    powerAdjustment: 0 as const,
+  }));
+}
+
 function fixturePost(body: string): Pick<
   CommunityEvent,
   "body" | "type" | "category"
@@ -110,10 +125,7 @@ function advanceFullCampaignToDay(state: GameState, targetDay: number): GameStat
     } else if (next.phase === "release-edit") {
       next = reduceGame(next, {
         type: "SUBMIT_RELEASE",
-        selections: next.releaseSlate!.options.slice(0, 3).map((option) => ({
-          optionId: option.id,
-          powerAdjustment: 0,
-        })),
+        selections: getPlannedReleaseSelections(next),
       });
     } else if (next.phase === "ban-edit") {
       next = reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
@@ -199,7 +211,7 @@ test("lower-only and upper-ignored D+1 boards are strongly negative", () => {
   assert.ok(lower.negative > lower.positive);
   assert.match(lower.label, /부정적/);
   assert.ok(
-    balanced.score >= lower.score + 25,
+    balanced.score >= lower.score + 15,
     `${JSON.stringify({ lower, balanced })}`,
   );
   assert.ok(

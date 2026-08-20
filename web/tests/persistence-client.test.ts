@@ -11,6 +11,21 @@ import { loadPersistedGameFromStorage } from "../app/game/persistence-client.ts"
 import { MAX_SAVE_BYTES } from "../app/game/save-schema.ts";
 import type { GameState } from "../app/game/types.ts";
 
+function getPlannedReleaseSelections(state: GameState) {
+  const options = state.releaseSlate?.options;
+  assert.ok(options, "release-edit must expose a release slate");
+  const selected = [
+    ...options.filter((option) => option.kind === "new-theme").slice(0, 2),
+    ...options.filter((option) => option.kind === "support").slice(0, 1),
+    ...options.filter((option) => option.kind === "generic").slice(0, 1),
+  ];
+  assert.equal(selected.length, 4);
+  return selected.map((option) => ({
+    optionId: option.id,
+    powerAdjustment: 0 as const,
+  }));
+}
+
 const CURRENT_KEY = "tcg-regulator-save-v2";
 const LEGACY_KEY = "tcg-regulator-save-v1";
 
@@ -70,10 +85,7 @@ function reachFutureThemeState(seed: number): GameState {
     } else if (state.phase === "release-edit") {
       state = reduceGame(state, {
         type: "SUBMIT_RELEASE",
-        selections: state.releaseSlate!.options.slice(0, 3).map((option) => ({
-          optionId: option.id,
-          powerAdjustment: 0,
-        })),
+        selections: getPlannedReleaseSelections(state),
       });
     } else if (state.phase === "ban-edit") {
       state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });

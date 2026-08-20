@@ -1,6 +1,5 @@
 import {
   INITIAL_THEME_PART_COUNT,
-  MATCHUP_TABLE,
   MAX_THEME_SUPPORTS,
   SUPPORT_PARTS_PER_RELEASE,
   THEMES,
@@ -11,6 +10,13 @@ import {
   type MetaTier,
 } from "./meta-tiers.ts";
 import {
+  capStrategicMatchupLogit,
+  getCounterplaySupportLogitBonus,
+  getKeywordMatchupLogitAdjustment,
+  PLAY_KEYWORD_IDS,
+  type PlayKeyword,
+} from "./play-keywords.ts";
+import {
   getDeterministicDailyTopCutPlacements,
   getPlacementTier,
   getRecentPlacementReport,
@@ -18,30 +24,40 @@ import {
 } from "./placement-meta.ts";
 import {
   BUSINESS_ACTION_BY_TYPE,
-  getBusinessActionAvailability,
   getBusinessActionScheduledEndDay,
   getBusinessEnvironmentHealth,
-  getChampionshipBacklashRisk,
-  getPackOddsDetectionRisk,
-  getStrategicProjectRiskProfile,
-  isBusinessActionEffectActive,
-  isStrategicBusinessAction,
-  getStackedBusinessActionDailyGrossRevenue,
+  getProbabilisticBusinessActionOutcome,
+  isProbabilisticBusinessAction,
 } from "./business-actions.ts";
+import {
+  getBusinessChallengeProgressError,
+  isBusinessChallengeDecisionDay,
+  isChallengeBusinessAction,
+} from "./business-challenges.ts";
 import {
   BUSINESS_EVENT_BY_TYPE,
   BUSINESS_STRATEGY_MAX,
   BUSINESS_STRATEGY_MIN,
   applyBusinessStrategyDelta,
   getBusinessEventChoice,
-  getBusinessEventOutcome,
-  getBusinessEventResult,
-  getBusinessEventRevenueBonus as getResolvedBusinessEventRevenueBonus,
   getBusinessStrategyModifiers,
   getBusinessEventType,
   getInitialBusinessEventDay,
   getNextBusinessEventDay,
 } from "./business-events.ts";
+import {
+  applyPendingPackOddsToCurrentRelease,
+  chooseBusinessEvent,
+  getBusinessBuyerRateBonus,
+  getBusinessEventRevenueBonus,
+  getBusinessTrustRecovery,
+  getBusinessUserRateModifiers,
+  getResolvedBusinessEventCashDelta,
+  hasPackOddsAdjustmentForRelease,
+  openBusinessEvent,
+  runBusinessAction,
+  updateBusinessLifecycle,
+} from "./business-runtime.ts";
 import {
   BAN_INTERVAL,
   CAMPAIGN_END_DAY,
@@ -61,15 +77,42 @@ import { withKoreanParticle } from "./korean-particles.ts";
 import { getStableThemeRandomIdentifier } from "./future-theme-id-migration.ts";
 import { getDailyCommunitySentiment } from "./community-sentiment.ts";
 import { ENVIRONMENT_HEALTH_MODEL } from "./environment-health.ts";
+import { getSupportNeglectPressure } from "./support-continuity.ts";
+import {
+  GENERIC_CARD_CATALOG,
+  getGenericCard,
+} from "./generic-card-catalog.ts";
+import {
+  INITIAL_GENERIC_CARD_IDS,
+  createInitialGenericReleaseBatch,
+  isInitialGenericReleaseBatch,
+} from "./initial-generic-cards.ts";
+import {
+  buildGenericMetaModel,
+  selectGenericLimitThemeImpacts,
+  type GenericMetaModel,
+  type GenericLimitOverrides,
+} from "./generic-card-meta.ts";
 import {
   getPublishedRestrictionPolicyProfile,
+  getRestrictionHistoricalOutcome,
   getRestrictionPolicyProfile,
+  type RestrictionOutcomeClassification,
+  type RestrictionPolicyProfile,
 } from "./restriction-policy.ts";
+import { assertRestrictionCapacity } from "./restriction-cap.ts";
+import {
+  getEnvironmentTargetGenericPool,
+  getIndirectSupportGenericPool,
+  getPendingReleaseRequest,
+  getReleaseRequestKind,
+  getReleaseRequestLane,
+  getReprintImpactPreview,
+  getRequestGenericPool,
+  type ReleaseRequestInput,
+} from "./release-requests.ts";
 import type {
-  BusinessActionRecord,
   BusinessActionType,
-  BusinessEventChoice,
-  BusinessEventRecord,
   CommunityEvent,
   CommunityEventType,
   DailyHistory,
@@ -79,11 +122,13 @@ import type {
   PartContent,
   PowerAdjustment,
   ReleaseOption,
+  ReleaseRequestLane,
   ReleaseSelection,
   ReleasedProduct,
   RestrictionLimit,
   SupportDirection,
   SupportRequest,
+  ThemeSupportRequest,
   ThemeContent,
   ThemeId,
   ThemeRuntime,
@@ -106,6 +151,7 @@ const INITIAL_OPERATING_CASH = 2.5;
 const CATALOG_DAILY_SPEND_PER_USER = 350;
 const PACK_ODDS_REVENUE_MULTIPLIER = 1.25;
 const BALANCED_RELEASE_TRUST_RECOVERY = 0.18;
+const RESTRICTION_OUTCOME_FOLLOWUP_DAYS = 4;
 const STARTING_THEME_IDS = [
   "cycle",
   "white-night",
@@ -137,20 +183,41 @@ const SUPPORT_SHARE_SURGE_BY_ADJUSTMENT: Record<PowerAdjustment, number> = {
   3: 0.08,
 };
 const PACK_DEMAND_BY_META_TIER: Record<MetaTier, number> = {
-  "Tier 0": 0.075,
-  "Tier 1": 0.05,
-  "Tier 2": 0.027,
-  "Tier 3": 0.01,
-  "Tier Out": 0,
+  "Tier 0": 0.16,
+  "Tier 1": 0.11,
+  "Tier 2": 0.035,
+  "Tier 3": -0.015,
+  "Tier Out": -0.04,
 };
-const PROLOGUE_RELEASE_PLAN = [
-  { optionIndex: 0, powerAdjustment: 3 },
-  { optionIndex: 1, powerAdjustment: 3 },
-  { optionIndex: 2, powerAdjustment: 3 },
-] as const satisfies readonly {
-  optionIndex: number;
-  powerAdjustment: PowerAdjustment;
-}[];
+const GENERIC_RELEASE_OPTION_COUNT = 3;
+const STANDARD_RELEASE_PRODUCT_COUNT = 4;
+const LEGACY_RELEASE_PRODUCT_COUNT = 3;
+
+export interface PrologueReleasePlan {
+  /** Canonical reducer payload. Preserve this order for replay identity. */
+  selections: ReleaseSelection[];
+  /** Direct option buttons that the guided UI should lock as selected. */
+  selectedOptionIds: string[];
+  /** Fixed slider values keyed by direct option id. */
+  powerAdjustmentByOptionId: Record<string, PowerAdjustment>;
+  /** The reducer appends this requested reprint; it is never a direct pick. */
+  lockedReprintOptionId: string | null;
+  /** Direct selections plus an optional locked reprint. */
+  totalProductCount: number;
+}
+
+function compareReleaseOptionIds(
+  left: Pick<ReleaseOption, "id">,
+  right: Pick<ReleaseOption, "id">,
+): number {
+  const sequence = (id: string) => {
+    const match = /-(\d+)$/.exec(id);
+    return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  return sequence(left.id) - sequence(right.id) ||
+    left.id.localeCompare(right.id);
+}
+
 /**
  * Resolves the fixed tutorial choices against the actual DAY 30 slate.
  *
@@ -166,7 +233,7 @@ export function getPrologueReleaseSelections(
     state.phase !== "release-edit" ||
     !state.releaseSlate ||
     state.releaseSlate.day !== state.day ||
-    state.releaseSlate.options.length !== 6
+    ![6, 9, 10].includes(state.releaseSlate.options.length)
   ) {
     throw new Error("Prologue release choices are only available at the DAY 30 review.");
   }
@@ -177,17 +244,102 @@ export function getPrologueReleaseSelections(
   const supportCount = state.releaseSlate.options.filter(
     (option) => option.kind === "support",
   ).length;
-  if (newThemeCount !== 3 || supportCount !== 3) {
-    throw new Error("The prologue release review must contain three new themes and three supports.");
+  const genericCount = state.releaseSlate.options.filter(
+    (option) => option.kind === "generic",
+  ).length;
+  const usesGenericRules = genericCount > 0;
+  if (
+    newThemeCount !== 3 ||
+    supportCount !== 3 ||
+    (usesGenericRules ? genericCount !== 3 : genericCount !== 0)
+  ) {
+    throw new Error("The prologue release review has an invalid option mix.");
   }
 
-  return PROLOGUE_RELEASE_PLAN.map(({ optionIndex, powerAdjustment }) => {
-    const option = state.releaseSlate!.options[optionIndex];
-    if (!option) {
-      throw new Error(`Missing prologue release option at index ${optionIndex}.`);
-    }
-    return { optionId: option.id, powerAdjustment };
-  });
+  const options = state.releaseSlate.options;
+  if (!usesGenericRules) {
+    return options.slice(0, LEGACY_RELEASE_PRODUCT_COUNT).map((option) => ({
+      optionId: option.id,
+      powerAdjustment: 3 as PowerAdjustment,
+    }));
+  }
+  const newThemes = options
+    .filter((option) => option.kind === "new-theme")
+    .sort(compareReleaseOptionIds);
+  const support = options
+    .filter((option) => option.kind === "support")
+    .sort(compareReleaseOptionIds)[0];
+  const generic = options
+    .filter((option) => option.kind === "generic")
+    .sort(compareReleaseOptionIds)[0];
+  if (newThemes.length < 2 || !support || !generic) {
+    throw new Error("Missing a guided prologue release category.");
+  }
+  if (options.some((option) => option.kind === "reprint" && option.locked)) {
+    return [
+      { optionId: newThemes[0].id, powerAdjustment: 3 },
+      { optionId: support.id, powerAdjustment: 3 },
+      { optionId: generic.id, powerAdjustment: 0 },
+    ];
+  }
+  return [
+    { optionId: newThemes[0].id, powerAdjustment: 3 },
+    { optionId: newThemes[1].id, powerAdjustment: 3 },
+    { optionId: support.id, powerAdjustment: 3 },
+    // The fourth tutorial slot demonstrates a broadly usable card without
+    // adding another forced maximum-power trust shock to the handover.
+    { optionId: generic.id, powerAdjustment: 0 },
+  ];
+}
+
+/** Read model shared by the guided selection screen and skip replay. */
+export function getPrologueReleasePlan(state: GameState): PrologueReleasePlan {
+  const selections = getPrologueReleaseSelections(state);
+  const lockedReprint = state.releaseSlate?.options.find(
+    (option) => option.kind === "reprint" && option.locked,
+  );
+  return {
+    selections: selections.map((selection) => ({ ...selection })),
+    selectedOptionIds: selections.map((selection) => selection.optionId),
+    powerAdjustmentByOptionId: Object.fromEntries(
+      selections.map((selection) => [
+        selection.optionId,
+        selection.powerAdjustment,
+      ]),
+    ),
+    lockedReprintOptionId: lockedReprint?.id ?? null,
+    totalProductCount: selections.length + (lockedReprint ? 1 : 0),
+  };
+}
+
+/** Canonical command used when exact tutorial/skip replay identity matters. */
+export function getPrologueReleaseCommand(
+  state: GameState,
+): Extract<GameCommand, { type: "SUBMIT_RELEASE" }> {
+  return {
+    type: "SUBMIT_RELEASE",
+    selections: getPrologueReleasePlan(state).selections,
+  };
+}
+
+/** Exact order and values are required to reproduce the skip replay state. */
+export function isPrologueReleaseSubmission(
+  state: GameState,
+  selections: readonly ReleaseSelection[],
+): boolean {
+  try {
+    const expected = getPrologueReleaseSelections(state);
+    return (
+      selections.length === expected.length &&
+      selections.every(
+        (selection, index) =>
+          selection.optionId === expected[index].optionId &&
+          selection.powerAdjustment === expected[index].powerAdjustment,
+      )
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Returns whether one release choice is one of the guided DAY 30 choices. */
@@ -329,6 +481,59 @@ const DIRECTION_UNPLEASANTNESS: Record<SupportDirection, number> = {
   recovery: -0.3,
 };
 
+const SLOW_PLAN_KEYWORDS = new Set<PlayKeyword>([
+  "setup",
+  "fortress",
+  "attrition",
+  "ramp",
+  "territory",
+  "countdown",
+]);
+const INTERACTION_PLAN_KEYWORDS = new Set<PlayKeyword>([
+  "control",
+  "disruption",
+  "reactive",
+  "deception",
+]);
+const SUPPORT_KEYWORD_POOLS: Readonly<
+  Record<SupportDirection, readonly PlayKeyword[]>
+> = {
+  consistency: [
+    "consistency",
+    "protection",
+    "mobility",
+    "setup",
+    "toolbox",
+    "tempo",
+  ],
+  counterplay: [
+    "reactive",
+    "disruption",
+    "deception",
+    "territory",
+    "control",
+  ],
+  finisher: [
+    "burst",
+    "rush",
+    "gambit",
+    "countdown",
+    "transformation",
+    "combo",
+  ],
+  recovery: [
+    "resilience",
+    "recursion",
+    "attrition",
+    "fortress",
+    "midrange",
+    "ramp",
+  ],
+};
+/** Directional support cannot replace raw power or the theme's base keywords. */
+export const SUPPORT_DIRECTION_MATCHUP_LOGIT_CAP = 0.28;
+const OPTIMIZATION_DISCOVERY_POINT = 0.55;
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
@@ -349,11 +554,6 @@ function sigmoid(value: number): number {
   }
   const exponential = Math.exp(value);
   return exponential / (1 + exponential);
-}
-
-function logit(probability: number): number {
-  const safe = clamp(probability, 0.08, 0.92);
-  return Math.log(safe / (1 - safe));
 }
 
 function withTopicParticle(value: string): string {
@@ -392,6 +592,283 @@ function activeContents(state: GameState): ThemeContent[] {
   return state.activeThemeIds.map((themeId) => THEME_BY_ID[themeId]);
 }
 
+type SupportDirectionCounts = Readonly<Record<SupportDirection, number>>;
+
+function getReleasedSupportDirectionCounts(
+  state: GameState,
+  themeId: ThemeId,
+  observationDay = state.day,
+): SupportDirectionCounts {
+  const counts: Record<SupportDirection, number> = {
+    consistency: 0,
+    counterplay: 0,
+    finisher: 0,
+    recovery: 0,
+  };
+  for (const batch of state.releaseHistory) {
+    // Products selected on a release review take effect the following day.
+    if (batch.day >= observationDay) continue;
+    for (const product of batch.products) {
+      if (product.kind !== "support" || product.themeId !== themeId) continue;
+      counts[product.direction ?? "consistency"] += 1;
+    }
+  }
+  return Object.freeze(counts);
+}
+
+export type ThemeOptimizationPhase =
+  | "pre-campaign"
+  | "learning"
+  | "emerging"
+  | "optimized";
+
+export interface ThemeOptimizationStatus {
+  readonly themeId: ThemeId;
+  /** null means that the theme predates the player's mandate. */
+  readonly debutDay: number | null;
+  readonly elapsedDays: number;
+  readonly authoredOptimizationDays: number;
+  /** Consistency support can shorten the remaining learning curve. */
+  readonly effectiveOptimizationDays: number;
+  /** 0..1; intended for qualitative UI status, not matchup disclosure. */
+  readonly progress: number;
+  /** Temporary power still unavailable while lists and lines are being solved. */
+  readonly powerPenalty: number;
+  readonly phase: ThemeOptimizationPhase;
+  readonly fullyOptimized: boolean;
+}
+
+function getThemeOptimizationStatusAtDay(
+  state: GameState,
+  themeId: ThemeId,
+  observationDay: number,
+): Readonly<ThemeOptimizationStatus> {
+  const content = THEME_BY_ID[themeId];
+  const runtime = state.themes[themeId];
+  if (!content || !runtime) {
+    throw new Error(`Inactive optimization theme: ${themeId}.`);
+  }
+
+  const debutDay = getThemeDebutDay(state.releaseHistory, themeId);
+  const authoredOptimizationDays = Math.max(
+    1,
+    Math.round(content.optimizationDays),
+  );
+  if (debutDay === null) {
+    return Object.freeze({
+      themeId,
+      debutDay: null,
+      elapsedDays: authoredOptimizationDays,
+      authoredOptimizationDays,
+      effectiveOptimizationDays: authoredOptimizationDays,
+      progress: 1,
+      powerPenalty: 0,
+      phase: "pre-campaign",
+      fullyOptimized: true,
+    });
+  }
+
+  const consistencyWaves = getReleasedSupportDirectionCounts(
+    state,
+    themeId,
+    observationDay,
+  ).consistency;
+  const effectiveOptimizationDays = Math.max(
+    1,
+    Math.ceil(authoredOptimizationDays / (1 + consistencyWaves * 0.35)),
+  );
+  const elapsedDays = Math.max(0, observationDay - debutDay);
+  const linearProgress = clamp(elapsedDays / effectiveOptimizationDays, 0, 1);
+  // Smoothstep keeps a difficult release obscure early, then lets solved lists
+  // create a visible deterministic rise without storing another progress field.
+  const progress = round(
+    linearProgress * linearProgress * (3 - 2 * linearProgress),
+    6,
+  );
+  const launchAdjustment = state.releaseHistory
+    .flatMap((batch) => batch.products)
+    .find(
+      (product) =>
+        product.kind === "new-theme" && product.themeId === themeId,
+    )?.powerAdjustment ?? 0;
+  // Brute-force tuning is immediately legible even before the best list is
+  // solved. Balanced and weak releases have more latent performance to find.
+  const tuningLearningMultiplier = clamp(
+    1 - Math.max(0, launchAdjustment) * 0.3,
+    0.08,
+    1,
+  );
+  const maximumPenalty =
+    clamp(4 + content.difficulty * 0.045, 4, 8.5) *
+    tuningLearningMultiplier;
+  const powerPenalty = round((1 - progress) * maximumPenalty, 4);
+  const fullyOptimized = progress >= 1;
+  const phase: ThemeOptimizationPhase = fullyOptimized
+    ? "optimized"
+    : progress >= OPTIMIZATION_DISCOVERY_POINT
+      ? "emerging"
+      : "learning";
+
+  return Object.freeze({
+    themeId,
+    debutDay,
+    elapsedDays,
+    authoredOptimizationDays,
+    effectiveOptimizationDays,
+    progress,
+    powerPenalty,
+    phase,
+    fullyOptimized,
+  });
+}
+
+/**
+ * Read-only, save-derived learning state for a released theme. Starting themes
+ * are fully optimized; new themes use their authored optimizationDays.
+ */
+export function getThemeOptimizationStatus(
+  state: GameState,
+  themeId: ThemeId,
+): Readonly<ThemeOptimizationStatus> {
+  return getThemeOptimizationStatusAtDay(state, themeId, state.day);
+}
+
+function chooseSupportKeyword(
+  themeId: ThemeId,
+  direction: SupportDirection,
+  supportOrdinal: number,
+  usedKeywords: ReadonlySet<PlayKeyword>,
+): PlayKeyword | null {
+  const preferred = SUPPORT_KEYWORD_POOLS[direction].filter(
+    (keyword) => !usedKeywords.has(keyword),
+  );
+  const fallback = PLAY_KEYWORD_IDS.filter(
+    (keyword) => !usedKeywords.has(keyword),
+  );
+  const candidates = preferred.length > 0 ? preferred : fallback;
+  if (candidates.length === 0) return null;
+  const offset = Math.floor(
+    keyedRandom(
+      0x51a7c0de,
+      "support-keyword",
+      themeId,
+      direction,
+      supportOrdinal,
+    ) * candidates.length,
+  );
+  return candidates[Math.min(offset, candidates.length - 1)] ?? null;
+}
+
+function appliedSupportProducts(
+  state: GameState,
+  themeId: ThemeId,
+  observationDay: number,
+): Extract<ReleasedProduct, { kind: "support" }>[] {
+  return state.releaseHistory
+    .filter((batch) => batch.day < observationDay)
+    .sort((left, right) => left.day - right.day)
+    .flatMap((batch) =>
+      batch.products.filter(
+        (product): product is Extract<ReleasedProduct, { kind: "support" }> =>
+          product.kind === "support" && product.themeId === themeId,
+      ),
+    );
+}
+
+function keywordsAfterSupportProducts(
+  state: GameState,
+  themeId: ThemeId,
+  products: readonly Extract<ReleasedProduct, { kind: "support" }>[],
+): readonly PlayKeyword[] {
+  const content = THEME_BY_ID[themeId];
+  if (!content || !state.themes[themeId]) {
+    throw new Error(`Inactive keyword theme: ${themeId}.`);
+  }
+  const result: PlayKeyword[] = [...content.playKeywords];
+  const used = new Set(result);
+  for (const [index, product] of products.entries()) {
+    if (result.length >= 6) break;
+    const keyword = chooseSupportKeyword(
+      themeId,
+      product.direction ?? "consistency",
+      index,
+      used,
+    );
+    if (keyword === null) break;
+    result.push(keyword);
+    used.add(keyword);
+  }
+  return Object.freeze(result);
+}
+
+/**
+ * Base three traits plus one non-duplicate trait per applied support wave.
+ * The result is reconstructed from release history, so old saves need no field.
+ */
+export function getEffectiveThemePlayKeywords(
+  state: GameState,
+  themeId: ThemeId,
+  observationDay = state.day,
+): readonly PlayKeyword[] {
+  return keywordsAfterSupportProducts(
+    state,
+    themeId,
+    appliedSupportProducts(state, themeId, observationDay),
+  );
+}
+
+/** Derived generic adoption for UI, simulation, sales, and restriction previews. */
+export function getCurrentGenericMetaModel(
+  state: GameState,
+  observationDay = state.day,
+  limitOverrides?: GenericLimitOverrides,
+): GenericMetaModel {
+  const themeKeywordsById = Object.fromEntries(
+    state.activeThemeIds.map((themeId) => [
+      themeId,
+      getEffectiveThemePlayKeywords(state, themeId, observationDay),
+    ]),
+  );
+  return buildGenericMetaModel(
+    state,
+    themeKeywordsById,
+    observationDay,
+    limitOverrides,
+  );
+}
+
+/** Display-safe preview of the unique keyword granted by the next support. */
+export function getProspectiveSupportKeyword(
+  state: GameState,
+  themeId: ThemeId,
+  direction: SupportDirection,
+): PlayKeyword | null {
+  const committedProducts = state.releaseHistory
+    .slice()
+    .sort((left, right) => left.day - right.day)
+    .flatMap((batch) =>
+      batch.products.filter(
+        (product): product is Extract<ReleasedProduct, { kind: "support" }> =>
+          product.kind === "support" && product.themeId === themeId,
+      ),
+    );
+  // Unlike the live effective list, preview reserves products already locked
+  // into today's (or a projected future) batch. This keeps the advertised next
+  // keyword identical after the pending product takes effect tomorrow.
+  const projected = keywordsAfterSupportProducts(
+    state,
+    themeId,
+    committedProducts,
+  );
+  if (projected.length >= 6) return null;
+  return chooseSupportKeyword(
+    themeId,
+    direction,
+    projected.length - 3,
+    new Set(projected),
+  );
+}
+
 export function getCommittedSupportCount(
   state: GameState,
   themeId: ThemeId,
@@ -410,6 +887,8 @@ export function getCommittedSupportCount(
   );
   const pendingRequests = state.supportRequests.filter(
     (request) =>
+      getReleaseRequestKind(request) === "support" &&
+      "themeId" in request &&
       request.themeId === themeId &&
       (request.status === "queued" || request.status === "offered"),
   ).length;
@@ -430,414 +909,11 @@ export function canProposeSupport(
   if (getCommittedSupportCount(state, themeId) >= MAX_THEME_SUPPORTS) {
     return false;
   }
-  if (
-    state.lastSupportProposalDay !== null &&
-    state.day - state.lastSupportProposalDay < RELEASE_INTERVAL
-  ) {
-    return false;
-  }
   return getNextReleaseDay(state.day) <= LAST_RELEASE_DAY;
 }
 
 function totalUsers(state: GameState): number {
   return state.users.tier + state.users.casual + state.users.collector;
-}
-
-function activeBusinessRecords(
-  state: GameState,
-  day = state.day,
-): BusinessActionRecord[] {
-  return state.operations.records.filter((record) =>
-    isBusinessActionEffectActive(record, day),
-  );
-}
-
-function businessUserRateModifiers(state: GameState): {
-  tier: number;
-  casual: number;
-  collector: number;
-} {
-  const modifiers = { tier: 0, casual: 0, collector: 0 };
-  for (const record of activeBusinessRecords(state)) {
-    switch (record.type) {
-      case "tv-cm":
-        modifiers.tier += 0.0002;
-        modifiers.casual += 0.0012;
-        modifiers.collector += 0.0004;
-        break;
-      case "animation-promotion":
-        modifiers.tier += 0.0004;
-        modifiers.casual += 0.0018;
-        modifiers.collector += 0.0016;
-        break;
-      case "championship":
-        if (record.outcome === "success") {
-          modifiers.tier += 0.0012;
-          modifiers.casual += 0.00045;
-          modifiers.collector += 0.0002;
-        } else if (record.outcome === "backlash") {
-          modifiers.tier -= 0.0018;
-          modifiers.casual -= 0.0008;
-          modifiers.collector -= 0.00035;
-        }
-        break;
-      case "store-tour":
-        modifiers.tier += 0.0001;
-        modifiers.casual += 0.0008;
-        modifiers.collector += 0.00025;
-        break;
-      case "beginner-camp":
-        modifiers.tier += 0.00005;
-        modifiers.casual += 0.0011;
-        modifiers.collector += 0.00005;
-        break;
-      case "local-league":
-        modifiers.tier += 0.0008;
-        modifiers.casual += 0.0002;
-        modifiers.collector += 0.00005;
-        break;
-      case "reprint-campaign":
-        modifiers.tier += 0.00005;
-        modifiers.casual += 0.0001;
-        modifiers.collector += 0.00055;
-        break;
-      case "collector-fair":
-        modifiers.tier += 0.00005;
-        modifiers.casual += 0.00015;
-        modifiers.collector += 0.0013;
-        break;
-      case "pack-odds":
-      case "season-overhaul":
-      case "global-launch":
-      case "first-print-expansion":
-        break;
-    }
-  }
-  const strategyRates = getBusinessStrategyModifiers(
-    state.operations.strategy,
-  ).userRates;
-  modifiers.tier += strategyRates.tier;
-  modifiers.casual += strategyRates.casual;
-  modifiers.collector += strategyRates.collector;
-  return modifiers;
-}
-
-function businessBuyerRateBonus(state: GameState): number {
-  const actionBonus = activeBusinessRecords(state).reduce((bonus, record) => {
-    switch (record.type) {
-      case "tv-cm":
-        return bonus + 0.01;
-      case "animation-promotion":
-        return bonus + 0.025;
-      case "championship":
-        return bonus + (record.outcome === "success" ? 0.008 : -0.008);
-      case "store-tour":
-        return bonus + 0.006;
-      case "beginner-camp":
-        return bonus + 0.002;
-      case "local-league":
-        return bonus + 0.004;
-      case "reprint-campaign":
-        return bonus + 0.002;
-      case "collector-fair":
-        return bonus + 0.012;
-      case "pack-odds":
-        return bonus;
-      case "season-overhaul":
-        return bonus + (record.outcome === "success" ? 0.008 : record.outcome === "backlash" ? -0.006 : 0);
-      case "global-launch":
-        return bonus + (record.outcome === "success" ? 0.01 : record.outcome === "backlash" ? -0.008 : 0);
-      case "first-print-expansion":
-        return bonus + (record.outcome === "success" ? 0.015 : record.outcome === "backlash" ? -0.012 : 0);
-    }
-  }, 0);
-  return actionBonus +
-    getBusinessStrategyModifiers(state.operations.strategy).buyerRate;
-}
-
-function businessTrustRecovery(state: GameState): number {
-  const actionRecovery = activeBusinessRecords(state).reduce((recovery, record) => {
-    if (record.type === "store-tour") return recovery + 0.08;
-    if (record.type === "animation-promotion") return recovery + 0.015;
-    if (record.type === "beginner-camp") return recovery + 0.03;
-    if (record.type === "local-league") return recovery + 0.015;
-    if (record.type === "reprint-campaign") return recovery + 0.06;
-    if (record.type === "collector-fair") return recovery + 0.01;
-    if (record.type === "championship" && record.outcome === "success") {
-      return recovery + 0.025;
-    }
-    return recovery;
-  }, 0);
-  return actionRecovery +
-    getBusinessStrategyModifiers(state.operations.strategy).trustPerDay;
-}
-
-/** Gross revenue generated by paid actions and events outside regular releases. */
-function businessEventRevenueBonus(state: GameState): number {
-  const actionRevenue = getStackedBusinessActionDailyGrossRevenue(
-    state,
-    activeBusinessRecords(state),
-  );
-  const resolvedEventBonus = state.operations.eventRecords.reduce(
-    (bonus, record) =>
-      bonus + getResolvedBusinessEventRevenueBonus(record, state.day),
-    0,
-  );
-  return actionRevenue + resolvedEventBonus;
-}
-
-function resolvedBusinessEventCashDelta(state: GameState): number {
-  return state.operations.eventRecords.reduce((total, record) => {
-    if (
-      record.outcome === "pending" ||
-      record.resolvedDay !== state.day
-    ) {
-      return total;
-    }
-    return total + getBusinessEventResult(
-      record.type,
-      record.choice,
-      record.outcome,
-    ).cashDelta;
-  }, 0);
-}
-
-function hasPackOddsAdjustmentForRelease(
-  state: GameState,
-  releaseDay: number,
-): boolean {
-  return state.operations.records.some(
-    (record) =>
-      record.type === "pack-odds" &&
-      record.appliedDay === releaseDay &&
-      state.day >= releaseDay &&
-      state.day <= record.endsDay &&
-      (record.outcome === "active" || record.outcome === "clean"),
-  );
-}
-
-function applyPendingPackOddsToCurrentRelease(state: GameState): void {
-  const pending = state.operations.records.find(
-    (record) => record.type === "pack-odds" && record.outcome === "pending",
-  );
-  if (!pending) return;
-
-  pending.appliedDay = state.day;
-  pending.endsDay = state.day + 29;
-  pending.outcome = "active";
-}
-
-/**
- * Resolves delayed business outcomes and retires duration-based effects.
- *
- * This runs on ordinary and decision days. Outcomes are never rolled when an
- * action is purchased, so every action starts affecting the simulation on the
- * following in-game day even if that day is a release or restriction gate.
- */
-function updateBusinessActionLifecycle(state: GameState): void {
-  for (const record of state.operations.records) {
-    if (
-      record.type === "championship" &&
-      record.outcome === "active" &&
-      state.day > record.startedDay
-    ) {
-      const risk = record.risk ?? getChampionshipBacklashRisk(state);
-      const roll = keyedRandom(
-        state.seed,
-        "championship-outcome",
-        record.id,
-        record.startedDay,
-      );
-      record.outcome = roll < risk ? "backlash" : "success";
-      record.resolvedDay = state.day;
-    }
-
-    if (
-      record.type === "pack-odds" &&
-      record.outcome === "active" &&
-      record.appliedDay !== undefined &&
-      state.day > record.appliedDay
-    ) {
-      const risk = record.risk ?? 0.3;
-      const roll = keyedRandom(
-        state.seed,
-        "pack-odds-detection",
-        record.id,
-        record.appliedDay,
-      );
-      const detected = roll < risk;
-      record.outcome = detected ? "detected" : "clean";
-      record.resolvedDay = state.day;
-      if (detected) {
-        state.purchaseTrust = round(
-          clamp(state.purchaseTrust - 10, 0, 100),
-          4,
-        );
-      }
-    }
-
-    if (
-      isStrategicBusinessAction(record.type) &&
-      record.outcome === "active"
-    ) {
-      const definition = BUSINESS_ACTION_BY_TYPE[record.type];
-      const resolutionDay = record.startedDay + (definition.resolutionDelay ?? 1);
-      if (state.day >= resolutionDay) {
-        const risk = record.risk ?? 1;
-        const roll = keyedRandom(
-          state.seed,
-          "strategic-project-outcome",
-          record.type,
-          record.id,
-          record.startedDay,
-        );
-        const success = roll >= risk;
-        record.outcome = success ? "success" : "backlash";
-        record.resolvedDay = state.day;
-
-        if (success) {
-          const cashReturn = definition.successReturn ?? 0;
-          record.cashReturn = cashReturn;
-          state.finance.cash = round(state.finance.cash + cashReturn, 4);
-          if (record.type === "season-overhaul") {
-            state.users.tier = round(state.users.tier * 1.1, 2);
-            state.users.casual = round(state.users.casual * 1.1, 2);
-            state.users.collector = round(state.users.collector * 1.1, 2);
-            state.purchaseTrust = round(clamp(state.purchaseTrust + 5, 0, 100), 4);
-          } else if (record.type === "global-launch") {
-            state.users.casual = round(state.users.casual * 1.04, 2);
-            state.users.collector = round(state.users.collector * 1.14, 2);
-            state.purchaseTrust = round(clamp(state.purchaseTrust + 3, 0, 100), 4);
-          } else {
-            state.users.collector = round(state.users.collector * 1.06, 2);
-            state.purchaseTrust = round(clamp(state.purchaseTrust + 1, 0, 100), 4);
-          }
-        } else if (record.type === "season-overhaul") {
-          state.users.tier = round(state.users.tier * 0.93, 2);
-          state.users.casual = round(state.users.casual * 0.93, 2);
-          state.users.collector = round(state.users.collector * 0.93, 2);
-          state.purchaseTrust = round(clamp(state.purchaseTrust - 10, 0, 100), 4);
-        } else if (record.type === "global-launch") {
-          state.users.casual = round(state.users.casual * 0.97, 2);
-          state.users.collector = round(state.users.collector * 0.9, 2);
-          state.purchaseTrust = round(clamp(state.purchaseTrust - 7, 0, 100), 4);
-        } else {
-          state.users.collector = round(state.users.collector * 0.96, 2);
-          state.purchaseTrust = round(clamp(state.purchaseTrust - 5, 0, 100), 4);
-        }
-      }
-    }
-
-    if (record.outcome === "active" && state.day > record.endsDay) {
-      record.outcome = "completed";
-    }
-  }
-}
-
-function updateBusinessEventLifecycle(state: GameState): void {
-  for (const record of state.operations.eventRecords) {
-    if (record.outcome !== "pending" || state.day < record.resolutionDay) {
-      continue;
-    }
-    const outcome = getBusinessEventOutcome(state.seed, record.id, record.risk);
-    const result = getBusinessEventResult(
-      record.type,
-      record.choice,
-      outcome,
-    );
-    record.outcome = outcome;
-    record.resolvedDay = state.day;
-
-    for (const segment of ["tier", "casual", "collector"] as const) {
-      state.users[segment] = round(
-        Math.max(
-          0,
-          state.users[segment] * (1 + result.userMultipliers[segment]),
-        ),
-        2,
-      );
-    }
-    state.purchaseTrust = round(
-      clamp(state.purchaseTrust + result.trustDelta, 0, 100),
-      4,
-    );
-    state.finance.cash = round(
-      Math.max(0, state.finance.cash + result.cashDelta),
-      4,
-    );
-  }
-}
-
-function updateBusinessLifecycle(state: GameState): void {
-  updateBusinessActionLifecycle(state);
-  updateBusinessEventLifecycle(state);
-}
-
-function openBusinessEvent(state: GameState): void {
-  if (
-    state.operations.pendingEvent ||
-    state.operations.nextEventDay === null ||
-    state.day !== state.operations.nextEventDay
-  ) {
-    return;
-  }
-  const eventNumber = state.operations.nextEventId;
-  state.operations.pendingEvent = {
-    id: `business-event-${eventNumber}`,
-    type: getBusinessEventType(state.seed, eventNumber),
-    appearedDay: state.day,
-  };
-  state.operations.nextEventDay = null;
-}
-
-function chooseBusinessEvent(
-  state: GameState,
-  eventId: string,
-  choiceId: BusinessEventChoice,
-): void {
-  if (state.phase !== "running") {
-    throw new Error("Business events can only be resolved during normal operations.");
-  }
-  const pending = state.operations.pendingEvent;
-  if (!pending || pending.id !== eventId) {
-    throw new Error(`Unknown pending business event: ${eventId}.`);
-  }
-  const choice = getBusinessEventChoice(pending.type, choiceId);
-  if (state.finance.cash + 1e-9 < choice.cost) {
-    throw new Error("Not enough operating cash for this business-event choice.");
-  }
-
-  const record: BusinessEventRecord = {
-    id: pending.id,
-    type: pending.type,
-    appearedDay: pending.appearedDay,
-    choice: choice.id,
-    cost: choice.cost,
-    risk: choice.risk,
-    resolutionDay: state.day + choice.resolutionDelay,
-    outcome: "pending",
-  };
-  state.operations.eventRecords.push(record);
-  state.operations.strategy = applyBusinessStrategyDelta(
-    state.operations.strategy,
-    choice.strategyDelta,
-  );
-  state.finance.cash = round(state.finance.cash - choice.cost, 4);
-  state.finance.todayOperatingCash = round(
-    state.finance.todayOperatingCash - choice.cost,
-    4,
-  );
-  state.finance.cumulativeExpenses = round(
-    state.finance.cumulativeExpenses + choice.cost,
-    4,
-  );
-  state.operations.pendingEvent = null;
-  state.operations.nextEventId += 1;
-  state.operations.nextEventDay = getNextBusinessEventDay(
-    state.seed,
-    state.day,
-    state.operations.nextEventId,
-  );
 }
 
 function cloneState(state: GameState): GameState {
@@ -868,6 +944,9 @@ function cloneState(state: GameState): GameState {
         ...(record.riskContext
           ? { riskContext: { ...record.riskContext } }
           : {}),
+        ...(record.challenge
+          ? { challenge: { ...record.challenge } }
+          : {}),
       })),
       pendingEvent: state.operations.pendingEvent
         ? { ...state.operations.pendingEvent }
@@ -890,6 +969,7 @@ function cloneState(state: GameState): GameState {
       ...batch,
       products: batch.products.map((product) => ({ ...product })),
     })),
+    genericLimits: { ...state.genericLimits },
     history: state.history.map((entry) => ({
       ...entry,
       shares: { ...entry.shares },
@@ -1018,42 +1098,268 @@ function calculateThemeBase(
 }
 
 function refreshThemeBases(state: GameState): void {
+  const genericMeta = getCurrentGenericMetaModel(state);
   for (const content of activeContents(state)) {
     const runtime = state.themes[content.id];
     const calculated = calculateThemeBase(content, runtime);
     runtime.power = calculated.power;
-    runtime.unpleasantness = calculated.unpleasantness;
+    const genericUnpleasantness = (
+      genericMeta.themeLoadoutsById[content.id] ?? []
+    ).reduce((sum, entry) => {
+      const card = genericMeta.cardMetaById[entry.cardId]?.card;
+      if (!card) return sum;
+      return (
+        sum +
+        entry.adoption * Math.max(0, card.unpleasantness - 30) / 18
+      );
+    }, 0);
+    runtime.unpleasantness = round(
+      clamp(calculated.unpleasantness + Math.min(12, genericUnpleasantness), 0, 100),
+      4,
+    );
     runtime.partStats = calculated.partStats;
   }
 }
 
-function pairBaseProbability(leftId: ThemeId, rightId: ThemeId): number {
-  const table = MATCHUP_TABLE as Record<ThemeId, Record<ThemeId, number>>;
-  const left = table[leftId]?.[rightId] ?? 0.5;
-  const reverse = table[rightId]?.[leftId] ?? 0.5;
-  return clamp((left + (1 - reverse)) / 2, 0.12, 0.88);
+type CounterplaySupportTargets = Map<ThemeId, Map<ThemeId, number>>;
+
+function getCounterplaySupportTargets(
+  state: GameState,
+): CounterplaySupportTargets {
+  const targets: CounterplaySupportTargets = new Map();
+  const leaderByDay = new Map(
+    state.history.map((entry) => [entry.day, entry.topThemeId] as const),
+  );
+  for (const batch of state.releaseHistory) {
+    if (batch.day >= state.day) continue;
+    const target = leaderByDay.get(batch.day);
+    if (!target) continue;
+    for (const product of batch.products) {
+      if (
+        product.kind !== "support" ||
+        product.direction !== "counterplay" ||
+        product.themeId === target
+      ) {
+        continue;
+      }
+      // The release-day history row freezes the leader that R&D prepared for.
+      // This makes counterplay a targeted answer rather than a universal buff.
+      const byOpponent = targets.get(product.themeId) ?? new Map<ThemeId, number>();
+      byOpponent.set(target, (byOpponent.get(target) ?? 0) + 1);
+      targets.set(product.themeId, byOpponent);
+    }
+  }
+  return targets;
+}
+
+function counterplaySupportAdjustmentFromTargets(
+  targets: CounterplaySupportTargets,
+  leftId: ThemeId,
+  rightId: ThemeId,
+): number {
+  const leftBonus = getCounterplaySupportLogitBonus(
+    targets.get(leftId)?.get(rightId) ?? 0,
+  );
+  const rightBonus = getCounterplaySupportLogitBonus(
+    targets.get(rightId)?.get(leftId) ?? 0,
+  );
+  return leftBonus - rightBonus;
+}
+
+export function getCounterplaySupportMatchupLogitAdjustment(
+  state: GameState,
+  leftId: ThemeId,
+  rightId: ThemeId,
+): number {
+  return counterplaySupportAdjustmentFromTargets(
+    getCounterplaySupportTargets(state),
+    leftId,
+    rightId,
+  );
+}
+
+function supportWaveBonus(
+  waves: number,
+  first: number,
+  repeat: number,
+  maximum: number,
+): number {
+  if (waves <= 0) return 0;
+  return Math.min(maximum, first + Math.max(0, waves - 1) * repeat);
+}
+
+function matchingKeywordCount(
+  keywords: readonly PlayKeyword[],
+  targets: ReadonlySet<PlayKeyword>,
+): number {
+  return keywords.reduce(
+    (count, keyword) => count + (targets.has(keyword) ? 1 : 0),
+    0,
+  );
+}
+
+function oneSideSupportPlanBonus(
+  state: GameState,
+  ownerId: ThemeId,
+  opponentId: ThemeId,
+): number {
+  const counts = getReleasedSupportDirectionCounts(state, ownerId);
+  const opponentKeywords = getEffectiveThemePlayKeywords(state, opponentId);
+  const consistency = supportWaveBonus(
+    counts.consistency,
+    0.035,
+    0.015,
+    0.065,
+  );
+  const slowTargets = matchingKeywordCount(
+    opponentKeywords,
+    SLOW_PLAN_KEYWORDS,
+  );
+  const finisher = Math.min(
+    0.16,
+    slowTargets * supportWaveBonus(counts.finisher, 0.04, 0.014, 0.07),
+  );
+  const interactionTargets = matchingKeywordCount(
+    opponentKeywords,
+    INTERACTION_PLAN_KEYWORDS,
+  );
+  const recovery = Math.min(
+    0.14,
+    interactionTargets *
+      supportWaveBonus(counts.recovery, 0.045, 0.015, 0.075),
+  );
+  return consistency + finisher + recovery;
+}
+
+/**
+ * Hidden mechanical layer for released support directions. Counterplay stays
+ * fixed to its release-day leader, while the other directions reward distinct
+ * opponent plans. The UI should show granted keywords, not this number.
+ */
+export function getSupportDirectionMatchupLogitAdjustment(
+  state: GameState,
+  leftId: ThemeId,
+  rightId: ThemeId,
+): number {
+  if (!state.themes[leftId] || !state.themes[rightId]) {
+    throw new Error(`Inactive support matchup: ${leftId} vs ${rightId}.`);
+  }
+  const targetedCounterplay = getCounterplaySupportMatchupLogitAdjustment(
+    state,
+    leftId,
+    rightId,
+  );
+  const planAdjustment =
+    oneSideSupportPlanBonus(state, leftId, rightId) -
+    oneSideSupportPlanBonus(state, rightId, leftId);
+  return clamp(
+    targetedCounterplay + planAdjustment,
+    -SUPPORT_DIRECTION_MATCHUP_LOGIT_CAP,
+    SUPPORT_DIRECTION_MATCHUP_LOGIT_CAP,
+  );
+}
+
+function pairWinProbabilityWithKeywords(
+  leftPower: number,
+  rightPower: number,
+  leftKeywords: readonly PlayKeyword[],
+  rightKeywords: readonly PlayKeyword[],
+  leftCounterAdoption: number,
+  rightCounterAdoption: number,
+  situationalLogitAdjustment: number,
+): number {
+  const leftEffectivePower = leftPower - 9 * leftCounterAdoption;
+  const rightEffectivePower = rightPower - 9 * rightCounterAdoption;
+  const keywordAdjustment = getKeywordMatchupLogitAdjustment(
+    leftKeywords,
+    rightKeywords,
+  );
+  const strategicAdjustment = capStrategicMatchupLogit(
+    keywordAdjustment + situationalLogitAdjustment,
+  );
+  return clamp(
+    sigmoid(
+      strategicAdjustment + (leftEffectivePower - rightEffectivePower) / 12,
+    ),
+    0.2,
+    0.8,
+  );
+}
+
+/**
+ * Resolves one game from an even baseline, keyword interaction, and raw
+ * effective power. Keyword influence is capped in play-keywords.ts before the
+ * power term is added, so authored power remains an independent lever. There
+ * is no theme-ID matchup table: old and future themes obey the same rules.
+ */
+export function getPairWinProbability(
+  leftId: ThemeId,
+  rightId: ThemeId,
+  leftPower: number,
+  rightPower: number,
+  leftCounterAdoption = 0,
+  rightCounterAdoption = 0,
+  situationalLogitAdjustment = 0,
+): number {
+  const leftContent = THEME_BY_ID[leftId];
+  const rightContent = THEME_BY_ID[rightId];
+  if (!leftContent || !rightContent) {
+    throw new Error(`Unknown matchup: ${leftId} vs ${rightId}.`);
+  }
+  return pairWinProbabilityWithKeywords(
+    leftPower,
+    rightPower,
+    leftContent.playKeywords,
+    rightContent.playKeywords,
+    leftCounterAdoption,
+    rightCounterAdoption,
+    situationalLogitAdjustment,
+  );
+}
+
+/** Current deterministic matchup, including learning and released supports. */
+export function getCurrentPairWinProbability(
+  state: GameState,
+  leftId: ThemeId,
+  rightId: ThemeId,
+  genericMeta = getCurrentGenericMetaModel(state),
+): number {
+  const left = state.themes[leftId];
+  const right = state.themes[rightId];
+  if (!left || !right) {
+    throw new Error(`Inactive current matchup: ${leftId} vs ${rightId}.`);
+  }
+  const leftOptimization = getThemeOptimizationStatus(state, leftId);
+  const rightOptimization = getThemeOptimizationStatus(state, rightId);
+  return pairWinProbabilityWithKeywords(
+    left.power - leftOptimization.powerPenalty +
+      (genericMeta.themePowerBonusById[leftId] ?? 0),
+    right.power - rightOptimization.powerPenalty +
+      (genericMeta.themePowerBonusById[rightId] ?? 0),
+    getEffectiveThemePlayKeywords(state, leftId),
+    getEffectiveThemePlayKeywords(state, rightId),
+    left.counterAdoption,
+    right.counterAdoption,
+    getSupportDirectionMatchupLogitAdjustment(state, leftId, rightId) +
+      genericMeta.getPairLogitAdjustment(leftId, rightId),
+  );
 }
 
 function computeWinRates(state: GameState): void {
   const ids = themeIds(state);
   const probabilities: Record<string, number> = {};
+  const genericMeta = getCurrentGenericMetaModel(state);
 
   for (let leftIndex = 0; leftIndex < ids.length; leftIndex += 1) {
     const leftId = ids[leftIndex];
     probabilities[`${leftId}|${leftId}`] = 0.5;
     for (let rightIndex = leftIndex + 1; rightIndex < ids.length; rightIndex += 1) {
       const rightId = ids[rightIndex];
-      const left = state.themes[leftId];
-      const right = state.themes[rightId];
-      const leftEffectivePower = left.power - 9 * left.counterAdoption;
-      const rightEffectivePower = right.power - 9 * right.counterAdoption;
-      const probability = clamp(
-        sigmoid(
-          logit(pairBaseProbability(leftId, rightId)) +
-            (leftEffectivePower - rightEffectivePower) / 12,
-        ),
-        0.2,
-        0.8,
+      const probability = getCurrentPairWinProbability(
+        state,
+        leftId,
+        rightId,
+        genericMeta,
       );
       probabilities[`${leftId}|${rightId}`] = probability;
       probabilities[`${rightId}|${leftId}`] = 1 - probability;
@@ -1384,6 +1690,33 @@ function updateExperience(state: GameState): void {
   }
 }
 
+function appendOptimizationDiscoveries(state: GameState): void {
+  for (const content of activeContents(state)) {
+    const current = getThemeOptimizationStatusAtDay(
+      state,
+      content.id,
+      state.day,
+    );
+    if (current.debutDay === null) continue;
+    const previous = getThemeOptimizationStatusAtDay(
+      state,
+      content.id,
+      state.day - 1,
+    );
+    if (
+      previous.progress < OPTIMIZATION_DISCOVERY_POINT &&
+      current.progress >= OPTIMIZATION_DISCOVERY_POINT
+    ) {
+      appendCommunity(state, {
+        category: "meta",
+        type: "optimization-rumor",
+        themeId: content.id,
+        value: current.debutDay,
+      });
+    }
+  }
+}
+
 function updateCounters(state: GameState): void {
   for (const content of activeContents(state)) {
     const runtime = state.themes[content.id];
@@ -1608,7 +1941,7 @@ function restrictionTierShock(state: GameState): number {
         batch.day < state.day &&
         batch.products.some(
           (product) =>
-            product.themeId === themeId && product.kind === "new-theme",
+            product.kind === "new-theme" && product.themeId === themeId,
         )
       ) {
         introducedDay = Math.max(introducedDay, batch.day);
@@ -1687,8 +2020,12 @@ function updateUsers(state: GameState): void {
   const trustLoss = clamp((70 - state.purchaseTrust) / 50, 0, 1);
   const releaseSaturation = clamp(
     state.releaseHistory
-      .filter((batch) => state.day - batch.day <= 90)
-      .reduce((sum, batch) => sum + batch.products.length, 0) / 9,
+      .filter(
+        (batch) =>
+          !isInitialGenericReleaseBatch(batch) && state.day - batch.day <= 90,
+      )
+      .reduce((sum, batch) => sum + batch.products.length, 0) /
+      (usesGenericReleaseRules(state) ? 12 : 9),
     0,
     1,
   );
@@ -1723,7 +2060,7 @@ function updateUsers(state: GameState): void {
   );
 
   const tierBefore = state.users.tier;
-  const businessRates = businessUserRateModifiers(state);
+  const businessRates = getBusinessUserRateModifiers(state);
   const shockRate = restrictionTierShock(state);
   const shockedTierUsers = tierBefore * shockRate;
   const movedToCasual = shockedTierUsers * 0.25;
@@ -1817,13 +2154,50 @@ function updateFinance(state: GameState): void {
   );
   let revenue =
     (activeUsers * CATALOG_DAILY_SPEND_PER_USER) / 100_000_000 +
-    businessEventRevenueBonus(state);
-  const buyerRateBonus = businessBuyerRateBonus(state);
+    getBusinessEventRevenueBonus(state);
+  const buyerRateBonus = getBusinessBuyerRateBonus(state);
+  // A release review settles before its D+1 mechanical effects. Project one
+  // day ahead so the just-locked generic has a deterministic demand estimate.
+  const genericSalesMeta = getCurrentGenericMetaModel(state, state.day + 1);
   for (const batch of state.releaseHistory) {
+    if (isInitialGenericReleaseBatch(batch)) continue;
     const age = state.day - batch.day;
     if (age < 0 || age >= 30) continue;
     let batchRevenue = 0;
+    let reprintRevenueBoost = 0;
     for (const product of batch.products) {
+      if (product.kind === "reprint") {
+        if (age === 0) reprintRevenueBoost += product.releaseRevenueBoost;
+        continue;
+      }
+      if (product.kind === "generic") {
+        const card = getGenericCard(product.genericCardId);
+        const meta = genericSalesMeta.cardMetaById[product.genericCardId];
+        if (!card || !meta) continue;
+        const tuningHype = (product.powerAdjustment + 3) / 6;
+        const strength = clamp((meta.effectivePower - 50) / 40, 0, 1);
+        const buyerRate = clamp(
+          0.04 +
+            0.23 * meta.marketReach +
+            0.13 * meta.mirrorDemand +
+            0.12 * strength +
+            0.055 * tuningHype +
+            0.04 * (card.appeal / 100) -
+            0.12 * (1 - state.purchaseTrust / 100) +
+            buyerRateBonus,
+          0.02,
+          0.5,
+        );
+        const averageSpend =
+          60_000 +
+          22_000 * tuningHype +
+          16_000 * (card.appeal / 100) +
+          8_000 * strength;
+        batchRevenue +=
+          ((activeUsers * buyerRate * averageSpend) / 100_000_000) *
+          salesCurve(age);
+        continue;
+      }
       const content = THEME_BY_ID[product.themeId];
       const runtime = state.themes[product.themeId];
       if (!content) continue;
@@ -1884,6 +2258,10 @@ function updateFinance(state: GameState): void {
         (activeUsers * buyerRate * averageSpend) / 100_000_000;
       batchRevenue += potential * salesCurve(age);
     }
+    // Four products share the old three-product shelf and marketing budget.
+    // A fourth neutral product therefore creates no automatic 4/3 windfall.
+    batchRevenue *= LEGACY_RELEASE_PRODUCT_COUNT / batch.products.length;
+    batchRevenue += reprintRevenueBoost;
     if (hasPackOddsAdjustmentForRelease(state, batch.day)) {
       batchRevenue *= PACK_ODDS_REVENUE_MULTIPLIER;
     }
@@ -1916,7 +2294,7 @@ function updateFinance(state: GameState): void {
     4,
   );
   state.finance.todayOperatingCash = round(
-    operatingCash + resolvedBusinessEventCashDelta(state),
+    operatingCash + getResolvedBusinessEventCashDelta(state),
     4,
   );
   state.finance.cash = round(
@@ -1950,15 +2328,28 @@ function releaseDirection(
   ];
 }
 
+type ReleaseOptionDraft =
+  | Omit<Extract<ReleaseOption, { kind: "new-theme" }>, "id" | "expectedTier">
+  | Omit<Extract<ReleaseOption, { kind: "support" }>, "id" | "expectedTier">
+  | Omit<Extract<ReleaseOption, { kind: "generic" }>, "id" | "expectedTier">
+  | Omit<Extract<ReleaseOption, { kind: "reprint" }>, "id" | "expectedTier">;
+
+function usesGenericReleaseRules(state: GameState, day = state.day): boolean {
+  return (
+    state.genericReleaseStartDay !== null &&
+    day >= state.genericReleaseStartDay
+  );
+}
+
 function makeReleaseOption(
   state: GameState,
-  option: Omit<ReleaseOption, "id" | "expectedTier">,
+  option: ReleaseOptionDraft,
 ): ReleaseOption {
-  const complete: ReleaseOption = {
+  const complete = {
     ...option,
     id: `release-option-${state.nextReleaseOptionId}`,
     expectedTier: getExpectedTier(option.expectedPower),
-  };
+  } as ReleaseOption;
   state.nextReleaseOptionId += 1;
   return complete;
 }
@@ -1977,15 +2368,18 @@ function generateReleaseSlate(state: GameState): void {
 
   const queuedRequest = state.supportRequests
     .filter(
-      (request) =>
+      (request): request is ThemeSupportRequest =>
+        getReleaseRequestKind(request) === "support" &&
         request.status === "queued" &&
         request.eligibleReleaseDay <= state.day &&
+        request.themeId !== undefined &&
+        request.direction !== undefined &&
         Boolean(state.themes[request.themeId]) &&
         getCommittedSupportCount(state, request.themeId) <= MAX_THEME_SUPPORTS,
     )
     .sort((left, right) => left.proposedDay - right.proposedDay)[0];
   const selectedSupportIds = new Set<ThemeId>();
-  const supportSpecs: Array<Omit<ReleaseOption, "id" | "expectedTier">> = [];
+  const supportSpecs: Extract<ReleaseOptionDraft, { kind: "support" }>[] = [];
 
   if (queuedRequest) {
     queuedRequest.status = "offered";
@@ -2039,15 +2433,22 @@ function generateReleaseSlate(state: GameState): void {
     });
   }
 
+  const genericRules = usesGenericReleaseRules(state);
   let newThemeCount = Math.min(3, inactiveThemes.length);
   let supportOptionCount = Math.min(3, supportSpecs.length);
-  while (newThemeCount + supportOptionCount < 6) {
-    if (newThemeCount < inactiveThemes.length) {
-      newThemeCount += 1;
-    } else if (supportOptionCount < supportSpecs.length) {
-      supportOptionCount += 1;
-    } else {
-      throw new Error("Every release review requires six eligible options.");
+  if (genericRules) {
+    if (newThemeCount < 3 || supportOptionCount < 3) {
+      throw new Error("Generic release reviews require three themes and three supports.");
+    }
+  } else {
+    while (newThemeCount + supportOptionCount < 6) {
+      if (newThemeCount < inactiveThemes.length) {
+        newThemeCount += 1;
+      } else if (supportOptionCount < supportSpecs.length) {
+        supportOptionCount += 1;
+      } else {
+        throw new Error("Every release review requires six eligible options.");
+      }
     }
   }
 
@@ -2064,9 +2465,118 @@ function generateReleaseSlate(state: GameState): void {
     }),
   );
 
-  const options = [...newThemeOptions, ...supportOptions];
-  if (options.length !== 6) {
-    throw new Error("Every release review requires exactly six eligible options.");
+  const releasedGenericIds = new Set(
+    state.releaseHistory.flatMap((batch) =>
+      batch.products.flatMap((product) =>
+        product.kind === "generic" ? [product.genericCardId] : [],
+      ),
+    ),
+  );
+  const queuedGenericRequest = state.supportRequests
+    .filter(
+      (
+        request,
+      ): request is Extract<
+        SupportRequest,
+        { kind: "indirect-support" | "environment-target" }
+      > =>
+        (request.kind === "indirect-support" ||
+          request.kind === "environment-target") &&
+        request.status === "queued" &&
+        request.eligibleReleaseDay <= state.day &&
+        Boolean(state.themes[request.themeId]),
+    )
+    .sort((left, right) => left.proposedDay - right.proposedDay)[0];
+  const requestedGenericCard = queuedGenericRequest
+    ? getRequestGenericPool(state, queuedGenericRequest)[0]
+    : undefined;
+  if (queuedGenericRequest && requestedGenericCard) {
+    queuedGenericRequest.status = "offered";
+  }
+
+  const genericCandidates = GENERIC_CARD_CATALOG
+    .filter((card) => !releasedGenericIds.has(card.id))
+    .filter((card) => card.id !== requestedGenericCard?.id)
+    .sort(
+      (left, right) =>
+        keyedRandom(state.seed, "generic-card-slate", state.day, right.id) -
+          keyedRandom(state.seed, "generic-card-slate", state.day, left.id) ||
+        left.id.localeCompare(right.id),
+    );
+  const distinctKeywordCards: typeof genericCandidates = requestedGenericCard
+    ? [requestedGenericCard]
+    : [];
+  const selectedKeywords = new Set<PlayKeyword>();
+  if (requestedGenericCard) selectedKeywords.add(requestedGenericCard.keyword);
+  for (const card of genericCandidates) {
+    if (distinctKeywordCards.length >= GENERIC_RELEASE_OPTION_COUNT) break;
+    if (selectedKeywords.has(card.keyword)) continue;
+    distinctKeywordCards.push(card);
+    selectedKeywords.add(card.keyword);
+  }
+  for (const card of genericCandidates) {
+    if (distinctKeywordCards.length >= GENERIC_RELEASE_OPTION_COUNT) break;
+    if (distinctKeywordCards.includes(card)) continue;
+    distinctKeywordCards.push(card);
+  }
+  const genericOptions = genericRules
+    ? distinctKeywordCards.map((card) =>
+        makeReleaseOption(state, {
+          kind: "generic",
+          genericCardId: card.id,
+          expectedPower: card.basePower,
+          requested: card.id === requestedGenericCard?.id,
+          ...(card.id === requestedGenericCard?.id && queuedGenericRequest
+            ? {
+                requestId: queuedGenericRequest.id,
+                requestKind: queuedGenericRequest.kind,
+                requestThemeId: queuedGenericRequest.themeId,
+                requestKeyword: card.keyword,
+              }
+            : {}),
+        }),
+      )
+    : [];
+
+  const queuedReprintRequest = state.supportRequests
+    .filter(
+      (request): request is Extract<SupportRequest, { kind: "reprint" }> =>
+        request.kind === "reprint" &&
+        request.status === "queued" &&
+        request.eligibleReleaseDay <= state.day,
+    )
+    .sort((left, right) => left.proposedDay - right.proposedDay)[0];
+  const reprintImpact = queuedReprintRequest
+    ? getReprintImpactPreview(state, queuedReprintRequest.cardId)
+    : null;
+  const reprintOptions = genericRules && queuedReprintRequest && reprintImpact
+    ? [
+        makeReleaseOption(state, {
+          kind: "reprint",
+          cardId: queuedReprintRequest.cardId,
+          themeId: reprintImpact.themeId ?? state.currentTopThemeId,
+          expectedPower: 50,
+          requested: true,
+          requestId: queuedReprintRequest.id,
+          locked: true,
+        }),
+      ]
+    : [];
+  if (reprintOptions.length > 0 && queuedReprintRequest) {
+    queuedReprintRequest.status = "offered";
+  }
+
+  const options = [
+    ...newThemeOptions,
+    ...supportOptions,
+    ...genericOptions,
+    ...reprintOptions,
+  ];
+  const expectedOptionCount = genericRules ? 9 + reprintOptions.length : 6;
+  if (options.length !== expectedOptionCount) {
+    throw new Error(
+      `Every release review requires exactly ${expectedOptionCount} eligible options.`,
+    );
   }
   state.releaseSlate = { day: state.day, options };
 }
@@ -2154,7 +2664,10 @@ function activateNewTheme(
 
 function applySupportRelease(
   state: GameState,
-  option: Pick<ReleasedProduct, "optionId" | "themeId" | "direction">,
+  option: Pick<
+    Extract<ReleasedProduct, { kind: "support" }>,
+    "optionId" | "themeId" | "direction"
+  >,
   adjustment: PowerAdjustment,
   releaseDay = state.day,
 ): void {
@@ -2261,16 +2774,45 @@ function submitRelease(
   ) {
     throw new Error("Releases can only be submitted during a release review.");
   }
-  if (selections.length !== 3) {
-    throw new Error("Exactly three release options must be selected.");
+  const genericRules = state.releaseSlate.options.some(
+    (option) => option.kind === "generic",
+  );
+  const lockedReprint = state.releaseSlate.options.find(
+    (option): option is Extract<ReleaseOption, { kind: "reprint" }> =>
+      option.kind === "reprint" && option.locked,
+  );
+  const expectedSelectionCount = genericRules
+    ? lockedReprint
+      ? STANDARD_RELEASE_PRODUCT_COUNT - 1
+      : STANDARD_RELEASE_PRODUCT_COUNT
+    : LEGACY_RELEASE_PRODUCT_COUNT;
+  if (selections.length !== expectedSelectionCount) {
+    throw new Error(
+      `Exactly ${expectedSelectionCount} release options must be selected.`,
+    );
   }
   const selectionIds = new Set(selections.map((selection) => selection.optionId));
   if (selectionIds.size !== selections.length) {
     throw new Error("Release selections must be unique.");
   }
+  if (lockedReprint && selectionIds.has(lockedReprint.id)) {
+    throw new Error("The locked reprint is included automatically and cannot be selected.");
+  }
   const optionsById = new Map(
     state.releaseSlate.options.map((option) => [option.id, option]),
   );
+  if (genericRules) {
+    const selectedOptions = selections.map((selection) =>
+      optionsById.get(selection.optionId),
+    );
+    for (const kind of ["new-theme", "support", "generic"] as const) {
+      if (!selectedOptions.some((option) => option?.kind === kind)) {
+        throw new Error(
+          "Direct release selections require at least one new theme, support, and generic card.",
+        );
+      }
+    }
+  }
   const products: ReleasedProduct[] = [];
 
   for (const selection of selections) {
@@ -2283,6 +2825,9 @@ function submitRelease(
     }
     const option = optionsById.get(selection.optionId);
     if (!option) throw new Error(`Unknown release option: ${selection.optionId}`);
+    if (option.kind === "reprint") {
+      throw new Error("The locked reprint is included automatically.");
+    }
     if (
       option.kind === "support" &&
       getCommittedSupportCount(state, option.themeId) -
@@ -2292,31 +2837,77 @@ function submitRelease(
       throw new Error(`${option.themeId} already received all three support waves.`);
     }
 
-    const expectedPower = option.kind === "new-theme"
-      ? getNewThemeLaunchPower(
-          THEME_BY_ID[option.themeId],
-          selection.powerAdjustment,
-          state.day,
-        )
-      : option.expectedPower + selection.powerAdjustment * 2.2;
+    const expectedPower =
+      option.kind === "new-theme"
+        ? getNewThemeLaunchPower(
+            THEME_BY_ID[option.themeId],
+            selection.powerAdjustment,
+            state.day,
+          )
+        : option.expectedPower + selection.powerAdjustment * 2.2;
+    if (option.kind === "generic") {
+      products.push({
+        optionId: option.id,
+        kind: "generic",
+        genericCardId: option.genericCardId,
+        expectedTier: getExpectedTier(expectedPower),
+        powerAdjustment: selection.powerAdjustment,
+        ...(option.requestId ? { requestId: option.requestId } : {}),
+      });
+    } else if (option.kind === "new-theme") {
+      products.push({
+        optionId: option.id,
+        kind: "new-theme",
+        themeId: option.themeId,
+        expectedTier: getExpectedTier(expectedPower),
+        powerAdjustment: selection.powerAdjustment,
+      });
+    } else {
+      products.push({
+        optionId: option.id,
+        kind: "support",
+        themeId: option.themeId,
+        direction: option.direction,
+        expectedTier: getExpectedTier(expectedPower),
+        powerAdjustment: selection.powerAdjustment,
+        ...(option.requestId ? { requestId: option.requestId } : {}),
+      });
+    }
+  }
+
+  if (lockedReprint) {
+    const impact = getReprintImpactPreview(state, lockedReprint.cardId);
+    if (!impact) {
+      throw new Error(`The locked reprint card is no longer released: ${lockedReprint.cardId}`);
+    }
     products.push({
-      optionId: option.id,
-      kind: option.kind,
-      themeId: option.themeId,
-      expectedTier: getExpectedTier(expectedPower),
-      powerAdjustment: selection.powerAdjustment,
-      ...(option.direction ? { direction: option.direction } : {}),
-      ...(option.requestId ? { requestId: option.requestId } : {}),
+      optionId: lockedReprint.id,
+      kind: "reprint",
+      cardId: lockedReprint.cardId,
+      themeId: lockedReprint.themeId,
+      requestId: lockedReprint.requestId,
+      expectedTier: lockedReprint.expectedTier,
+      powerAdjustment: 0,
+      referencePrice: impact.referencePrice,
+      trustDelta: impact.trustDelta,
+      accessibilityUserGain: impact.accessibilityUserGain,
+      collectorUserLoss: impact.collectorUserLoss,
+      releaseRevenueBoost: impact.releaseRevenueBoost,
     });
   }
 
   for (const option of state.releaseSlate.options) {
-    if (!option.requestId) continue;
+    if (
+      (option.kind !== "support" && option.kind !== "generic" && option.kind !== "reprint") ||
+      !option.requestId
+    ) {
+      continue;
+    }
     const request = state.supportRequests.find(
       (candidate) => candidate.id === option.requestId,
     );
     if (!request) continue;
-    if (selectionIds.has(option.id)) {
+    if (selectionIds.has(option.id) || option.kind === "reprint") {
       request.status = "released";
       request.releasedDay = state.day;
     } else {
@@ -2335,10 +2926,38 @@ function applyReleaseEffectsForCurrentDay(state: GameState): void {
   const batch = state.releaseHistory.find(
     (candidate) => candidate.day === state.day - 1,
   );
-  if (!batch) return;
+  if (!batch || isInitialGenericReleaseBatch(batch)) return;
   let trustDelta = 0;
   for (const product of batch.products) {
-    if (product.kind === "new-theme") {
+    if (product.kind === "reprint") {
+      trustDelta += product.trustDelta;
+      state.users.casual = round(
+        state.users.casual + product.accessibilityUserGain,
+        4,
+      );
+      state.users.collector = round(
+        Math.max(0, state.users.collector - product.collectorUserLoss),
+        4,
+      );
+      const genericCard = getGenericCard(product.cardId);
+      const themePart = genericCard ? undefined : findPart(product.cardId);
+      appendCommunity(state, {
+        category: "release",
+        type: "release-reaction",
+        themeId: themePart?.content.id ?? state.currentTopThemeId,
+        ...(genericCard
+          ? { genericCardId: genericCard.id }
+          : { partId: product.cardId }),
+        proposalId: product.requestId,
+        value: product.trustDelta,
+      });
+      continue;
+    }
+    if (product.kind === "generic") {
+      if (state.genericLimits[product.genericCardId] === undefined) {
+        state.genericLimits[product.genericCardId] = 3;
+      }
+    } else if (product.kind === "new-theme") {
       if (!state.themes[product.themeId]) {
         activateNewTheme(
           state,
@@ -2361,10 +2980,19 @@ function applyReleaseEffectsForCurrentDay(state: GameState): void {
     appendCommunity(state, {
       category: "release",
       type:
-        product.kind === "new-theme" ? "release-reaction" : "support-released",
-      themeId: product.themeId,
+        product.kind === "support" ? "support-released" : "release-reaction",
+      themeId:
+        product.kind === "generic"
+          ? state.currentTopThemeId
+          : product.themeId,
+      ...(product.kind === "generic"
+        ? { genericCardId: product.genericCardId }
+        : {}),
       value: product.powerAdjustment,
-      ...(product.requestId ? { proposalId: product.requestId } : {}),
+      ...((product.kind === "support" || product.kind === "generic") &&
+      product.requestId
+        ? { proposalId: product.requestId }
+        : {}),
     });
 
     if (product.powerAdjustment >= 2) {
@@ -2399,6 +3027,9 @@ function appendRestrictionReactionsForCurrentDay(state: GameState): void {
       type: "restriction-demand",
       themeId: event.themeId,
       ...(event.partId ? { partId: event.partId } : {}),
+      ...(event.genericCardId
+        ? { genericCardId: event.genericCardId }
+        : {}),
       ...(event.value === undefined ? {} : { value: event.value }),
     });
   }
@@ -2415,12 +3046,16 @@ function decayTemporaryState(state: GameState): void {
       record.outcome === "detected" &&
       record.resolvedDay === state.day,
   );
-  if (packOddsDetectedToday) return;
+  const requestedRecovery = packOddsDetectedToday
+    ? 0
+    : 0.015 + getBusinessTrustRecovery(state);
+  // Only passive recovery has a 90-point ceiling. A score earned above 90 by
+  // a discrete result must not be overwritten to 90 on the following day.
+  const availableRecoveryRoom = Math.max(0, 90 - state.purchaseTrust);
+  const appliedRecovery = Math.min(requestedRecovery, availableRecoveryRoom);
+  const neglectLoss = getSupportNeglectPressure(state).dailyTrustLoss;
   state.purchaseTrust = round(
-    Math.min(
-      90,
-      state.purchaseTrust + 0.015 + businessTrustRecovery(state),
-    ),
+    clamp(state.purchaseTrust + appliedRecovery - neglectLoss, 0, 100),
     4,
   );
 }
@@ -2467,6 +3102,110 @@ function recordHistory(state: GameState): void {
   historyEntry.communityNegative = communitySentiment.negative;
 }
 
+function isRestrictionDecisionEvent(event: CommunityEvent): boolean {
+  return (
+    event.type === "restriction-applied" ||
+    event.type === "cosmetic-restriction" ||
+    event.type === "restriction-no-change"
+  );
+}
+
+function finalizedRestrictionDecisionDays(
+  state: GameState,
+  throughDecisionDay: number,
+): number[] {
+  return [
+    ...new Set(
+      state.community
+        .filter(
+          (event) =>
+            event.day <= throughDecisionDay &&
+            isBanDay(event.day) &&
+            isRestrictionDecisionEvent(event) &&
+            state.history.some((entry) => entry.day === event.day) &&
+            state.history.some(
+              (entry) =>
+                entry.day === event.day + RESTRICTION_OUTCOME_FOLLOWUP_DAYS,
+            ),
+        )
+        .map((event) => event.day),
+    ),
+  ].sort((left, right) => left - right);
+}
+
+function ineffectiveRestrictionStreak(
+  state: GameState,
+  throughDecisionDay: number,
+): number {
+  let streak = 0;
+  const decisionDays = finalizedRestrictionDecisionDays(
+    state,
+    throughDecisionDay,
+  );
+  for (let index = decisionDays.length - 1; index >= 0; index -= 1) {
+    const decisionDay = decisionDays[index];
+    const outcome = getRestrictionHistoricalOutcome(
+      state,
+      decisionDay,
+      decisionDay + RESTRICTION_OUTCOME_FOLLOWUP_DAYS,
+    );
+    if (outcome.classification !== "ineffective") break;
+    streak += 1;
+  }
+  return streak;
+}
+
+function restrictionOutcomeTrustDelta(
+  state: GameState,
+  decisionDay: number,
+  classification: RestrictionOutcomeClassification,
+): number {
+  if (classification === "stabilized") return 1.5;
+  if (classification === "overcorrected") return -7;
+  if (classification === "replacement") return -3.5;
+  if (classification === "mixed") return -0.25;
+  if (classification !== "ineffective") return 0;
+
+  const streak = ineffectiveRestrictionStreak(state, decisionDay);
+  return streak <= 1 ? 0 : -Math.min(3, 0.75 * streak);
+}
+
+/** Applies the deterministic D+4 ownership-confidence result exactly once. */
+function applyRestrictionOutcomeForCurrentDay(state: GameState): void {
+  const decisionDay = state.day - RESTRICTION_OUTCOME_FOLLOWUP_DAYS;
+  if (
+    !isBanDay(decisionDay) ||
+    !state.community.some(
+      (event) =>
+        event.day === decisionDay && isRestrictionDecisionEvent(event),
+    )
+  ) {
+    return;
+  }
+
+  const outcome = getRestrictionHistoricalOutcome(
+    state,
+    decisionDay,
+    state.day,
+  );
+  if (outcome.classification === "pending") return;
+  const trustDelta = restrictionOutcomeTrustDelta(
+    state,
+    decisionDay,
+    outcome.classification,
+  );
+  state.purchaseTrust = round(
+    clamp(state.purchaseTrust + trustDelta, 0, 100),
+    4,
+  );
+
+  const currentHistory = state.history.at(-1);
+  if (currentHistory?.day === state.day) {
+    currentHistory.purchaseTrust = state.purchaseTrust;
+    currentHistory.environmentHealth = getBusinessEnvironmentHealth(state);
+  }
+}
+
 function assignMandateSeed(state: GameState, campaignSeed: number): void {
   if (
     !Number.isInteger(campaignSeed) ||
@@ -2505,8 +3244,52 @@ function assignMandateSeed(state: GameState, campaignSeed: number): void {
 }
 
 function assertState(state: GameState): void {
-  if (state.schemaVersion !== 7) {
+  if (state.schemaVersion !== 8) {
     throw new Error(`Unsupported game-state schema: ${state.schemaVersion}.`);
+  }
+  if (
+    state.genericReleaseStartDay !== null &&
+    !isReleaseDay(state.genericReleaseStartDay)
+  ) {
+    throw new Error("Generic release rules must begin on a regular release day.");
+  }
+  const baselineBatches = state.releaseHistory.filter(
+    (batch) => batch.baseline === true,
+  );
+  if (
+    baselineBatches.length > 1 ||
+    (baselineBatches.length === 1 &&
+      (state.releaseHistory[0] !== baselineBatches[0] ||
+        !isInitialGenericReleaseBatch(baselineBatches[0])))
+  ) {
+    throw new Error("Invalid DAY 1 baseline generic release batch.");
+  }
+  if (
+    baselineBatches.length === 1 &&
+    INITIAL_GENERIC_CARD_IDS.some(
+      (genericCardId) => state.genericLimits[genericCardId] === undefined,
+    )
+  ) {
+    throw new Error("Every baseline generic card requires a current limit.");
+  }
+  for (const [genericCardId, limit] of Object.entries(state.genericLimits)) {
+    if (!getGenericCard(genericCardId) || ![0, 1, 2, 3].includes(limit)) {
+      throw new Error(`Invalid generic restriction: ${genericCardId}.`);
+    }
+    const appliedRelease = state.releaseHistory.some(
+      (batch) =>
+        (isInitialGenericReleaseBatch(batch)
+          ? batch.day <= state.day
+          : batch.day < state.day) &&
+        batch.products.some(
+          (product) =>
+            product.kind === "generic" &&
+            product.genericCardId === genericCardId,
+        ),
+    );
+    if (!appliedRelease) {
+      throw new Error(`Generic restriction precedes release: ${genericCardId}.`);
+    }
   }
   if (
     !Number.isInteger(state.day) ||
@@ -2656,6 +3439,28 @@ function assertState(state: GameState): void {
     ) {
       throw new Error(`Invalid business-action cash return: ${record.id}.`);
     }
+    const challengeError = getBusinessChallengeProgressError(record, state.day);
+    if (challengeError) {
+      throw new Error(
+        `Invalid business challenge (${challengeError}): ${record.id}.`,
+      );
+    }
+    if (
+      isChallengeBusinessAction(record.type) &&
+      record.risk === undefined &&
+      !isBusinessChallengeDecisionDay(record.startedDay)
+    ) {
+      throw new Error(
+        `Business challenge started outside a decision day: ${record.id}.`,
+      );
+    }
+    if (
+      isChallengeBusinessAction(record.type) &&
+      record.risk === undefined &&
+      record.challenge === undefined
+    ) {
+      throw new Error(`New business challenge has no progress record: ${record.id}.`);
+    }
     switch (record.type) {
       case "tv-cm":
       case "animation-promotion":
@@ -2665,22 +3470,43 @@ function assertState(state: GameState): void {
       case "reprint-campaign":
       case "collector-fair":
         if (
-          record.outcome !== "active" &&
-          record.outcome !== "completed"
-        ) {
-          throw new Error(`Invalid duration-action outcome: ${record.id}.`);
-        }
-        if (
-          record.risk !== undefined ||
           record.environmentHealth !== undefined ||
           record.appliedDay !== undefined ||
           record.riskContext !== undefined ||
-          record.cashReturn !== undefined
+          record.cashReturn !== undefined ||
+          record.challenge !== undefined
         ) {
           throw new Error(`Unexpected duration-action metadata: ${record.id}.`);
         }
-        if (record.resolvedDay !== undefined) {
-          throw new Error(`Invalid duration-action resolution: ${record.id}.`);
+        if (record.risk === undefined) {
+          if (
+            (record.outcome !== "active" && record.outcome !== "completed") ||
+            record.resolvedDay !== undefined
+          ) {
+            throw new Error(`Invalid legacy duration action: ${record.id}.`);
+          }
+        } else {
+          if (!isProbabilisticBusinessAction(record.type)) {
+            throw new Error(`Invalid probabilistic action type: ${record.id}.`);
+          }
+          if (record.outcome === "active") {
+            if (record.resolvedDay !== undefined || state.day !== record.startedDay) {
+              throw new Error(`Overdue probabilistic action: ${record.id}.`);
+            }
+          } else if (
+            record.outcome === "success" ||
+            record.outcome === "backlash"
+          ) {
+            if (
+              record.resolvedDay !== record.startedDay + 1 ||
+              record.outcome !==
+                getProbabilisticBusinessActionOutcome(record)
+            ) {
+              throw new Error(`Invalid probabilistic action result: ${record.id}.`);
+            }
+          } else {
+            throw new Error(`Invalid probabilistic action outcome: ${record.id}.`);
+          }
         }
         break;
       case "championship":
@@ -2692,7 +3518,6 @@ function assertState(state: GameState): void {
           throw new Error(`Invalid championship outcome: ${record.id}.`);
         }
         if (
-          record.risk === undefined ||
           record.environmentHealth === undefined ||
           !Number.isFinite(record.environmentHealth) ||
           record.environmentHealth < 0 ||
@@ -2717,7 +3542,6 @@ function assertState(state: GameState): void {
         const resolutionDelay = definition.resolutionDelay;
         const context = record.riskContext;
         if (
-          record.risk === undefined ||
           !context ||
           resolutionDelay === undefined ||
           record.environmentHealth !== undefined ||
@@ -3039,11 +3863,13 @@ function resolveCurrentDay(state: GameState): void {
   updateMetaShares(state);
   computeWinRates(state);
   updateExperience(state);
+  appendOptimizationDiscoveries(state);
   updateCounters(state);
   updateTopTheme(state);
   updateUsers(state);
   updateFinance(state);
   recordHistory(state);
+  applyRestrictionOutcomeForCurrentDay(state);
 
   if (state.day >= CAMPAIGN_END_DAY || totalUsers(state) <= 0) {
     state.phase = "ended";
@@ -3094,6 +3920,49 @@ function findPart(partId: string): { content: ThemeContent; part: PartContent } 
   return undefined;
 }
 
+export function getProlongedSoftPolicyTrustLoss(
+  state: GameState,
+  policyProfile: RestrictionPolicyProfile,
+): number {
+  if (policyProfile.quality !== "narrow") return 0;
+
+  // One or two cautious reviews can frustrate the community without making
+  // owners doubt the value of buying cards. Purchase trust only starts to
+  // break when a serious problem survives three consecutive regular reviews
+  // (120 days from the first decision to the third).
+  const previousReviewDays = [
+    state.day - BAN_INTERVAL,
+    state.day - BAN_INTERVAL * 2,
+  ];
+  if (previousReviewDays.some((day) => day < FIRST_BAN_DAY)) return 0;
+  if (
+    !previousReviewDays.every(
+      (day) =>
+        state.community.some(
+          (event) =>
+            event.day === day &&
+            (event.type === "restriction-applied" ||
+              event.type === "cosmetic-restriction" ||
+              event.type === "restriction-no-change"),
+        ) &&
+        getPublishedRestrictionPolicyProfile(state, day).quality === "narrow",
+    )
+  ) {
+    return 0;
+  }
+
+  const peakBanDemand = Math.max(
+    0,
+    ...state.activeThemeIds.map((themeId) => getBanDemand(state.themes[themeId])),
+  );
+  if (peakBanDemand < 65) return 0;
+
+  const unresolvedSeverityLoss = peakBanDemand >= 80 ? 2 : 1;
+  return policyProfile.meaningfulCutCount === 0
+    ? unresolvedSeverityLoss
+    : unresolvedSeverityLoss * 0.75;
+}
+
 function submitBan(
   state: GameState,
   changes: Record<string, RestrictionLimit>,
@@ -3102,12 +3971,82 @@ function submitBan(
     throw new Error("Restrictions can only be submitted on a regular restriction day.");
   }
 
+  // Validate the whole command before mutating any card so rejected lists are
+  // atomic and the UI can use the same exported capacity calculation.
+  assertRestrictionCapacity(state, changes);
   const policyProfile = getRestrictionPolicyProfile(state, changes);
   let totalPowerLoss = 0;
+  let genericValueShock = 0;
+  let genericRecentProductChanges = 0;
   let appliedChangeCount = 0;
   for (const [partId, nextLimit] of Object.entries(changes)) {
     if (![0, 1, 2, 3].includes(nextLimit)) {
       throw new Error(`Invalid restriction limit for ${partId}.`);
+    }
+    const genericCard = getGenericCard(partId);
+    if (genericCard) {
+      const genericCardId = genericCard.id;
+      const releaseDay = state.releaseHistory.find((batch) =>
+        (isInitialGenericReleaseBatch(batch)
+          ? batch.day <= state.day
+          : batch.day < state.day) &&
+        batch.products.some(
+          (product) =>
+            product.kind === "generic" &&
+            product.genericCardId === genericCardId,
+        ),
+      )?.day;
+      if (releaseDay === undefined) {
+        throw new Error(`Unreleased generic card: ${partId}`);
+      }
+      const previousLimit = state.genericLimits[genericCardId] ?? 3;
+      if (previousLimit === nextLimit) continue;
+      const keywordsByTheme = Object.fromEntries(
+        state.activeThemeIds.map((themeId) => [
+          themeId,
+          getEffectiveThemePlayKeywords(state, themeId),
+        ]),
+      );
+      const beforeMeta = getCurrentGenericMetaModel(state);
+      const impacts = selectGenericLimitThemeImpacts(
+        state,
+        keywordsByTheme,
+        genericCardId,
+        nextLimit,
+      );
+      const cardMeta = beforeMeta.cardMetaById[genericCardId];
+      const restrictionFraction = Math.max(
+        0,
+        (previousLimit - nextLimit) / 3,
+      );
+      const strength = cardMeta
+        ? clamp((cardMeta.effectivePower - 50) / 40, 0, 1)
+        : 0;
+      genericValueShock +=
+        (cardMeta?.marketReach ?? 0) *
+        restrictionFraction *
+        (4 + 5 * strength);
+      if (state.day - releaseDay <= 60) genericRecentProductChanges += 1;
+      state.genericLimits[genericCardId] = nextLimit;
+      appliedChangeCount += 1;
+      const anchor = impacts
+        .slice()
+        .sort(
+          (left, right) =>
+            right.beforeAdoption * state.themes[right.themeId].share -
+              left.beforeAdoption * state.themes[left.themeId].share ||
+            left.themeId.localeCompare(right.themeId),
+        )[0]?.themeId ?? state.currentTopThemeId;
+      appendCommunity(state, {
+        category: "restriction",
+        type: "restriction-applied",
+        themeId: anchor,
+        genericCardId,
+        partId: genericCardId,
+        value: nextLimit,
+        previousValue: previousLimit,
+      });
+      continue;
     }
     const found = findPart(partId);
     if (!found) throw new Error(`Unknown part: ${partId}`);
@@ -3138,6 +4077,10 @@ function submitBan(
     });
   }
 
+  // Keep the persisted result itself inside the cap as an invariant, not just
+  // the submitted delta that produced it.
+  assertRestrictionCapacity(state, {});
+
   if (appliedChangeCount === 0) {
     const content = THEME_BY_ID[state.currentTopThemeId];
     const runtime = state.themes[content.id];
@@ -3160,18 +4103,24 @@ function submitBan(
 
   const impactTrustLoss =
     Math.min(12, totalPowerLoss * 0.32) *
-    (policyProfile.quality === "balanced" ? 0.75 : 1);
+    // A sound policy avoids the extra "bad process" penalty, but owners still
+    // absorb most of the value shock from a severe list.
+    (policyProfile.quality === "balanced" ? 0.9 : 1);
+  const recentProductTrustLoss = Math.min(
+    6,
+    (policyProfile.recentProductChanges + genericRecentProductChanges) * 1.5,
+  );
   const policyTrustLoss =
-    policyProfile.quality === "narrow"
-      ? 2
-      : policyProfile.quality === "incomplete"
-        ? 1.25
-        : 0;
+    policyProfile.quality === "incomplete"
+      ? 1.25
+      : getProlongedSoftPolicyTrustLoss(state, policyProfile);
   const staleOmissionTrustLoss = policyProfile.staleReliefComplete ? 0 : 1;
   state.purchaseTrust = round(
     clamp(
       state.purchaseTrust -
         impactTrustLoss -
+        Math.min(9, genericValueShock) -
+        recentProductTrustLoss -
         policyTrustLoss -
         staleOmissionTrustLoss,
       0,
@@ -3183,98 +4132,117 @@ function submitBan(
   settleDecisionDay(state);
 }
 
-function proposeSupport(
-  state: GameState,
-  themeId: ThemeId,
-  direction: SupportDirection,
-): void {
-  if (state.phase === "ended") return;
+function assertReleaseRequestContext(state: GameState): number {
+  if (state.phase === "ended") {
+    throw new Error("Release requests are unavailable after the campaign ends.");
+  }
   if (state.operations.pendingEvent) {
-    throw new Error("Resolve the pending business event before proposing support.");
+    throw new Error("Resolve the pending business event before changing a release request.");
   }
   if (state.phase !== "running") {
-    throw new Error("Support proposals are only available during normal operations.");
-  }
-  if (!state.themes[themeId]) throw new Error(`Inactive theme: ${themeId}`);
-  if (getCommittedSupportCount(state, themeId) >= MAX_THEME_SUPPORTS) {
-    throw new Error("A theme can receive support at most three times.");
-  }
-  if (
-    state.lastSupportProposalDay !== null &&
-    state.day - state.lastSupportProposalDay < 30
-  ) {
-    throw new Error("Support proposals have a 30-day cooldown.");
+    throw new Error("Release requests are only available during normal operations.");
   }
   const eligibleReleaseDay = getNextReleaseDay(state.day);
   if (eligibleReleaseDay > LAST_RELEASE_DAY) {
     throw new Error("There is no release slot left in this campaign.");
   }
-  const request: SupportRequest = {
+  return eligibleReleaseDay;
+}
+
+function setReleaseRequest(
+  state: GameState,
+  input: ReleaseRequestInput,
+): void {
+  const eligibleReleaseDay = assertReleaseRequestContext(state);
+  const lane = getReleaseRequestLane(input.kind);
+  const existing = getPendingReleaseRequest(state, lane);
+
+  if (input.kind === "support") {
+    if (!state.themes[input.themeId]) {
+      throw new Error(`Inactive theme: ${input.themeId}`);
+    }
+    const existingReservation =
+      existing &&
+      getReleaseRequestKind(existing) === "support" &&
+      "themeId" in existing &&
+      existing.themeId === input.themeId
+        ? 1
+        : 0;
+    if (
+      getCommittedSupportCount(state, input.themeId) - existingReservation >=
+      MAX_THEME_SUPPORTS
+    ) {
+      throw new Error("A theme can receive support at most three times.");
+    }
+  } else if (input.kind === "indirect-support") {
+    if (!state.themes[input.themeId]) {
+      throw new Error(`Inactive theme: ${input.themeId}`);
+    }
+    if (getIndirectSupportGenericPool(state, input.themeId).length === 0) {
+      throw new Error("No unreleased generic card shares a keyword with that theme.");
+    }
+  } else if (input.kind === "environment-target") {
+    if (!state.themes[input.themeId]) {
+      throw new Error(`Inactive theme: ${input.themeId}`);
+    }
+    if (getEnvironmentTargetGenericPool(state, input.themeId).length === 0) {
+      throw new Error("No unreleased generic card has a counter edge into that theme.");
+    }
+  } else if (!getReprintImpactPreview(state, input.cardId)) {
+    throw new Error(`Only a currently released card can be reprinted: ${input.cardId}`);
+  }
+
+  if (existing) {
+    existing.status = "replaced";
+    existing.releasedDay = null;
+  }
+
+  const base = {
     id: `support-request-${state.nextSupportRequestId}`,
-    themeId,
-    direction,
     proposedDay: state.day,
     eligibleReleaseDay,
     status: "queued",
     releasedDay: null,
-  };
+  } as const;
+  const request: SupportRequest = input.kind === "support"
+    ? { ...base, kind: "support", themeId: input.themeId, direction: input.direction }
+    : input.kind === "indirect-support"
+      ? { ...base, kind: "indirect-support", themeId: input.themeId }
+      : input.kind === "environment-target"
+        ? { ...base, kind: "environment-target", themeId: input.themeId }
+        : { ...base, kind: "reprint", cardId: input.cardId };
   state.nextSupportRequestId += 1;
-  state.lastSupportProposalDay = state.day;
   state.supportRequests.push(request);
-  appendCommunity(state, {
-    category: "release",
-    type: "support-proposed",
-    themeId,
-    proposalId: request.id,
-  });
+  if (input.kind === "support") {
+    state.lastSupportProposalDay = state.day;
+    appendCommunity(state, {
+      category: "release",
+      type: "support-proposed",
+      themeId: input.themeId,
+      proposalId: request.id,
+    });
+  }
 }
 
-function runBusinessAction(
+function cancelReleaseRequest(
   state: GameState,
-  actionType: BusinessActionType,
+  lane: ReleaseRequestLane,
 ): void {
-  const definition = BUSINESS_ACTION_BY_TYPE[actionType];
-  if (!definition) throw new Error(`Unknown business action: ${actionType}.`);
-
-  const availability = getBusinessActionAvailability(state, actionType);
-  if (!availability.available) {
-    throw new Error(
-      availability.reason ?? "This business action is not currently available.",
-    );
+  assertReleaseRequestContext(state);
+  const request = getPendingReleaseRequest(state, lane);
+  if (!request || request.status !== "queued") {
+    throw new Error(`There is no queued ${lane} release request to cancel.`);
   }
+  request.status = "cancelled";
+  request.releasedDay = null;
+}
 
-  const id = `business-action-${state.operations.nextActionId}`;
-  const record: BusinessActionRecord = {
-    id,
-    type: actionType,
-    startedDay: state.day,
-    endsDay: getBusinessActionScheduledEndDay(state.day, actionType),
-    cost: definition.cost,
-    outcome: actionType === "pack-odds" ? "pending" : "active",
-  };
-
-  if (actionType === "championship") {
-    record.environmentHealth = round(getBusinessEnvironmentHealth(state), 4);
-    record.risk = round(getChampionshipBacklashRisk(state), 4);
-  } else if (actionType === "pack-odds") {
-    record.risk = round(getPackOddsDetectionRisk(state), 4);
-  } else if (isStrategicBusinessAction(actionType)) {
-    const profile = getStrategicProjectRiskProfile(state, actionType);
-    record.risk = profile.risk;
-    record.riskContext = profile.context;
-  }
-
-  state.operations.records.push(record);
-  state.operations.nextActionId += 1;
-  state.finance.cash = round(state.finance.cash - definition.cost, 4);
-  state.finance.todayOperatingCash = round(
-    state.finance.todayOperatingCash - definition.cost,
-    4,
-  );
-  state.finance.cumulativeExpenses = round(
-    state.finance.cumulativeExpenses + definition.cost,
-    4,
-  );
+function proposeSupport(
+  state: GameState,
+  themeId: ThemeId,
+  direction: SupportDirection,
+): void {
+  setReleaseRequest(state, { kind: "support", themeId, direction });
 }
 
 export function getBanDemand(theme: ThemeRuntime): number {
@@ -3299,6 +4267,9 @@ export function formatCommunityEvent(
     ? THEME_BY_ID[event.relatedThemeId]?.shortName ?? event.relatedThemeId
     : "기존 1위";
   const part = event.partId ? findPart(event.partId)?.part : undefined;
+  const genericCard = event.genericCardId
+    ? getGenericCard(event.genericCardId)
+    : undefined;
   const proposal = event.proposalId
     ? state.supportRequests.find((candidate) => candidate.id === event.proposalId)
     : undefined;
@@ -3315,22 +4286,28 @@ export function formatCommunityEvent(
     case "optimization-rumor":
       return `${themeName} 새 전개법 찾았다는 글 봄? 아직 더 세질 수도 있겠는데`;
     case "restriction-demand":
+      if (genericCard) {
+        return `${genericCard.name} 어디에나 들어가는데 이 정도면 범용 금제 얘기 나올 만함`;
+      }
       return `${withTopicParticle(themeName)} 승패보다 상대할 때 너무 지침. 금제 얘기 나올 만함`;
     case "theme-popularity":
       return `${themeName} 성능과 별개로 이번 달 인기 진짜 높네`;
     case "release-reaction":
+      if (genericCard) {
+        return `${genericCard.name} 공개 뒤로 여러 덱 리스트가 동시에 바뀌는 중이네`;
+      }
       return `${themeName} 발매 반응 괜찮은데 실제 입상까지 이어질지는 모르겠다`;
     case "meta-analysis":
       return `${themeName} 점유율은 낮아도 상성 맞으면 충분히 올라올 수 있음`;
     case "support-proposed":
-      return `${themeName} ${proposal ? DIRECTION_LABEL[proposal.direction] : "지원"} 제안 들어갔대`;
+      return `${themeName} ${proposal && getReleaseRequestKind(proposal) === "support" && proposal.direction !== undefined ? DIRECTION_LABEL[proposal.direction] : "지원"} 제안 들어갔대`;
     case "support-released":
       return `${themeName} 지원 드디어 나왔다. 이번엔 진짜 할 만한가?`;
     case "restriction-applied":
     case "cosmetic-restriction": {
       const previous = event.previousValue;
       const next = event.value;
-      const target = part?.name ??
+      const target = genericCard?.name ?? part?.name ??
         (event.type === "restriction-applied" ? "핵심 파츠" : "대상 파츠");
       if (Number.isInteger(previous) && Number.isInteger(next)) {
         const direction =
@@ -3341,9 +4318,13 @@ export function formatCommunityEvent(
                 ? "제한 해제"
                 : "제한 완화"
               : "현행 유지";
-        return `[운영 공지] ${themeName} ${target} ${direction} ${previous}→${next}장`;
+        return genericCard
+          ? `[운영 공지] 범용 ${target} ${direction} ${previous}→${next}장`
+          : `[운영 공지] ${themeName} ${target} ${direction} ${previous}→${next}장`;
       }
-      return `[운영 공지] ${themeName} ${target} ${next}장 적용`;
+      return genericCard
+        ? `[운영 공지] 범용 ${target} ${next}장 적용`
+        : `[운영 공지] ${themeName} ${target} ${next}장 적용`;
     }
     case "restriction-no-change":
       return `[운영 공지] 금제 변경 없음 — ${themeName} 현행 유지`;
@@ -3389,7 +4370,7 @@ export function createCampaignStart(seed = 0x5eed1234): GameState {
   themes[currentTopThemeId].topStreakDays = 1;
 
   const state: GameState = {
-    schemaVersion: 7,
+    schemaVersion: 8,
     seed: seed >>> 0,
     day: 1,
     phase: "running",
@@ -3420,7 +4401,11 @@ export function createCampaignStart(seed = 0x5eed1234): GameState {
     community: [],
     supportRequests: [],
     releaseSlate: null,
-    releaseHistory: [],
+    releaseHistory: [createInitialGenericReleaseBatch()],
+    genericLimits: Object.fromEntries(
+      INITIAL_GENERIC_CARD_IDS.map((genericCardId) => [genericCardId, 3]),
+    ),
+    genericReleaseStartDay: 30,
     history: [],
     recentRevenue: [],
     lastSupportProposalDay: null,
@@ -3448,10 +4433,7 @@ export function createFirstBanGame(seed = 0x5eed1234): GameState {
     action: "tv-cm",
   });
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
-  state = reduceGame(state, {
-    type: "SUBMIT_RELEASE",
-    selections: getPrologueReleaseSelections(state),
-  });
+  state = reduceGame(state, getPrologueReleaseCommand(state));
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
   if (state.day !== FIRST_BAN_DAY || state.phase !== "ban-edit") {
     throw new Error("The prologue must stop at the first restriction review.");
@@ -3491,6 +4473,12 @@ export function reduceGame(state: GameState, command: GameCommand): GameState {
     case "PROPOSE_SUPPORT":
       proposeSupport(next, command.themeId, command.direction);
       break;
+    case "SET_RELEASE_REQUEST":
+      setReleaseRequest(next, command.request);
+      break;
+    case "CANCEL_RELEASE_REQUEST":
+      cancelReleaseRequest(next, command.lane);
+      break;
     case "SUBMIT_RELEASE":
       submitRelease(next, command.selections);
       break;
@@ -3501,10 +4489,25 @@ export function reduceGame(state: GameState, command: GameCommand): GameState {
       chooseBusinessEvent(next, command.eventId, command.choice);
       break;
     case "COMPLETE_HANDOVER":
-      if (next.day < 46 || next.phase === "ended") {
-        throw new Error("The handover can only be completed on or after DAY 46.");
+      {
+        const firstBanPublished =
+          next.day === FIRST_BAN_DAY &&
+          next.phase === "running" &&
+          next.community.some(
+            (event) =>
+              event.day === FIRST_BAN_DAY && isRestrictionDecisionEvent(event),
+          );
+        const legacyDay46Path = next.day >= 46 && next.phase !== "ended";
+        if (
+          next.handoverComplete ||
+          (!firstBanPublished && !legacyDay46Path)
+        ) {
+          throw new Error(
+            "The handover requires the published DAY 45 restriction or a legacy DAY 46 save.",
+          );
+        }
+        next.handoverComplete = true;
       }
-      next.handoverComplete = true;
       break;
     default: {
       const exhaustive: never = command;

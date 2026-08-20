@@ -7,15 +7,31 @@ import type {
   GameState,
 } from "./types.ts";
 import { THEME_BY_ID } from "./content.ts";
+import { getGenericCard } from "./generic-card-catalog.ts";
+import { isInitialGenericReleaseBatch } from "./initial-generic-cards.ts";
 import {
+  BAN_INTERVAL,
   CAMPAIGN_END_DAY,
+  FIRST_BAN_DAY,
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
   RELEASE_INTERVAL,
 } from "./campaign.ts";
 import { OPERATING_CASH_MARGIN } from "./finance.ts";
-import { getPublishedRestrictionPolicyProfile } from "./restriction-policy.ts";
+import {
+  getPublishedRestrictionPolicyProfile,
+  getRestrictionHistoricalOutcome,
+  type RestrictionOutcomeClassification,
+} from "./restriction-policy.ts";
 import { getEnvironmentHealthBreakdown } from "./environment-health.ts";
+import {
+  CHALLENGE_BUSINESS_ACTION_TYPES,
+  getNextBusinessChallengeDecisionDay,
+  isBusinessChallengeDecisionDay,
+  isChallengeBusinessAction,
+} from "./business-challenges.ts";
+
+export type BusinessActionFamily = "media" | "community" | "product";
 
 export type BusinessActionDefinition = {
   type: BusinessActionType;
@@ -27,6 +43,8 @@ export type BusinessActionDefinition = {
   tone: "safe" | "growth" | "event" | "danger";
   summary: string;
   effect: string;
+  /** Low-risk campaigns in the same family compete for the same audience. */
+  saturationFamily?: BusinessActionFamily;
   minimumDay?: number;
   resolutionDelay?: number;
   successReturn?: number;
@@ -45,6 +63,7 @@ export const BUSINESS_ACTIONS = [
     tone: "growth",
     summary: "넓은 층에 빠르게 노출되는 단기 캠페인",
     effect: "21일간 캐주얼 유입과 제품 구매율 상승",
+    saturationFamily: "media",
   },
   {
     type: "animation-promotion",
@@ -56,6 +75,7 @@ export const BUSINESS_ACTIONS = [
     tone: "growth",
     summary: "제작위원회·방영 타이업에 참여하는 장기 투자",
     effect: "75일간 캐주얼·컬렉터 유입과 구매율 크게 상승",
+    saturationFamily: "media",
   },
   {
     type: "championship",
@@ -65,8 +85,8 @@ export const BUSINESS_ACTIONS = [
     duration: 7,
     cooldown: 21,
     tone: "event",
-    summary: "현재 환경을 대중 앞에 그대로 중계하는 승부수",
-    effect: "흥행 시 7일간 티켓·스폰서 매출 · 나쁜 환경은 이탈로 역류",
+    summary: "환경 건강도로 흥행 여부가 결정되는 공개 검증",
+    effect: "다음 날까지 환경 건강도 65 이상을 유지하면 7일간 흥행 효과",
   },
   {
     type: "store-tour",
@@ -78,6 +98,7 @@ export const BUSINESS_ACTIONS = [
     tone: "safe",
     summary: "지역 매장과 함께 진행하는 저위험 입문 행사",
     effect: "14일간 현장 판매 매출 + 완만한 신규 유입과 구매 신뢰 회복",
+    saturationFamily: "community",
   },
   {
     type: "beginner-camp",
@@ -89,6 +110,7 @@ export const BUSINESS_ACTIONS = [
     tone: "safe",
     summary: "대여 덱·룰 코칭·스타터 묶음 판매를 결합한 입문 행사",
     effect: "14일간 스타터 번들 매출 + 캐주얼 유입",
+    saturationFamily: "community",
   },
   {
     type: "local-league",
@@ -100,6 +122,7 @@ export const BUSINESS_ACTIONS = [
     tone: "event",
     summary: "공인 매장 리그에 상금·심판·중계 장비를 지원하는 경쟁층 투자",
     effect: "21일간 참가 키트 매출 + 경쟁층 유입",
+    saturationFamily: "community",
   },
   {
     type: "reprint-campaign",
@@ -111,6 +134,7 @@ export const BUSINESS_ACTIONS = [
     tone: "safe",
     summary: "품귀 핵심 파츠를 재판하고 매장 교환 지원을 함께 여는 공급 대책",
     effect: "30일간 재판 상품 매출 + 구매 신뢰 회복",
+    saturationFamily: "product",
   },
   {
     type: "collector-fair",
@@ -122,6 +146,7 @@ export const BUSINESS_ACTIONS = [
     tone: "growth",
     summary: "원화 전시·작가 토크·한정 프로모를 묶은 단기 수집 행사",
     effect: "14일간 한정 굿즈 매출 크게 상승 + 컬렉터 유입",
+    saturationFamily: "product",
   },
   {
     type: "pack-odds",
@@ -143,7 +168,7 @@ export const BUSINESS_ACTIONS = [
     cooldown: 500,
     tone: "danger",
     summary: "룰·랭크·매장 키트를 한 번에 교체하는 대규모 시즌 전환",
-    effect: "30일 뒤 판정 · 성공 시 ₩6.5억 회수와 시즌 성장 · 실패 시 대규모 이탈",
+    effect: "30일 중 20일간 환경 건강도 64 이상 유지 · 달성 시 ₩6.5억 회수와 장기 성장",
     minimumDay: 120,
     resolutionDelay: 30,
     successReturn: 6.5,
@@ -158,7 +183,7 @@ export const BUSINESS_ACTIONS = [
     cooldown: 500,
     tone: "danger",
     summary: "번역·물류·해외 리그를 묶어 신규 시장을 여는 확장 프로젝트",
-    effect: "21일 뒤 판정 · 성공 시 ₩5.2억 회수와 해외 유입 · 실패 시 신뢰 역풍",
+    effect: "21일 중 14일간 구매 신뢰 72 이상 유지 · 달성 시 ₩5.2억 회수와 해외 유입",
     minimumDay: 180,
     resolutionDelay: 21,
     successReturn: 5.2,
@@ -173,7 +198,7 @@ export const BUSINESS_ACTIONS = [
     cooldown: 500,
     tone: "danger",
     summary: "막 공개한 정기 세트의 초판 물량을 수요 예측보다 크게 잡는 승부수",
-    effect: "발매일에만 집행 · 7일 뒤 성공 시 ₩4.0억 회수 · 실패 시 재고 역풍",
+    effect: "발매일에만 집행 · 7일 중 5일간 발매 품질 68 이상이면 ₩4.0억 회수",
     minimumDay: 90,
     resolutionDelay: 7,
     successReturn: 4,
@@ -185,6 +210,154 @@ export const BUSINESS_ACTION_BY_TYPE = Object.fromEntries(
   BUSINESS_ACTIONS.map((action) => [action.type, action]),
 ) as Record<BusinessActionType, BusinessActionDefinition>;
 
+export const PROBABILISTIC_BUSINESS_ACTION_TYPES = [
+  "tv-cm",
+  "animation-promotion",
+  "store-tour",
+  "beginner-camp",
+  "local-league",
+  "reprint-campaign",
+  "collector-fair",
+] as const satisfies readonly BusinessActionType[];
+
+export type ProbabilisticBusinessActionType =
+  (typeof PROBABILISTIC_BUSINESS_ACTION_TYPES)[number];
+
+/** The four long-horizon actions whose outcomes come from explicit targets. */
+export const RISKY_CHALLENGE_ACTION_TYPES =
+  CHALLENGE_BUSINESS_ACTION_TYPES;
+
+export function isProbabilisticBusinessAction(
+  type: BusinessActionType,
+): type is ProbabilisticBusinessActionType {
+  return (PROBABILISTIC_BUSINESS_ACTION_TYPES as readonly BusinessActionType[])
+    .includes(type);
+}
+
+const PROBABILISTIC_ACTION_BASE_SUCCESS = {
+  "tv-cm": 0.68,
+  "animation-promotion": 0.62,
+  "store-tour": 0.78,
+  "beginner-camp": 0.8,
+  "local-league": 0.72,
+  "reprint-campaign": 0.76,
+  "collector-fair": 0.7,
+} as const satisfies Record<ProbabilisticBusinessActionType, number>;
+
+export type ProbabilisticBusinessActionSuccessProfile = {
+  successProbability: number;
+  backlashProbability: number;
+  environmentHealth: number;
+  purchaseTrust: number;
+  releaseQuality: number;
+  saturationMultiplier: number;
+};
+
+/**
+ * Launch-day state is converted into a frozen, player-readable chance. The
+ * lower bound keeps cheap actions from becoming dead buttons, while the upper
+ * bound preserves meaningful execution risk even in a healthy environment.
+ */
+export function getProbabilisticBusinessActionSuccessProfile(
+  state: GameState,
+  type: ProbabilisticBusinessActionType,
+): ProbabilisticBusinessActionSuccessProfile {
+  const environmentHealth = getBusinessEnvironmentHealth(state);
+  const releaseQuality = getRecentReleaseQuality(state);
+  const saturationMultiplier = getBusinessActionSaturationMultiplier(
+    state,
+    type,
+    state.day,
+  );
+  const successProbability = round(
+    clamp(
+      PROBABILISTIC_ACTION_BASE_SUCCESS[type] +
+        (environmentHealth - 60) * 0.0025 +
+        (state.purchaseTrust - 70) * 0.0035 +
+        (releaseQuality - 60) * 0.002 +
+        (saturationMultiplier - 1) * 0.3,
+      0.18,
+      0.92,
+    ),
+    4,
+  );
+  return {
+    successProbability,
+    backlashProbability: round(1 - successProbability, 4),
+    environmentHealth: round(environmentHealth, 2),
+    purchaseTrust: round(state.purchaseTrust, 2),
+    releaseQuality,
+    saturationMultiplier,
+  };
+}
+
+/** Returns null for challenges and the separate pack-odds detection action. */
+export function getBusinessActionSuccessProbability(
+  state: GameState,
+  type: BusinessActionType,
+): number | null {
+  return isProbabilisticBusinessAction(type)
+    ? getProbabilisticBusinessActionSuccessProfile(state, type)
+      .successProbability
+    : null;
+}
+
+function probabilisticActionRoll(
+  recordId: string,
+  startedDay: number,
+  type: ProbabilisticBusinessActionType,
+): number {
+  let hash = 0x9e3779b9;
+  const text = `ordinary-business-action\u001f${recordId}\u001f${startedDay}\u001f${type}`;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+    hash ^= hash >>> 13;
+  }
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x7feb352d);
+  hash ^= hash >>> 15;
+  hash = Math.imul(hash, 0x846ca68b);
+  hash ^= hash >>> 16;
+  return (hash >>> 0) / 4294967296;
+}
+
+export function getProbabilisticBusinessActionOutcome(
+  record: Pick<
+    BusinessActionRecord,
+    "id" | "type" | "startedDay" | "risk"
+  >,
+): Extract<BusinessActionOutcome, "success" | "backlash"> {
+  if (!isProbabilisticBusinessAction(record.type)) {
+    throw new Error(`${record.type} is not a probabilistic business action.`);
+  }
+  if (
+    record.risk === undefined ||
+    !Number.isFinite(record.risk) ||
+    record.risk < 0 ||
+    record.risk > 1
+  ) {
+    throw new Error("Probabilistic business-action risk must be between zero and one.");
+  }
+  return probabilisticActionRoll(
+      record.id,
+      record.startedDay,
+      record.type,
+    ) < record.risk
+    ? "backlash"
+    : "success";
+}
+
+/** New failures reverse the campaign signal; legacy active records stay whole. */
+export function getProbabilisticBusinessActionEffectMultiplier(
+  type: BusinessActionType,
+  outcome: BusinessActionOutcome,
+): number {
+  if (!isProbabilisticBusinessAction(type)) return 1;
+  if (outcome === "backlash") return -0.6;
+  return outcome === "active" || outcome === "success" ? 1 : 0;
+}
+
 export const STRATEGIC_BUSINESS_ACTION_TYPES = [
   "season-overhaul",
   "global-launch",
@@ -194,8 +367,152 @@ export const STRATEGIC_BUSINESS_ACTION_TYPES = [
 export type StrategicBusinessActionType =
   (typeof STRATEGIC_BUSINESS_ACTION_TYPES)[number];
 
+/** A family recovers fully only after a quiet quarter. */
+export const BUSINESS_ACTION_FAMILY_SATURATION_WINDOW_DAYS = 90;
+/** Even different low-risk channels draw on the same campaign bandwidth. */
+export const BUSINESS_ACTION_PORTFOLIO_SATURATION_WINDOW_DAYS = 60;
+export const BUSINESS_ACTION_FAMILY_SATURATION_FLOOR = 0.35;
+const BUSINESS_ACTION_FAMILY_REPEAT_MULTIPLIER = 0.8;
+const BUSINESS_ACTION_PORTFOLIO_REPEAT_MULTIPLIER = 0.9;
+
+type BusinessActionHistory = {
+  operations: {
+    records: readonly Pick<BusinessActionRecord, "type" | "startedDay">[];
+  };
+};
+
+export function getBusinessActionFamily(
+  type: BusinessActionType,
+): BusinessActionFamily | null {
+  return BUSINESS_ACTION_BY_TYPE[type].saturationFamily ?? null;
+}
+
+/**
+ * Locks in launch effectiveness from recent low-risk campaign load and from
+ * prior campaigns aimed at the same audience. Risk-gated actions have no
+ * family and retain their full upside.
+ */
+export function getBusinessActionSaturationMultiplier(
+  state: BusinessActionHistory,
+  type: BusinessActionType,
+  startedDay: number,
+): number {
+  const family = getBusinessActionFamily(type);
+  if (!family) return 1;
+  const recentFamilyStarts = state.operations.records.filter((record) => {
+    const age = startedDay - record.startedDay;
+    return (
+      age > 0 &&
+      age <= BUSINESS_ACTION_FAMILY_SATURATION_WINDOW_DAYS &&
+      getBusinessActionFamily(record.type) === family
+    );
+  }).length;
+  const recentPortfolioStarts = state.operations.records.filter((record) => {
+    const age = startedDay - record.startedDay;
+    return (
+      age > 0 &&
+      age <= BUSINESS_ACTION_PORTFOLIO_SATURATION_WINDOW_DAYS &&
+      getBusinessActionFamily(record.type) !== null
+    );
+  }).length;
+  return round(
+    Math.max(
+      BUSINESS_ACTION_FAMILY_SATURATION_FLOOR,
+      BUSINESS_ACTION_FAMILY_REPEAT_MULTIPLIER ** recentFamilyStarts *
+        BUSINESS_ACTION_PORTFOLIO_REPEAT_MULTIPLIER ** recentPortfolioStarts,
+    ),
+    4,
+  );
+}
+
+type StrategicSuccessBenefitDefinition = {
+  userRates: Readonly<Record<"tier" | "casual" | "collector", number>>;
+  buyerRate: number;
+  trustPerDay: number;
+  grossRevenuePerUserWon: number;
+  grossRevenuePerCollectorWon: number;
+};
+
+/** Successful infrastructure keeps paying after its launch campaign ends. */
+export const STRATEGIC_SUCCESS_BENEFIT_BY_TYPE = {
+  "season-overhaul": {
+    userRates: { tier: 0.0001, casual: 0.0001, collector: 0.00008 },
+    buyerRate: 0.003,
+    trustPerDay: 0.006,
+    grossRevenuePerUserWon: 180,
+    grossRevenuePerCollectorWon: 0,
+  },
+  "global-launch": {
+    userRates: { tier: 0.00003, casual: 0.00009, collector: 0.00016 },
+    buyerRate: 0.005,
+    trustPerDay: 0.004,
+    grossRevenuePerUserWon: 130,
+    grossRevenuePerCollectorWon: 300,
+  },
+  "first-print-expansion": {
+    userRates: { tier: 0.00002, casual: 0.00005, collector: 0.0001 },
+    buyerRate: 0.007,
+    trustPerDay: 0.002,
+    grossRevenuePerUserWon: 160,
+    grossRevenuePerCollectorWon: 250,
+  },
+} as const satisfies Record<
+  StrategicBusinessActionType,
+  StrategicSuccessBenefitDefinition
+>;
+
+export type StrategicSuccessBenefits = {
+  userRates: Record<"tier" | "casual" | "collector", number>;
+  buyerRate: number;
+  trustPerDay: number;
+  dailyGrossRevenue: number;
+};
+
+export function getStrategicSuccessBenefits(
+  state: Pick<GameState, "day" | "operations" | "users">,
+  day = state.day,
+): StrategicSuccessBenefits {
+  const benefits: StrategicSuccessBenefits = {
+    userRates: { tier: 0, casual: 0, collector: 0 },
+    buyerRate: 0,
+    trustPerDay: 0,
+    dailyGrossRevenue: 0,
+  };
+  let revenueWon = 0;
+  const totalUsers = state.users.tier + state.users.casual + state.users.collector;
+
+  for (const record of state.operations.records) {
+    if (
+      !isStrategicBusinessAction(record.type) ||
+      record.outcome !== "success" ||
+      record.resolvedDay === undefined ||
+      record.resolvedDay > day
+    ) {
+      continue;
+    }
+    const definition = STRATEGIC_SUCCESS_BENEFIT_BY_TYPE[record.type];
+    benefits.userRates.tier += definition.userRates.tier;
+    benefits.userRates.casual += definition.userRates.casual;
+    benefits.userRates.collector += definition.userRates.collector;
+    benefits.buyerRate += definition.buyerRate;
+    benefits.trustPerDay += definition.trustPerDay;
+    revenueWon +=
+      totalUsers * definition.grossRevenuePerUserWon +
+      state.users.collector * definition.grossRevenuePerCollectorWon;
+  }
+
+  benefits.dailyGrossRevenue = round(revenueWon / 100_000_000, 4);
+  return benefits;
+}
+
 /** Repeatable event sales saturate when several campaigns run concurrently. */
 export const BUSINESS_ACTION_DAILY_REVENUE_CAP = 0.18;
+/**
+ * Field events primarily build audience and trust; their on-site sales only
+ * recover part of that investment. This keeps low-risk churn from replacing
+ * the mandate's one genuinely risky growth decision.
+ */
+export const BUSINESS_ACTION_DIRECT_REVENUE_MULTIPLIER = 0.65;
 
 export function isStrategicBusinessAction(
   type: BusinessActionType,
@@ -251,7 +568,13 @@ export function getBusinessActionDailyGrossRevenue(
       break;
   }
 
-  return round(revenueWon / 100_000_000, 4);
+  return round(
+    (revenueWon *
+      BUSINESS_ACTION_DIRECT_REVENUE_MULTIPLIER *
+      getProbabilisticBusinessActionEffectMultiplier(type, outcome)) /
+      100_000_000,
+    4,
+  );
 }
 
 /**
@@ -260,18 +583,27 @@ export function getBusinessActionDailyGrossRevenue(
  * and remains outside the repeatable-event saturation cap.
  */
 export function getStackedBusinessActionDailyGrossRevenue(
-  state: Pick<GameState, "users">,
-  records: readonly Pick<BusinessActionRecord, "type" | "outcome">[],
+  state: Pick<GameState, "day" | "operations" | "users">,
+  records: readonly (
+    Pick<BusinessActionRecord, "type" | "outcome"> &
+      Partial<Pick<BusinessActionRecord, "startedDay">>
+  )[],
 ): number {
   let repeatableRevenue = 0;
   let championshipRevenue = 0;
 
   for (const record of records) {
-    const revenue = getBusinessActionDailyGrossRevenue(
+    const effectiveness = getBusinessActionSaturationMultiplier(
       state,
       record.type,
-      record.outcome,
+      record.startedDay ?? state.day,
     );
+    const revenue =
+      getBusinessActionDailyGrossRevenue(
+        state,
+        record.type,
+        record.outcome,
+      ) * effectiveness;
     if (record.type === "championship") {
       championshipRevenue += revenue;
     } else {
@@ -309,7 +641,7 @@ export function getBusinessActionProjectedDirectGrossRevenue(
     );
     const withAction = getStackedBusinessActionDailyGrossRevenue(state, [
       ...activeRecords,
-      { type, outcome },
+      { type, outcome, startedDay: state.day },
     ]);
     grossRevenue += withAction - baseline;
   }
@@ -344,14 +676,36 @@ function round(value: number, digits = 4): number {
   return Math.round((value + Number.EPSILON) * factor) / factor;
 }
 
-function getRecentReleaseQuality(state: GameState): number {
+export function getRecentReleaseQuality(state: GameState): number {
   const batches = state.releaseHistory
-    .filter((batch) => batch.day <= state.day && state.day - batch.day <= 90)
+    .filter(
+      (batch) =>
+        !isInitialGenericReleaseBatch(batch) &&
+        batch.day <= state.day &&
+        state.day - batch.day <= 90,
+    )
     .slice(-3);
-  const products = batches.flatMap((batch) => batch.products);
+  // Reprints deliberately trade accessibility for collector confidence, but
+  // they do not represent a newly designed card's release quality. The batch
+  // still contains the three core products, so judge the challenge from those.
+  const products = batches
+    .flatMap((batch) => batch.products)
+    .filter((product) => product.kind !== "reprint");
   if (products.length === 0) return 50;
 
   const scores = products.map((product) => {
+    if (product.kind === "generic") {
+      const card = getGenericCard(product.genericCardId);
+      if (!card) return 50;
+      return clamp(
+        52 +
+          card.appeal * 0.22 +
+          (card.basePower - 50) * 0.22 -
+          Math.max(0, Math.abs(product.powerAdjustment) - 1) * 6,
+        0,
+        100,
+      );
+    }
     const content = THEME_BY_ID[product.themeId];
     const runtime = state.themes[product.themeId];
     if (!content) return 50;
@@ -389,6 +743,134 @@ function getRecentPolicyQuality(
   return getPublishedRestrictionPolicyProfile(state, latestDay).quality;
 }
 
+const RESTRICTION_OUTCOME_FOLLOWUP_DAYS = 4;
+const RESTRICTION_OUTCOME_RISK_WINDOW_DAYS = 30;
+
+type RestrictionOutcomeRiskEffect = {
+  riskAdjustment: number;
+  policyRiskScore: number;
+  policyStrengthScore: number;
+};
+
+const NO_RESTRICTION_OUTCOME_RISK_EFFECT: RestrictionOutcomeRiskEffect = {
+  riskAdjustment: 0,
+  policyRiskScore: 0,
+  policyStrengthScore: 0,
+};
+
+function isRegularRestrictionDay(day: number): boolean {
+  return (
+    day >= FIRST_BAN_DAY &&
+    (day - FIRST_BAN_DAY) % BAN_INTERVAL === 0
+  );
+}
+
+function isRestrictionDecisionType(type: string): boolean {
+  return (
+    type === "restriction-applied" ||
+    type === "cosmetic-restriction" ||
+    type === "restriction-no-change"
+  );
+}
+
+function finalizedRestrictionDecisionDays(state: GameState): number[] {
+  return [
+    ...new Set(
+      state.community
+        .filter(
+          (event) =>
+            isRegularRestrictionDay(event.day) &&
+            event.day + RESTRICTION_OUTCOME_FOLLOWUP_DAYS <= state.day &&
+            isRestrictionDecisionType(event.type) &&
+            state.history.some((entry) => entry.day === event.day) &&
+            state.history.some(
+              (entry) =>
+                entry.day === event.day + RESTRICTION_OUTCOME_FOLLOWUP_DAYS,
+            ),
+        )
+        .map((event) => event.day),
+    ),
+  ].sort((left, right) => left - right);
+}
+
+function trailingIneffectiveOutcomeCount(
+  state: GameState,
+  decisionDays: readonly number[],
+): number {
+  let count = 0;
+  for (let index = decisionDays.length - 1; index >= 0; index -= 1) {
+    const decisionDay = decisionDays[index];
+    const outcome = getRestrictionHistoricalOutcome(
+      state,
+      decisionDay,
+      decisionDay + RESTRICTION_OUTCOME_FOLLOWUP_DAYS,
+    );
+    if (outcome.classification !== "ineffective") break;
+    count += 1;
+  }
+  return count;
+}
+
+function restrictionOutcomeRiskEffect(
+  classification: RestrictionOutcomeClassification,
+  ineffectiveStreak: number,
+): RestrictionOutcomeRiskEffect {
+  if (classification === "stabilized") {
+    return {
+      riskAdjustment: -0.025,
+      policyRiskScore: 0,
+      policyStrengthScore: 10,
+    };
+  }
+  if (classification === "overcorrected") {
+    return {
+      riskAdjustment: 0.09,
+      policyRiskScore: 24,
+      policyStrengthScore: 0,
+    };
+  }
+  if (classification === "replacement") {
+    return {
+      riskAdjustment: 0.055,
+      policyRiskScore: 16,
+      policyStrengthScore: 0,
+    };
+  }
+  if (classification === "ineffective") {
+    return {
+      riskAdjustment: Math.min(0.055, 0.01 + 0.015 * Math.max(0, ineffectiveStreak - 1)),
+      policyRiskScore: Math.min(18, 8 + 4 * Math.max(0, ineffectiveStreak - 1)),
+      policyStrengthScore: 0,
+    };
+  }
+  return NO_RESTRICTION_OUTCOME_RISK_EFFECT;
+}
+
+function getRecentRestrictionOutcomeRiskEffect(
+  state: GameState,
+): RestrictionOutcomeRiskEffect {
+  const decisionDays = finalizedRestrictionDecisionDays(state);
+  const decisionDay = decisionDays.at(-1);
+  if (
+    decisionDay === undefined ||
+    state.day - (decisionDay + RESTRICTION_OUTCOME_FOLLOWUP_DAYS) >
+      RESTRICTION_OUTCOME_RISK_WINDOW_DAYS
+  ) {
+    return NO_RESTRICTION_OUTCOME_RISK_EFFECT;
+  }
+  const outcome = getRestrictionHistoricalOutcome(
+    state,
+    decisionDay,
+    decisionDay + RESTRICTION_OUTCOME_FOLLOWUP_DAYS,
+  );
+  return restrictionOutcomeRiskEffect(
+    outcome.classification,
+    outcome.classification === "ineffective"
+      ? trailingIneffectiveOutcomeCount(state, decisionDays)
+      : 0,
+  );
+}
+
 function factorWithLargestScore(
   scores: Readonly<Record<BusinessRiskFactor, number>>,
 ): BusinessRiskFactor {
@@ -397,7 +879,10 @@ function factorWithLargestScore(
   )[0];
 }
 
-function getRiskContext(state: GameState): BusinessActionRiskContext {
+function getRiskContext(
+  state: GameState,
+  restrictionOutcomeEffect: RestrictionOutcomeRiskEffect,
+): BusinessActionRiskContext {
   const environmentHealth = getBusinessEnvironmentHealth(state);
   const releaseQuality = getRecentReleaseQuality(state);
   const policyQuality = getRecentPolicyQuality(state);
@@ -417,7 +902,7 @@ function getRiskContext(state: GameState): BusinessActionRiskContext {
   const riskScores: Record<BusinessRiskFactor, number> = {
     environment: Math.max(0, 70 - environmentHealth),
     trust: Math.max(0, 72 - state.purchaseTrust),
-    policy: policyRisk,
+    policy: policyRisk + restrictionOutcomeEffect.policyRiskScore,
     release: Math.max(0, 65 - releaseQuality),
     timing: timing === "late" ? 10 : 0,
     execution: 0.01,
@@ -425,7 +910,7 @@ function getRiskContext(state: GameState): BusinessActionRiskContext {
   const strengthScores: Record<BusinessRiskFactor, number> = {
     environment: Math.max(0, environmentHealth - 62),
     trust: Math.max(0, state.purchaseTrust - 65),
-    policy: policyStrength,
+    policy: policyStrength + restrictionOutcomeEffect.policyStrengthScore,
     release: Math.max(0, releaseQuality - 58),
     timing: timing === "early" ? 8 : timing === "middle" ? 4 : 0,
     execution: 0.01,
@@ -450,7 +935,8 @@ export function getStrategicProjectRiskProfile(
   state: GameState,
   type: StrategicBusinessActionType,
 ): StrategicProjectRiskProfile {
-  const context = getRiskContext(state);
+  const restrictionOutcomeEffect = getRecentRestrictionOutcomeRiskEffect(state);
+  const context = getRiskContext(state, restrictionOutcomeEffect);
   const { environmentHealth: health, purchaseTrust: trust, releaseQuality } = context;
   const policyAdjustment = type === "season-overhaul"
     ? context.policyQuality === "balanced" ? -0.05 : context.policyQuality === "incomplete" ? 0.06 : context.policyQuality === "narrow" ? 0.14 : 0.1
@@ -460,11 +946,12 @@ export function getStrategicProjectRiskProfile(
   const lateAdjustment = context.timing === "late"
     ? type === "first-print-expansion" ? 0.04 : 0.08
     : 0;
-  const risk = type === "season-overhaul"
+  const risk = (type === "season-overhaul"
     ? 0.2 + Math.max(0, 70 - health) * 0.008 + Math.max(0, 72 - trust) * 0.007 + policyAdjustment + Math.max(0, 65 - releaseQuality) * 0.004 + lateAdjustment
     : type === "global-launch"
       ? 0.22 + Math.max(0, 62 - health) * 0.004 + Math.max(0, 75 - trust) * 0.01 + policyAdjustment + Math.max(0, 70 - releaseQuality) * 0.006 + lateAdjustment
-      : 0.2 + Math.max(0, 60 - health) * 0.003 + Math.max(0, 68 - trust) * 0.006 + Math.max(0, 72 - releaseQuality) * 0.01 + lateAdjustment;
+      : 0.2 + Math.max(0, 60 - health) * 0.003 + Math.max(0, 68 - trust) * 0.006 + Math.max(0, 72 - releaseQuality) * 0.01 + lateAdjustment) +
+    restrictionOutcomeEffect.riskAdjustment;
   const minimum = type === "season-overhaul" ? 0.15 : type === "global-launch" ? 0.18 : 0.16;
   const maximum = type === "season-overhaul" ? 0.85 : type === "global-launch" ? 0.88 : 0.82;
   return { risk: round(clamp(risk, minimum, maximum), 4), context };
@@ -557,6 +1044,9 @@ export type BusinessActionAvailability = {
   available: boolean;
   reason: string | null;
   cooldownRemaining: number;
+  effectivenessMultiplier: number;
+  /** Next calendar day that can host this challenge, before other gates. */
+  nextEligibleDay: number | null;
 };
 
 export function getBusinessActionAvailability(
@@ -565,6 +1055,11 @@ export function getBusinessActionAvailability(
 ): BusinessActionAvailability {
   const definition = BUSINESS_ACTION_BY_TYPE[type];
   const cooldownRemaining = getBusinessActionCooldownRemaining(state, type);
+  const nextEligibleDay = isChallengeBusinessAction(type)
+    ? getNextBusinessChallengeDecisionDay(
+        Math.max(state.day, definition.minimumDay ?? state.day),
+      )
+    : null;
   let reason: string | null = null;
 
   if (state.operations.pendingEvent) {
@@ -592,8 +1087,18 @@ export function getBusinessActionAvailability(
   ) {
     reason = `DAY ${LAST_DECISION_DAY} 전에 성과를 확정할 시간이 부족합니다.`;
   } else if (
+    isChallengeBusinessAction(type) &&
+    !isBusinessChallengeDecisionDay(state.day)
+  ) {
+    reason = nextEligibleDay === null
+      ? "남은 임기에는 위험 챌린지를 시작할 의사결정일이 없습니다."
+      : `위험 챌린지는 발매·금제 결정을 마친 날에만 시작할 수 있습니다. 다음 가능일은 DAY ${nextEligibleDay}입니다.`;
+  } else if (
     type === "first-print-expansion" &&
-    !state.releaseHistory.some((batch) => batch.day === state.day)
+    !state.releaseHistory.some(
+      (batch) =>
+        batch.day === state.day && !isInitialGenericReleaseBatch(batch),
+    )
   ) {
     reason = "정기 발매 심사를 마친 당일에만 초판 증산을 결정할 수 있습니다.";
   } else if (
@@ -627,5 +1132,11 @@ export function getBusinessActionAvailability(
     available: reason === null,
     reason,
     cooldownRemaining,
+    effectivenessMultiplier: getBusinessActionSaturationMultiplier(
+      state,
+      type,
+      state.day,
+    ),
+    nextEligibleDay,
   };
 }

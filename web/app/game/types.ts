@@ -1,3 +1,6 @@
+import type { PlayKeyword, ThemePlayKeywords } from "./play-keywords.ts";
+import type { GenericCardId } from "./generic-card-catalog.ts";
+
 export type ThemeId = string;
 
 export type PartRole =
@@ -33,7 +36,7 @@ export interface PartContent {
   tags: string[];
 }
 
-export interface ThemeContent {
+export interface ThemeContentBase {
   id: ThemeId;
   name: string;
   shortName: string;
@@ -48,6 +51,11 @@ export interface ThemeContent {
   startingShare: number;
   color: string;
   parts: PartContent[];
+}
+
+export interface ThemeContent extends ThemeContentBase {
+  /** Three authored/derived strategic traits used by matchup simulation. */
+  playKeywords: ThemePlayKeywords;
 }
 
 export interface PartRuntimeStats {
@@ -116,6 +124,7 @@ export interface CommunityEvent {
   category: CommunityCategory;
   type: CommunityEventType;
   themeId: ThemeId;
+  genericCardId?: GenericCardId;
   partId?: string;
   relatedThemeId?: ThemeId;
   proposalId?: string;
@@ -124,26 +133,110 @@ export interface CommunityEvent {
   body: string;
 }
 
-export interface SupportRequest {
+export type ReleaseRequestKind =
+  | "support"
+  | "indirect-support"
+  | "environment-target"
+  | "reprint";
+
+export type ReleaseRequestLane = "support" | "generic" | "reprint";
+
+export type ReleaseRequestStatus =
+  | "queued"
+  | "offered"
+  | "released"
+  | "skipped"
+  | "cancelled"
+  | "replaced";
+
+interface ReleaseRequestBase {
   id: string;
-  themeId: ThemeId;
-  direction: SupportDirection;
+  themeId?: ThemeId;
+  direction?: SupportDirection;
+  cardId?: string;
   proposedDay: number;
   eligibleReleaseDay: number;
-  status: "queued" | "offered" | "released" | "skipped";
+  status: ReleaseRequestStatus;
   releasedDay: number | null;
 }
 
-export interface ReleaseOption {
-  id: string;
-  kind: "new-theme" | "support";
+/** Legacy saves omit kind; an absent kind is always ordinary theme support. */
+export interface ThemeSupportRequest extends ReleaseRequestBase {
+  kind?: "support";
   themeId: ThemeId;
-  direction?: SupportDirection;
+  direction: SupportDirection;
+}
+
+export interface IndirectSupportRequest extends ReleaseRequestBase {
+  kind: "indirect-support";
+  themeId: ThemeId;
+}
+
+export interface EnvironmentTargetRequest extends ReleaseRequestBase {
+  kind: "environment-target";
+  themeId: ThemeId;
+}
+
+export interface ReprintRequest extends ReleaseRequestBase {
+  kind: "reprint";
+  cardId: string;
+}
+
+/**
+ * Historical name retained as the save key is still `supportRequests`.
+ * New callers should treat the collection as next-release requests.
+ */
+export type SupportRequest =
+  | ThemeSupportRequest
+  | IndirectSupportRequest
+  | EnvironmentTargetRequest
+  | ReprintRequest;
+
+interface ReleaseOptionBase {
+  id: string;
   expectedPower: number;
   expectedTier: ExpectedTier;
+}
+
+export interface NewThemeReleaseOption extends ReleaseOptionBase {
+  kind: "new-theme";
+  themeId: ThemeId;
+  requested: false;
+}
+
+export interface SupportReleaseOption extends ReleaseOptionBase {
+  kind: "support";
+  themeId: ThemeId;
+  direction: SupportDirection;
   requested: boolean;
   requestId?: string;
 }
+
+export interface GenericReleaseOption extends ReleaseOptionBase {
+  kind: "generic";
+  genericCardId: GenericCardId;
+  requested: boolean;
+  requestId?: string;
+  requestKind?: "indirect-support" | "environment-target";
+  requestThemeId?: ThemeId;
+  requestKeyword?: PlayKeyword;
+}
+
+export interface ReprintReleaseOption extends ReleaseOptionBase {
+  kind: "reprint";
+  cardId: string;
+  /** Display/community anchor; generic reprints use the current leading theme. */
+  themeId: ThemeId;
+  requested: true;
+  requestId: string;
+  locked: true;
+}
+
+export type ReleaseOption =
+  | NewThemeReleaseOption
+  | SupportReleaseOption
+  | GenericReleaseOption
+  | ReprintReleaseOption;
 
 export interface ReleaseSlate {
   day: number;
@@ -155,18 +248,58 @@ export interface ReleaseSelection {
   powerAdjustment: PowerAdjustment;
 }
 
-export interface ReleasedProduct {
+interface ReleasedProductBase {
   optionId: string;
-  kind: ReleaseOption["kind"];
-  themeId: ThemeId;
-  direction?: SupportDirection;
   expectedTier: ExpectedTier;
   powerAdjustment: PowerAdjustment;
+}
+
+export interface ReleasedNewThemeProduct extends ReleasedProductBase {
+  kind: "new-theme";
+  themeId: ThemeId;
+}
+
+export interface ReleasedSupportProduct extends ReleasedProductBase {
+  kind: "support";
+  themeId: ThemeId;
+  direction: SupportDirection;
   requestId?: string;
 }
 
+export interface ReleasedGenericProduct extends ReleasedProductBase {
+  kind: "generic";
+  genericCardId: GenericCardId;
+  requestId?: string;
+}
+
+export interface ReleasedReprintProduct extends ReleasedProductBase {
+  kind: "reprint";
+  cardId: string;
+  /** Display/community anchor; it does not grant theme support. */
+  themeId: ThemeId;
+  requestId: string;
+  /** Market price immediately before the reprint was locked. */
+  referencePrice: number;
+  /** Deterministic ownership-confidence change applied on D+1. */
+  trustDelta: number;
+  /** Immediate accessibility gain applied on D+1. */
+  accessibilityUserGain: number;
+  /** Collector/reseller audience loss applied on D+1. */
+  collectorUserLoss: number;
+  /** Extra release-day gross revenue, expressed in eok won. */
+  releaseRevenueBoost: number;
+}
+
+export type ReleasedProduct =
+  | ReleasedNewThemeProduct
+  | ReleasedSupportProduct
+  | ReleasedGenericProduct
+  | ReleasedReprintProduct;
+
 export interface ReleaseBatch {
   day: number;
+  /** Existing DAY 1 card pool; not a player-authored regular release. */
+  baseline?: true;
   products: ReleasedProduct[];
 }
 
@@ -234,6 +367,27 @@ export type BusinessActionOutcome =
   | "clean"
   | "detected";
 
+/** Observable campaign signal used by deterministic business challenges. */
+export type BusinessChallengeMetric =
+  | "environment-health"
+  | "purchase-trust"
+  | "release-quality";
+
+/**
+ * Progress is persisted so a challenge resolves identically whether the
+ * player advances one day at a time, jumps several days, or reloads a save.
+ */
+export interface BusinessChallengeProgress {
+  metric: BusinessChallengeMetric;
+  threshold: number;
+  requiredQualifyingDays: number;
+  qualifyingDays: number;
+  observedDays: number;
+  deadlineDay: number;
+  lastEvaluatedDay: number | null;
+  lastValue: number | null;
+}
+
 export interface BusinessActionRecord {
   id: string;
   type: BusinessActionType;
@@ -241,12 +395,17 @@ export interface BusinessActionRecord {
   endsDay: number;
   cost: number;
   outcome: BusinessActionOutcome;
-  /** Risk shown to the player when the action was committed. */
+  /**
+   * Frozen backlash/detection probability for ordinary actions and pack odds.
+   * Older schema-v8 challenge records may retain this as compatibility data.
+   */
   risk?: number;
   /** Environment health snapshot used to judge a championship. */
   environmentHealth?: number;
   /** Immutable launch-day facts used to resolve and explain strategic risk. */
   riskContext?: BusinessActionRiskContext;
+  /** Deterministic, player-readable completion condition for risky projects. */
+  challenge?: BusinessChallengeProgress;
   /** Cash recovered when a strategic project succeeds. */
   cashReturn?: number;
   /** Release day affected by a pack-odds adjustment. */
@@ -348,7 +507,7 @@ export interface DailyHistory {
 }
 
 export interface GameState {
-  schemaVersion: 7;
+  schemaVersion: 8;
   seed: number;
   day: number;
   phase: "running" | "release-edit" | "ban-edit" | "ended";
@@ -361,6 +520,10 @@ export interface GameState {
   supportRequests: SupportRequest[];
   releaseSlate: ReleaseSlate | null;
   releaseHistory: ReleaseBatch[];
+  /** Global official limits for generic cards whose D+1 effects have applied. */
+  genericLimits: Partial<Record<GenericCardId, RestrictionLimit>>;
+  /** First review using the nine-option, four-product generic release rules. */
+  genericReleaseStartDay: number | null;
   history: DailyHistory[];
   recentRevenue: number[];
   lastSupportProposalDay: number | null;
@@ -389,6 +552,18 @@ export type GameCommand =
       type: "PROPOSE_SUPPORT";
       themeId: ThemeId;
       direction: SupportDirection;
+    }
+  | {
+      type: "SET_RELEASE_REQUEST";
+      request:
+        | { kind: "support"; themeId: ThemeId; direction: SupportDirection }
+        | { kind: "indirect-support"; themeId: ThemeId }
+        | { kind: "environment-target"; themeId: ThemeId }
+        | { kind: "reprint"; cardId: string };
+    }
+  | {
+      type: "CANCEL_RELEASE_REQUEST";
+      lane: ReleaseRequestLane;
     }
   | {
       type: "SUBMIT_RELEASE";

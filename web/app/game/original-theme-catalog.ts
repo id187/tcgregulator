@@ -1,4 +1,10 @@
-import type { PartContent, PartRole, ThemeContent } from "./types";
+import { withPlayKeywords } from "./play-keywords.ts";
+import type {
+  PartContent,
+  PartRole,
+  ThemeContent,
+  ThemeContentBase,
+} from "./types";
 
 type SupportNameSet = readonly [
   string,
@@ -34,10 +40,10 @@ const SUPPORT_PART_PROFILES = [
   > & { tag: string }
 >;
 
-export function attachNamedSupportParts(
-  theme: ThemeContent,
+export function attachNamedSupportParts<T extends ThemeContentBase>(
+  theme: T,
   names: SupportNameSet,
-): ThemeContent {
+): Omit<T, "parts"> & { parts: PartContent[] } {
   if (theme.parts.length !== 5 || names.length !== SUPPORT_PART_PROFILES.length) {
     throw new Error("Named support requires five launch parts and nine support names: " + theme.id);
   }
@@ -305,7 +311,7 @@ function parseNumberList(value: string, expected: number, label: string): number
   return values;
 }
 
-function parseOriginalTheme(row: string, index: number): ThemeContent {
+function parseOriginalTheme(row: string, index: number): ThemeContentBase {
   const fields = row.split("|");
   if (fields.length !== 8) {
     throw new Error("Original theme row " + (index + 1) + " must have eight fields.");
@@ -369,7 +375,7 @@ function parseOriginalTheme(row: string, index: number): ThemeContent {
 }
 
 export const ORIGINAL_FUTURE_THEMES: ThemeContent[] = ORIGINAL_THEME_ROWS.map(
-  parseOriginalTheme,
+  (row, index) => withPlayKeywords(parseOriginalTheme(row, index)),
 );
 
 export interface OriginalFutureThemeIdentity {

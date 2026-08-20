@@ -31,7 +31,8 @@ import type {
   VentureActionType,
   VentureRiskFactor,
 } from "../app/game/business-community-copy.ts";
-import { PROLOGUE_SEED } from "../app/game/campaign.ts";
+import { FIRST_BAN_DAY, PROLOGUE_SEED } from "../app/game/campaign.ts";
+import { getAutomaticReleaseSelections } from "../app/game/automatic-release.ts";
 import {
   getCommunityHeat,
   getDailyCommunityPosts,
@@ -43,11 +44,13 @@ import {
   getRestrictionHistoricalOutcome,
 } from "../app/game/restriction-policy.ts";
 import {
+  createCampaignStart,
   createFirstBanGame,
   createInitialGame,
   formatCommunityEvent,
   reduceGame,
 } from "../app/game/engine.ts";
+import { getReprintCandidates } from "../app/game/release-requests.ts";
 import type {
   BusinessActionRecord,
   CommunityEvent,
@@ -57,6 +60,21 @@ import type {
   ThemeContent,
   ThemeId,
 } from "../app/game/types.ts";
+
+function getPlannedReleaseOptions(state: GameState) {
+  const options = state.releaseSlate?.options;
+  assert.ok(options, "release-edit must expose a release slate");
+  const byKind = [
+    ...options.filter((option) => option.kind === "new-theme").slice(0, 2),
+    ...options.filter((option) => option.kind === "support").slice(0, 1),
+    ...options.filter((option) => option.kind === "generic").slice(0, 1),
+  ];
+  assert.equal(byKind.length, 4);
+  const requested = byKind.find((option) => option.requested);
+  return requested
+    ? [requested, ...byKind.filter((option) => option.id !== requested.id)]
+    : byKind;
+}
 
 function addBusinessRecord(
   state: GameState,
@@ -182,7 +200,7 @@ function makeState(seed = 7301): GameState {
   );
 
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     seed,
     day: 60,
     phase: "running",
@@ -212,6 +230,8 @@ function makeState(seed = 7301): GameState {
     supportRequests: [],
     releaseSlate: null,
     releaseHistory: [],
+    genericLimits: {},
+    genericReleaseStartDay: null,
     history: [
       {
         day: 15,
@@ -435,17 +455,12 @@ function releaseWithMixedReactions(seed = 9191): GameState {
   assert.equal(state.day, 60);
   assert.equal(state.phase, "release-edit");
   assert.ok(state.releaseSlate);
-  const requested = state.releaseSlate.options.find((option) => option.requested);
-  assert.ok(requested);
-  const selected = [
-    requested,
-    ...state.releaseSlate.options.filter((option) => option.id !== requested.id),
-  ].slice(0, 3);
+  const selected = getPlannedReleaseOptions(state);
   return reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: selected.map((option, index) => ({
       optionId: option.id,
-      powerAdjustment: ([0, 3, -3] as const)[index],
+      powerAdjustment: ([0, 3, -3, 0] as const)[index],
     })),
   });
 }
@@ -835,6 +850,43 @@ test("cycles through all 192 ordinary copy templates before repeating", () => {
   }
 });
 
+test("pre-ban synthetic boards debate restrictions without publishing decisions", () => {
+  const state = createFirstBanGame(PROLOGUE_SEED);
+  const decisionTypes = new Set<CommunityEvent["type"]>([
+    "restriction-applied",
+    "cosmetic-restriction",
+    "restriction-no-change",
+  ]);
+  const appliedChangeCopy =
+    /(?:[0-3]\s*→\s*[0-3](?:는|로|으로)|(?:금지|제한|준제한)(?:됐|되었|먹었|적용)|금제표.*(?:나왔|공개|발표|변경)|(?:바꿨|낮췄|조정했))/;
+  const seenRestrictionTemplates = new Set<string>();
+
+  for (let day = 1; day < FIRST_BAN_DAY; day += 1) {
+    const syntheticRestrictionPosts = getDailyCommunityPosts(state, day).filter(
+      (post) =>
+        post.id.startsWith("daily-generated-") &&
+        post.category === "restriction",
+    );
+
+    for (const post of syntheticRestrictionPosts) {
+      assert.equal(decisionTypes.has(post.type), false, `DAY ${day}: ${post.id}`);
+      assert.equal(post.value, undefined, `DAY ${day}: ${post.id}`);
+      assert.equal(post.previousValue, undefined, `DAY ${day}: ${post.id}`);
+      assert.doesNotMatch(post.body, appliedChangeCopy, `DAY ${day}: ${post.id}`);
+      const templateKey = post.id.match(/-(ban-\d{2,})$/)?.[1];
+      assert.ok(templateKey, post.id);
+      seenRestrictionTemplates.add(templateKey);
+    }
+  }
+
+  assert.deepEqual(
+    [...seenRestrictionTemplates].sort(),
+    Array.from({ length: 24 }, (_, index) =>
+      `ban-${String(index + 1).padStart(2, "0")}`
+    ),
+  );
+});
+
 test("every seeded template stride reaches the full ordinary pool", () => {
   for (let seed = 0; seed < 64; seed += 1) {
     const state = makeState(seed * 7_919);
@@ -1018,7 +1070,7 @@ test("emerging themes keep cautious and data-led voices together without reading
     );
     assert.ok(
       emerging.some((post) =>
-        /채용률|승률|탑컷 점유율|본선 진출률/.test(post.body)
+        /채용률|승률|탑컷 점유율|본선 진출률|입상|표본/.test(post.body)
       ),
     );
     assert.ok(emerging.every((post) => !/\d+\/14|집계/.test(post.body)));
@@ -1252,13 +1304,6 @@ test("prologue four-cut reactions use the actual targets, scope, and roles", () 
   assert.ok(
     dayOne.some((post) =>
       /여러 테마|복수 테마|환경 전체|한쪽만 겨냥한 공지가 아니라|상위권 여러 덱/.test(
-        post.body,
-      )
-    ),
-  );
-  assert.ok(
-    dayOne.some((post) =>
-      /1티어.*2티어|1·2티어|상위 두 구간|상위권 두 층|현역 두 구간/.test(
         post.body,
       )
     ),
@@ -1639,8 +1684,25 @@ test("balanced reviews praise Tier 1/Tier 2 coverage and a full stale release wi
     previousValue: 3,
     body: "[운영 공지] 백야의 설복 1장 제한",
   });
+  setRestrictionDecisionMeta(
+    state,
+    165,
+    Object.fromEntries(
+      state.activeThemeIds.map((themeId, index) => [
+        themeId,
+        [0.3, 0.24, 0.18, 0.16, 0.12][index],
+      ]),
+    ),
+    Object.fromEntries(
+      state.activeThemeIds.map((themeId, index) => [
+        themeId,
+        [0.52, 0.53, 0.48, 0.56, 0.56][index],
+      ]),
+    ),
+  );
   const profile = getPublishedRestrictionPolicyProfile(state, 165);
   assert.equal(profile.quality, "balanced");
+  assert.equal(profile.coverageComplete, true);
   assert.equal(profile.upperMeaningfulCuts, 2);
   assert.equal(profile.tier2MeaningfulCuts, 2);
   assert.equal(profile.staleFullyReleased, 1);
@@ -1810,7 +1872,8 @@ test("a tier-balanced list cannot earn unconditional praise for cutting popular 
   setRestrictionDecisionMeta(state, 165, shares, winRates);
 
   const profile = getPublishedRestrictionPolicyProfile(state, 165);
-  assert.equal(profile.quality, "balanced");
+  assert.equal(profile.quality, "incomplete");
+  assert.equal(profile.coverageComplete, false);
   assert.equal(profile.upperMeaningfulCuts, 2);
   assert.equal(profile.tier2MeaningfulCuts, 2);
 
@@ -2255,19 +2318,29 @@ test("placement restriction copy is frozen at the decision window and legacy fal
   }
 });
 
-test("coverage and cosmetic signals stay in their own factual reaction pools", () => {
+test("coverage follows measured threats while cosmetic signals stay factual", () => {
   const upperOnly = makeScheduledRestrictionReactionState([
     { themeId: "cycle", partId: "cycle-gate", oldLimit: 3, newLimit: 2 },
     { themeId: "cycle", partId: "cycle-guide", oldLimit: 3, newLimit: 2 },
     { themeId: "white-night", partId: "white-night-prayer", oldLimit: 3, newLimit: 2 },
   ], 38_201);
   const upperPosts = restrictionContextPosts(upperOnly, 166, 165);
+  const upperProfile = getPublishedRestrictionPolicyProfile(upperOnly, 165);
+  assert.equal(upperProfile.coverageComplete, true);
+  assert.deepEqual(upperProfile.unaddressedThreatThemeIds, []);
+  assert.deepEqual(upperProfile.preemptiveCutThemeIds, []);
   assert.ok(
     upperPosts.some((post) =>
-      /2티어를 전부 둔|바로 아래 구간|다음 후보군|한쪽으로 쏠/.test(post.body)
+      /실제 압력 위협|현재 위협|대상 선정 기준|필요한 만큼|균형이 잘 잡|깔끔한 표|구성은 적정/.test(
+        post.body,
+      )
     ),
   );
-  assert.ok(upperPosts.every((post) => !/상위 1티어는 그대로/.test(post.body)));
+  assert.ok(
+    upperPosts.every((post) =>
+      !/2티어를 전부 둔|바로 아래 구간|다음 후보군을 통째로/.test(post.body),
+    ),
+  );
 
   const lowerOnly = makeScheduledRestrictionReactionState([
     { themeId: "ironblood", partId: "ironblood-squire", oldLimit: 3, newLimit: 2 },
@@ -2275,13 +2348,13 @@ test("coverage and cosmetic signals stay in their own factual reaction pools", (
     { themeId: "abyss", partId: "abyss-bait", oldLimit: 3, newLimit: 2 },
   ], 38_202);
   const lowerPosts = restrictionContextPosts(lowerOnly, 166, 165);
-  assert.equal(
-    getPublishedRestrictionPolicyProfile(lowerOnly, 165).upperMeaningfulCuts,
-    0,
-  );
+  const lowerProfile = getPublishedRestrictionPolicyProfile(lowerOnly, 165);
+  assert.equal(lowerProfile.upperMeaningfulCuts, 0);
+  assert.ok(lowerProfile.unaddressedThreatThemeIds.length > 0);
+  assert.ok(lowerProfile.preemptiveCutThemeIds.length > 0);
   assert.ok(
     lowerPosts.some((post) =>
-      /1티어.*그대로|최상위권을 비껴|아래 구간만|대상 선정이 거꾸로|금제 대상.*강한 순서|하위권 파츠|2티어 견제|상위 구간 제한 0종|지금 1등/.test(
+      /실제 위협은 덜 막|미대응 위협|선제 제재|비위협|압력 없는|대상 선정이 거꾸로/.test(
         post.body,
       )
     ),
@@ -2652,6 +2725,84 @@ test("restriction reactions start next day and dominate the board 16/14/12", () 
   assert.equal(JSON.stringify(state), before);
 });
 
+test("generic-only restrictions burn hotter and fill the board with multi-deck fallout", () => {
+  let state = createFirstBanGame(91_001);
+  const genericCardId = Object.keys(state.genericLimits)[0];
+  assert.ok(genericCardId);
+  state = reduceGame(state, {
+    type: "SUBMIT_BAN",
+    changes: { [genericCardId]: 0 },
+    campaignSeed: 91_001,
+  });
+  state = reduceGame(state, { type: "COMPLETE_HANDOVER" });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 3 });
+
+  const before = JSON.stringify(state);
+  for (const [day, expectedCount, expectedHeat] of [
+    [46, 18, 100],
+    [47, 16, 92],
+    [48, 14, 82],
+  ] as const) {
+    const posts = getDailyCommunityPosts(state, day);
+    const genericFallout = posts.filter(
+      (post) =>
+        post.category === "restriction" &&
+        post.genericCardId === genericCardId,
+    );
+    assert.equal(posts.length, 20);
+    assert.equal(genericFallout.length, expectedCount);
+    assert.equal(new Set(genericFallout.map((post) => post.body)).size, expectedCount);
+    assert.ok(genericFallout.every((post) => post.partId === genericCardId));
+    assert.ok(genericFallout.every((post) => Boolean(THEME_BY_ID[post.themeId])));
+    assert.equal(getCommunityHeat(state, day), expectedHeat);
+    assert.deepEqual(getDailyCommunityPosts(state, day), posts);
+  }
+  const firstDay = getDailyCommunityPosts(state, 46).filter(
+    (post) => post.genericCardId === genericCardId,
+  );
+  assert.ok(
+    firstDay.some((post) =>
+      /동시|같이 피해|줄줄이|개나소나|잘 갔다|여러 테마|공용/.test(post.body)
+    ),
+  );
+  assert.equal(JSON.stringify(state), before);
+});
+
+test("reprint products branch into price-crash, access, and collector conversation", () => {
+  let state = createCampaignStart(91_002);
+  const candidate = getReprintCandidates(state).find(
+    (entry) => entry.cardKind === "theme-part" && entry.collectorLabel === null,
+  );
+  assert.ok(candidate?.themeId);
+  state = reduceGame(state, {
+    type: "SET_RELEASE_REQUEST",
+    request: { kind: "reprint", cardId: candidate.cardId },
+  });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 29 });
+  state = reduceGame(state, {
+    type: "SUBMIT_RELEASE",
+    selections: getAutomaticReleaseSelections(state),
+  });
+  const reprint = state.releaseHistory.at(-1)?.products.find(
+    (product) => product.kind === "reprint",
+  );
+  assert.ok(reprint && reprint.kind === "reprint");
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 4 });
+
+  const linked = [31, 32, 33, 34].flatMap((day) =>
+    getDailyCommunityPosts(state, day).filter(
+      (post) =>
+        post.partId === reprint.cardId &&
+        /재판|재록|재판본|초판|가격|시세|매입가|접근성/.test(post.body),
+    )
+  );
+  assert.ok(linked.length >= 8);
+  assert.ok(linked.some((post) => /폭락|내려|반 토막|급락/.test(post.body)));
+  assert.ok(linked.some((post) => /개꿀|입문|맞출|접근성|플레이용/.test(post.body)));
+  assert.ok(linked.some((post) => /초판|보유자|수집|컬렉터/.test(post.body)));
+  assert.ok(linked.every((post) => post.themeId === candidate.themeId));
+});
+
 test("a no-change restriction announcement also creates a delayed debate", () => {
   const state = makeNoChangeRestrictionState();
 
@@ -2905,6 +3056,7 @@ test("never names prepared-but-unreleased cards in historical community snapshot
 
 test("keeps a first support wave's D+1 board identical after a later wave", () => {
   let state = createInitialGame(99551);
+  const initialSupportCount = state.themes["white-night"].supportCount;
   state.operations.nextEventDay = null;
   state = reduceGame(state, {
     type: "PROPOSE_SUPPORT",
@@ -2914,12 +3066,7 @@ test("keeps a first support wave's D+1 board identical after a later wave", () =
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
   assert.equal(state.day, 60);
   assert.ok(state.releaseSlate);
-  const firstRequested = state.releaseSlate.options.find((option) => option.requested);
-  assert.ok(firstRequested);
-  const firstSelections = [
-    firstRequested,
-    ...state.releaseSlate.options.filter((option) => option.id !== firstRequested.id),
-  ].slice(0, 3);
+  const firstSelections = getPlannedReleaseOptions(state);
   state = reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: firstSelections.map((option, index) => ({
@@ -2941,12 +3088,7 @@ test("keeps a first support wave's D+1 board identical after a later wave", () =
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
   assert.equal(state.day, 90);
   assert.ok(state.releaseSlate);
-  const secondRequested = state.releaseSlate.options.find((option) => option.requested);
-  assert.ok(secondRequested);
-  const secondSelections = [
-    secondRequested,
-    ...state.releaseSlate.options.filter((option) => option.id !== secondRequested.id),
-  ].slice(0, 3);
+  const secondSelections = getPlannedReleaseOptions(state);
   state = reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: secondSelections.map((option, index) => ({
@@ -2955,7 +3097,10 @@ test("keeps a first support wave's D+1 board identical after a later wave", () =
     })),
   });
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
-  assert.equal(state.themes["white-night"].supportCount, 2);
+  assert.equal(
+    state.themes["white-night"].supportCount,
+    initialSupportCount + 2,
+  );
   assert.equal(state.themes["white-night"].lastSupportAdjustment, -3);
 
   const beforeHistoricalRead = JSON.stringify(state);

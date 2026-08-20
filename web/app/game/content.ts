@@ -1,4 +1,9 @@
-import type { ThemeContent, ThemeId } from "./types";
+import {
+  PLAY_KEYWORD_CATALOG,
+  PLAY_KEYWORDS_PER_THEME,
+  withPlayKeywords,
+} from "./play-keywords.ts";
+import type { ThemeContent, ThemeContentBase, ThemeId } from "./types";
 import {
   HANDCRAFTED_SUPPORT_NAMES,
   ORIGINAL_FUTURE_THEMES,
@@ -739,11 +744,13 @@ const HANDCRAFTED_THEMES = [
       },
     ],
   },
-] satisfies ThemeContent[];
+] satisfies ThemeContentBase[];
 
 export const THEMES: ThemeContent[] = [
   ...HANDCRAFTED_THEMES.map((theme) =>
-    attachNamedSupportParts(theme, HANDCRAFTED_SUPPORT_NAMES[theme.id]),
+    withPlayKeywords(
+      attachNamedSupportParts(theme, HANDCRAFTED_SUPPORT_NAMES[theme.id]),
+    ),
   ),
   ...ORIGINAL_FUTURE_THEMES,
 ];
@@ -773,6 +780,17 @@ function validateThemeCatalog(themes: readonly ThemeContent[]) {
     if (theme.parts.length !== TOTAL_THEME_PART_COUNT) {
       throw new Error(
         `Theme ${theme.id} must contain exactly ${TOTAL_THEME_PART_COUNT} parts; received ${theme.parts.length}.`,
+      );
+    }
+    if (
+      theme.playKeywords.length !== PLAY_KEYWORDS_PER_THEME ||
+      new Set(theme.playKeywords).size !== PLAY_KEYWORDS_PER_THEME ||
+      theme.playKeywords.some(
+        (keyword) => !Object.hasOwn(PLAY_KEYWORD_CATALOG, keyword),
+      )
+    ) {
+      throw new Error(
+        `Theme ${theme.id} must contain exactly ${PLAY_KEYWORDS_PER_THEME} unique play keywords.`,
       );
     }
 
@@ -813,130 +831,3 @@ validateThemeCatalog(THEMES);
 export const THEME_BY_ID = Object.fromEntries(
   THEMES.map((theme) => [theme.id, theme]),
 ) as Record<ThemeId, ThemeContent>;
-
-/**
- * Baseline game-one win probability with every part unlimited. Rows are the
- * player's theme, columns are the opposing theme. Opposite cells sum to 1.
- */
-export const MATCHUP_TABLE = {
-  cycle: {
-    cycle: 0.5,
-    "white-night": 0.55,
-    "machine-revolution": 0.43,
-    ironblood: 0.55,
-    abyss: 0.48,
-    nebula: 0.46,
-    "plague-garden": 0.44,
-    "flame-arena": 0.54,
-    "phantasm-troupe": 0.57,
-    colossus: 0.49,
-  },
-  "white-night": {
-    cycle: 0.45,
-    "white-night": 0.5,
-    "machine-revolution": 0.54,
-    ironblood: 0.56,
-    abyss: 0.45,
-    nebula: 0.49,
-    "plague-garden": 0.54,
-    "flame-arena": 0.58,
-    "phantasm-troupe": 0.5,
-    colossus: 0.43,
-  },
-  "machine-revolution": {
-    cycle: 0.57,
-    "white-night": 0.46,
-    "machine-revolution": 0.5,
-    ironblood: 0.61,
-    abyss: 0.42,
-    nebula: 0.48,
-    "plague-garden": 0.5,
-    "flame-arena": 0.55,
-    "phantasm-troupe": 0.46,
-    colossus: 0.62,
-  },
-  ironblood: {
-    cycle: 0.45,
-    "white-night": 0.44,
-    "machine-revolution": 0.39,
-    ironblood: 0.5,
-    abyss: 0.52,
-    nebula: 0.45,
-    "plague-garden": 0.56,
-    "flame-arena": 0.51,
-    "phantasm-troupe": 0.48,
-    colossus: 0.47,
-  },
-  abyss: {
-    cycle: 0.52,
-    "white-night": 0.55,
-    "machine-revolution": 0.58,
-    ironblood: 0.48,
-    abyss: 0.5,
-    nebula: 0.52,
-    "plague-garden": 0.55,
-    "flame-arena": 0.44,
-    "phantasm-troupe": 0.54,
-    colossus: 0.58,
-  },
-  nebula: {
-    cycle: 0.54,
-    "white-night": 0.51,
-    "machine-revolution": 0.52,
-    ironblood: 0.55,
-    abyss: 0.48,
-    nebula: 0.5,
-    "plague-garden": 0.54,
-    "flame-arena": 0.53,
-    "phantasm-troupe": 0.48,
-    colossus: 0.57,
-  },
-  "plague-garden": {
-    cycle: 0.56,
-    "white-night": 0.46,
-    "machine-revolution": 0.5,
-    ironblood: 0.44,
-    abyss: 0.45,
-    nebula: 0.46,
-    "plague-garden": 0.5,
-    "flame-arena": 0.43,
-    "phantasm-troupe": 0.49,
-    colossus: 0.54,
-  },
-  "flame-arena": {
-    cycle: 0.46,
-    "white-night": 0.42,
-    "machine-revolution": 0.45,
-    ironblood: 0.49,
-    abyss: 0.56,
-    nebula: 0.47,
-    "plague-garden": 0.57,
-    "flame-arena": 0.5,
-    "phantasm-troupe": 0.46,
-    colossus: 0.57,
-  },
-  "phantasm-troupe": {
-    cycle: 0.43,
-    "white-night": 0.5,
-    "machine-revolution": 0.54,
-    ironblood: 0.52,
-    abyss: 0.46,
-    nebula: 0.52,
-    "plague-garden": 0.51,
-    "flame-arena": 0.54,
-    "phantasm-troupe": 0.5,
-    colossus: 0.55,
-  },
-  colossus: {
-    cycle: 0.51,
-    "white-night": 0.57,
-    "machine-revolution": 0.38,
-    ironblood: 0.53,
-    abyss: 0.42,
-    nebula: 0.43,
-    "plague-garden": 0.46,
-    "flame-arena": 0.43,
-    "phantasm-troupe": 0.45,
-    colossus: 0.5,
-  },
-} satisfies Record<ThemeId, Record<ThemeId, number>>;

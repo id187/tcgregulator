@@ -9,7 +9,6 @@ import {
   getBusinessActionProjectedDirectCash,
   getBusinessActionProjectedDirectGrossRevenue,
   getBusinessEnvironmentHealth,
-  getChampionshipBacklashRisk,
   getStackedBusinessActionDailyGrossRevenue,
   getStrategicProjectRiskProfile,
 } from "../app/game/business-actions.ts";
@@ -63,6 +62,7 @@ import {
   getNewThemeLaunchPower,
   getPrologueReleaseSelections,
   getPrologueRestrictionChanges,
+  getProlongedSoftPolicyTrustLoss,
   isBanDay,
   isPrologueReleaseSelection,
   isPrologueRestrictionChange,
@@ -72,6 +72,41 @@ import {
 
 type State = ReturnType<typeof createInitialGame>;
 type Adjustment = -3 | -2 | -1 | 0 | 1 | 2 | 3;
+type ReleaseOptionFixture = NonNullable<
+  State["releaseSlate"]
+>["options"][number];
+
+function completeReleaseOptions(
+  state: State,
+  preferred: readonly ReleaseOptionFixture[] = [],
+): ReleaseOptionFixture[] {
+  assert.ok(state.releaseSlate);
+  const all = state.releaseSlate.options;
+  const usesGenericRules = all.some((option) => option.kind === "generic");
+  const targetCount = usesGenericRules ? 4 : 3;
+  const chosen: ReleaseOptionFixture[] = [];
+  for (const option of preferred) {
+    if (!chosen.some((candidate) => candidate.id === option.id)) {
+      chosen.push(option);
+    }
+  }
+  if (usesGenericRules) {
+    for (const kind of ["new-theme", "support", "generic"] as const) {
+      if (chosen.some((option) => option.kind === kind)) continue;
+      const option = all.find((candidate) => candidate.kind === kind);
+      assert.ok(option);
+      chosen.push(option);
+    }
+  }
+  for (const option of all) {
+    if (chosen.length >= targetCount) break;
+    if (!chosen.some((candidate) => candidate.id === option.id)) {
+      chosen.push(option);
+    }
+  }
+  assert.equal(chosen.length, targetCount);
+  return chosen;
+}
 
 function choosePendingBusinessEvent(
   state: State,
@@ -207,14 +242,13 @@ function submitFirstThree(
 ): State {
   assert.equal(state.phase, "release-edit");
   assert.ok(state.releaseSlate);
-  assert.equal(adjustments.length, 3);
-  const options = state.releaseSlate.options.slice(0, 3);
-  assert.equal(options.length, 3);
+  assert.ok(adjustments.length === 3 || adjustments.length === 4);
+  const options = completeReleaseOptions(state);
   return reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: options.map((option, index) => ({
       optionId: option.id,
-      powerAdjustment: adjustments[index],
+      powerAdjustment: adjustments[index] ?? 0,
     })),
   });
 }
@@ -431,7 +465,10 @@ test("creates a fixed DAY 1 campaign start with five themes and 10,000 users", (
     state.history[0].topCutPlacements,
   );
   assert.deepEqual(state.community, []);
-  assert.deepEqual(state.releaseHistory, []);
+  assert.equal(
+    state.releaseHistory.filter((batch) => !batch.baseline).length,
+    0,
+  );
 });
 
 test("stops the fixed handover at a fully authored first restriction review", () => {
@@ -441,7 +478,10 @@ test("stops the fixed handover at a fully authored first restriction review", ()
   assert.equal(state.phase, "ban-edit");
   assert.equal(state.handoverComplete, false);
   assert.equal(state.seed, 1000);
-  assert.equal(state.releaseHistory.length, 1);
+  assert.equal(
+    state.releaseHistory.filter((batch) => !batch.baseline).length,
+    1,
+  );
 
   const unchanged = reduceGame(state, {
     type: "SUBMIT_BAN",
@@ -449,6 +489,64 @@ test("stops the fixed handover at a fully authored first restriction review", ()
   });
   assert.equal(unchanged.phase, "running");
   assert.equal(unchanged.seed, 1000);
+});
+
+test("DAY 45 handover completes only after the first restriction is published", () => {
+  const review = createFirstBanGame(1_001);
+  assert.throws(
+    () => reduceGame(review, { type: "COMPLETE_HANDOVER" }),
+    /published DAY 45 restriction/,
+  );
+
+  const published = reduceGame(review, { type: "SUBMIT_BAN", changes: {} });
+  const completed = reduceGame(published, { type: "COMPLETE_HANDOVER" });
+  assert.equal(completed.day, 45);
+  assert.equal(completed.phase, "running");
+  assert.equal(completed.handoverComplete, true);
+  assert.throws(
+    () => reduceGame(completed, { type: "COMPLETE_HANDOVER" }),
+    /published DAY 45 restriction/,
+  );
+});
+
+test("soft restriction reviews preserve purchase trust until severe neglect persists", () => {
+  const state = createCampaignStart(60_225);
+  state.day = 225;
+  const themeId = state.currentTopThemeId;
+  const partId = THEMES.find((theme) => theme.id === themeId)?.parts[0]?.id;
+  assert.ok(partId);
+  const runtime = state.themes[themeId];
+  runtime.share = 0.36;
+  runtime.previousWeekShare = 0.2;
+  runtime.winRate = 0.59;
+  runtime.unpleasantness = 90;
+  runtime.counterAdoption = 0.35;
+
+  const profile = getRestrictionPolicyProfile(state, {});
+  assert.equal(profile.quality, "narrow");
+  assert.equal(getProlongedSoftPolicyTrustLoss(state, profile), 0);
+
+  for (const day of [105, 165]) {
+    state.community.push({
+      id: `soft-policy-${day}`,
+      day,
+      category: "restriction",
+      type: "restriction-no-change",
+      themeId,
+      partId,
+      value: 3,
+      previousValue: 3,
+      body: "",
+    });
+  }
+  assert.equal(getProlongedSoftPolicyTrustLoss(state, profile), 2);
+
+  runtime.share = 0.12;
+  runtime.previousWeekShare = 0.12;
+  runtime.winRate = 0.5;
+  runtime.unpleasantness = 10;
+  runtime.counterAdoption = 0;
+  assert.equal(getProlongedSoftPolicyTrustLoss(state, profile), 0);
 });
 
 test("mints and persists a deterministic mandate seed after the first free restriction", () => {
@@ -482,7 +580,7 @@ test("mints and persists a deterministic mandate seed after the first free restr
   );
 });
 
-test("overpowered releases sell harder while immediately damaging health and trust", () => {
+test("overpowered release portfolios sell harder while immediately damaging trust", () => {
   const atRelease = advanceToFirstRelease(createInitialGame(10_616));
   const balanced = reduceGame(submitFirstThree(atRelease, [0, 0, 0]), {
     type: "ADVANCE_DAYS",
@@ -495,10 +593,8 @@ test("overpowered releases sell harder while immediately damaging health and tru
 
   assert.ok(overpowered.finance.today > balanced.finance.today);
   assert.ok(overpowered.purchaseTrust < balanced.purchaseTrust);
-  assert.ok(
-    getBusinessEnvironmentHealth(overpowered) <
-      getBusinessEnvironmentHealth(balanced),
-  );
+  // Keyword counters can make a strong slate healthy or unhealthy depending
+  // on what it answers, so raw tuning no longer predetermines environment.
 });
 
 test("exposes deterministic guided choices that replay through the ordinary reducer", () => {
@@ -517,7 +613,7 @@ test("exposes deterministic guided choices that replay through the ordinary redu
   });
   guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 15 });
   const selections = getPrologueReleaseSelections(guided);
-  assert.equal(selections.length, 3);
+  assert.equal(selections.length, 4);
   assert.ok(
     selections.every((selection) =>
       isPrologueReleaseSelection(guided, selection),
@@ -593,14 +689,21 @@ test("replays the fixed DAY 30 release and DAY 45 restriction into DAY 46", () =
       startedDay: record.startedDay,
       outcome: record.outcome,
     })),
-    [{ type: "tv-cm", startedDay: 15, outcome: "completed" }],
+    [{ type: "tv-cm", startedDay: 15, outcome: "backlash" }],
   );
   assert.equal(fullPrologue.finance.cumulativeExpenses, 0.6);
-  assert.equal(fullPrologue.activeThemeIds.length, 8);
-  assert.equal(fullPrologue.releaseHistory.length, 1);
-  assert.equal(fullPrologue.releaseHistory[0].day, 30);
+  assert.equal(fullPrologue.activeThemeIds.length, 7);
+  const prologueRelease = fullPrologue.releaseHistory.find(
+    (batch) => !batch.baseline,
+  );
+  assert.ok(prologueRelease);
+  assert.equal(
+    fullPrologue.releaseHistory.filter((batch) => !batch.baseline).length,
+    1,
+  );
+  assert.equal(prologueRelease.day, 30);
   assert.deepEqual(
-    fullPrologue.releaseHistory[0].products.map((product) => ({
+    prologueRelease.products.map((product) => ({
       optionId: product.optionId,
       kind: product.kind,
       powerAdjustment: product.powerAdjustment,
@@ -608,7 +711,8 @@ test("replays the fixed DAY 30 release and DAY 45 restriction into DAY 46", () =
     [
       { optionId: "release-option-4", kind: "new-theme", powerAdjustment: 3 },
       { optionId: "release-option-5", kind: "new-theme", powerAdjustment: 3 },
-      { optionId: "release-option-6", kind: "new-theme", powerAdjustment: 3 },
+      { optionId: "release-option-1", kind: "support", powerAdjustment: 3 },
+      { optionId: "release-option-7", kind: "generic", powerAdjustment: 0 },
     ],
   );
   const decisionDayReleaseEvents = fullPrologue.community.filter(
@@ -622,10 +726,18 @@ test("replays the fixed DAY 30 release and DAY 45 restriction into DAY 46", () =
       event.day === 31 &&
       (event.type === "release-reaction" || event.type === "support-released"),
   );
-  assert.equal(releaseEvents.length, 3);
+  assert.equal(releaseEvents.length, 4);
   assert.deepEqual(
-    releaseEvents.map((event) => event.themeId),
-    fullPrologue.releaseHistory[0].products.map((product) => product.themeId),
+    releaseEvents
+      .filter((event) => !event.genericCardId)
+      .map((event) => event.themeId),
+    prologueRelease.products.flatMap((product) =>
+      product.kind === "generic" ? [] : [product.themeId],
+    ),
+  );
+  assert.equal(
+    releaseEvents.filter((event) => event.genericCardId).length,
+    1,
   );
   assert.ok(releaseEvents.every((event) => event.body.length > 0));
   assert.equal(fullPrologue.handoverComplete, true);
@@ -807,15 +919,12 @@ test("is deterministic for the same seed and release command log", () => {
     assert.ok(state.releaseSlate);
     const requested = state.releaseSlate.options.find((option) => option.requested);
     assert.ok(requested);
-    const selected = [
-      requested,
-      ...state.releaseSlate.options.filter((option) => option.id !== requested.id),
-    ].slice(0, 3);
+    const selected = completeReleaseOptions(state, [requested]);
     state = reduceGame(state, {
       type: "SUBMIT_RELEASE",
       selections: selected.map((option, index) => ({
         optionId: option.id,
-        powerAdjustment: ([-1, 0, 1] as const)[index],
+        powerAdjustment: ([-1, 0, 1, 0] as const)[index],
       })),
     });
     state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 90);
@@ -1038,7 +1147,123 @@ test("relief from an oppressive restriction offsets part of the tier-user shock"
   assert.ok(highObserved.users.tier > lowObserved.users.tier);
 });
 
-test("a restriction review preserves single-card scope and supports a balanced multi-tier list", () => {
+test("threat coverage requires impact proportionate to decision-day pressure", () => {
+  const state = createInitialGame(13_504);
+  state.day = 105;
+  state.phase = "ban-edit";
+  const threatThemeId = "machine-revolution";
+  const otherThemeIds = state.activeThemeIds.filter(
+    (themeId) => themeId !== threatThemeId,
+  );
+  const otherShare = 0.7 / otherThemeIds.length;
+  for (const themeId of state.activeThemeIds) {
+    const runtime = state.themes[themeId];
+    runtime.share = themeId === threatThemeId ? 0.3 : otherShare;
+    runtime.previousWeekShare = runtime.share;
+    runtime.winRate = themeId === threatThemeId ? 0.56 : 0.5;
+    for (const partId of runtime.releasedPartIds) {
+      runtime.legalLimits[partId] = 3;
+    }
+  }
+  const shallowPartId = "machine-revolution-support-1-1";
+  state.themes[threatThemeId].releasedPartIds.push(shallowPartId);
+  state.themes[threatThemeId].legalLimits[shallowPartId] = 3;
+
+  const shallow = getRestrictionPolicyProfile(state, {
+    [shallowPartId]: 2,
+  });
+  assert.deepEqual(shallow.threatThemeIds, [threatThemeId]);
+  assert.equal(shallow.meaningfulCutCount, 1);
+  assert.ok(
+    shallow.appliedThreatImpactByTheme[threatThemeId]! <
+      shallow.requiredThreatImpactByTheme[threatThemeId]!,
+  );
+  assert.deepEqual(shallow.unaddressedThreatThemeIds, [threatThemeId]);
+  assert.equal(shallow.coverageComplete, false);
+  assert.equal(shallow.quality, "narrow");
+
+  const sufficient = getRestrictionPolicyProfile(state, {
+    [shallowPartId]: 2,
+    "machine-revolution-ignition-drone": 2,
+  });
+  assert.ok(
+    sufficient.appliedThreatImpactByTheme[threatThemeId]! >=
+      sufficient.requiredThreatImpactByTheme[threatThemeId]!,
+  );
+  assert.deepEqual(sufficient.unaddressedThreatThemeIds, []);
+  assert.equal(sufficient.coverageComplete, true);
+  assert.equal(sufficient.quality, "balanced");
+});
+
+test("healthy no-change and complete threat coverage reject chaser pre-cuts", () => {
+  const state = createInitialGame(13_505);
+  state.day = 105;
+  state.phase = "ban-edit";
+  const fixedShares: Partial<Record<string, number>> = {
+    cycle: 0.24,
+    "white-night": 0.13,
+    "machine-revolution": 0.14,
+    abyss: 0.1,
+  };
+  const remainingIds = state.activeThemeIds.filter(
+    (themeId) => fixedShares[themeId] === undefined,
+  );
+  const remainingShare = 0.39 / remainingIds.length;
+  for (const themeId of state.activeThemeIds) {
+    const runtime = state.themes[themeId];
+    runtime.share = fixedShares[themeId] ?? remainingShare;
+    runtime.previousWeekShare = runtime.share;
+    runtime.winRate = themeId === "cycle"
+      ? 0.51
+      : themeId === "abyss"
+        ? 0.56
+        : 0.5;
+    for (const partId of runtime.releasedPartIds) {
+      runtime.legalLimits[partId] = 3;
+    }
+  }
+
+  const healthy = structuredClone(state);
+  const equalShare = 1 / healthy.activeThemeIds.length;
+  for (const themeId of healthy.activeThemeIds) {
+    healthy.themes[themeId].share = equalShare;
+    healthy.themes[themeId].previousWeekShare = equalShare;
+    healthy.themes[themeId].winRate = 0.5;
+  }
+  const noChange = getRestrictionPolicyProfile(healthy, {});
+  assert.deepEqual(noChange.threatThemeIds, []);
+  assert.equal(noChange.coverageComplete, true);
+  assert.equal(noChange.quality, "balanced");
+
+  const missedThreat = getRestrictionPolicyProfile(state, {
+    "cycle-gate": 2,
+  });
+  assert.deepEqual(missedThreat.threatThemeIds.sort(), ["abyss", "cycle"]);
+  assert.deepEqual(missedThreat.unaddressedThreatThemeIds, ["abyss"]);
+  assert.equal(missedThreat.coverageComplete, false);
+  assert.equal(missedThreat.quality, "narrow");
+
+  const complete = getRestrictionPolicyProfile(state, {
+    "cycle-gate": 2,
+    "abyss-bait": 2,
+  });
+  assert.deepEqual(complete.unaddressedThreatThemeIds, []);
+  assert.deepEqual(complete.preemptiveCutThemeIds, []);
+  assert.equal(complete.coverageComplete, true);
+  assert.equal(complete.quality, "balanced");
+
+  const preemptive = getRestrictionPolicyProfile(state, {
+    "cycle-gate": 2,
+    "abyss-bait": 2,
+    "machine-revolution-assembly-line": 2,
+  });
+  assert.deepEqual(preemptive.unaddressedThreatThemeIds, []);
+  assert.deepEqual(preemptive.preemptiveCutThemeIds, ["machine-revolution"]);
+  assert.equal(preemptive.coverageComplete, false);
+  assert.equal(preemptive.quality, "incomplete");
+});
+
+test("restriction quality covers every clear threat without preemptive chaser cuts", () => {
   let atGate = createInitialGame(13_505);
   while (
     !(
@@ -1074,6 +1299,48 @@ test("a restriction review preserves single-card scope and supports a balanced m
   assert.ok(tier1ThemeId);
   assert.ok(tier2ThemeId);
   assert.notEqual(tier1ThemeId, tier2ThemeId);
+
+  const healthyThemeIds = atGate.activeThemeIds.filter(
+    (themeId) => themeId !== tier1ThemeId && themeId !== tier2ThemeId,
+  );
+  assert.ok(healthyThemeIds.length >= 3);
+  const ordinaryShare = 0.39 / (healthyThemeIds.length - 2);
+  for (const themeId of atGate.activeThemeIds) {
+    const runtime = atGate.themes[themeId];
+    runtime.share = ordinaryShare;
+    runtime.previousWeekShare = ordinaryShare;
+    runtime.winRate = 0.5;
+  }
+  for (const [themeId, share] of [
+    [tier1ThemeId, 0.24],
+    [healthyThemeIds[0], 0.14],
+    [healthyThemeIds[1], 0.13],
+    [tier2ThemeId, 0.1],
+  ] as const) {
+    atGate.themes[themeId].share = share;
+    atGate.themes[themeId].previousWeekShare = share;
+  }
+  atGate.themes[tier1ThemeId].winRate = 0.51;
+  atGate.themes[tier2ThemeId].winRate = 0.56;
+
+  const healthyNoChange = structuredClone(atGate);
+  const equalShare = 1 / healthyNoChange.activeThemeIds.length;
+  for (const themeId of healthyNoChange.activeThemeIds) {
+    const runtime = healthyNoChange.themes[themeId];
+    runtime.share = equalShare;
+    runtime.previousWeekShare = equalShare;
+    runtime.winRate = 0.5;
+    for (const partId of runtime.releasedPartIds) {
+      runtime.legalLimits[partId] = 3;
+    }
+  }
+  const healthyNoChangeProfile = getRestrictionPolicyProfile(
+    healthyNoChange,
+    {},
+  );
+  assert.equal(healthyNoChangeProfile.quality, "balanced");
+  assert.deepEqual(healthyNoChangeProfile.threatThemeIds, []);
+  assert.equal(healthyNoChangeProfile.coverageComplete, true);
 
   const cuttableParts = (themeId: string) => {
     const content = THEMES.find((theme) => theme.id === themeId);
@@ -1116,6 +1383,12 @@ test("a restriction review preserves single-card scope and supports a balanced m
   assert.equal(singleProfile.upperMeaningfulCuts, 1);
   assert.equal(singleProfile.tier2MeaningfulCuts, 0);
   assert.equal(singleProfile.staleLoosened, 0);
+  assert.deepEqual(singleProfile.threatThemeIds.sort(), [
+    tier1ThemeId,
+    tier2ThemeId,
+  ].sort());
+  assert.deepEqual(singleProfile.unaddressedThreatThemeIds, [tier2ThemeId]);
+  assert.deepEqual(singleProfile.preemptiveCutThemeIds, []);
   const twoCardProfile = getRestrictionPolicyProfile(atGate, {
     [tier1Cuts[0].id]: 1,
     [tier1Cuts[1].id]: 1,
@@ -1173,6 +1446,21 @@ test("a restriction review preserves single-card scope and supports a balanced m
   assert.equal(draftProfile.staleFullyReleased, 1);
   assert.equal(draftProfile.coverageComplete, true);
   assert.equal(draftProfile.staleReliefComplete, true);
+  assert.deepEqual(draftProfile.unaddressedThreatThemeIds, []);
+  assert.deepEqual(draftProfile.preemptiveCutThemeIds, []);
+
+  const preemptivePart = cuttableParts(healthyThemeIds[0])[0];
+  assert.ok(preemptivePart);
+  const preemptiveProfile = getRestrictionPolicyProfile(atGate, {
+    ...balancedChanges,
+    [preemptivePart.id]: 1,
+  });
+  assert.equal(preemptiveProfile.quality, "incomplete");
+  assert.equal(preemptiveProfile.coverageComplete, false);
+  assert.deepEqual(preemptiveProfile.unaddressedThreatThemeIds, []);
+  assert.deepEqual(preemptiveProfile.preemptiveCutThemeIds, [
+    healthyThemeIds[0],
+  ]);
   const partialReliefState = structuredClone(atGate);
   const partialReliefEvent = partialReliefState.community.find(
     (event) => event.id === oldRestriction.id,
@@ -1209,10 +1497,19 @@ test("a restriction review preserves single-card scope and supports a balanced m
     "the reducer must not mutate the review input",
   );
   assert.ok(cutsOnly.purchaseTrust < atGate.purchaseTrust);
-  assert.ok(liftOnly.purchaseTrust < atGate.purchaseTrust);
+  assert.equal(
+    liftOnly.purchaseTrust,
+    atGate.purchaseTrust,
+    "lifting an old restriction should preserve owner confidence",
+  );
   assert.ok(balanced.purchaseTrust > cutsOnly.purchaseTrust);
   assert.ok(balanced.purchaseTrust < atGate.purchaseTrust);
-  assert.ok(atGate.purchaseTrust - balanced.purchaseTrust <= 12);
+  const balancedTrustLoss = atGate.purchaseTrust - balanced.purchaseTrust;
+  assert.ok(
+    balancedTrustLoss >= 8,
+    "a sound but severe list should still create a material ownership shock",
+  );
+  assert.ok(balancedTrustLoss <= 17);
 
   const decisionEvents = balanced.community.filter(
     (event) =>
@@ -1323,8 +1620,8 @@ test("restriction outcome labels require real target movement and a healthy foll
       part.preferredCopies >= 2,
   );
   assert.ok(targetPart);
-  const themeIds = base.activeThemeIds.slice(0, 8);
-  assert.equal(themeIds.length, 8);
+  const themeIds = base.activeThemeIds.slice(0, 7);
+  assert.equal(themeIds.length, 7);
 
   const outcomeFor = (
     decisionShares: readonly number[],
@@ -1381,34 +1678,320 @@ test("restriction outcome labels require real target movement and a healthy foll
   };
 
   const stillDominated = outcomeFor(
-    [0.5, 0.2, 0.12, 0.1, 0.08, 0, 0, 0],
-    [0.495, 0.19, 0.125, 0.105, 0.085, 0, 0, 0],
+    [0.5, 0.2, 0.12, 0.1, 0.08, 0, 0],
+    [0.495, 0.19, 0.125, 0.105, 0.085, 0, 0],
   );
   assert.notEqual(stillDominated.classification, "stabilized");
   assert.ok(stillDominated.followupMetrics!.topShare > 0.49);
 
   const unrelatedUserLoss = outcomeFor(
-    [0.34, 0.18, 0.14, 0.1, 0.08, 0.06, 0.05, 0.05],
-    [0.338, 0.18, 0.141, 0.101, 0.08, 0.06, 0.05, 0.05],
+    [0.34, 0.18, 0.14, 0.1, 0.08, 0.06, 0.1],
+    [0.338, 0.18, 0.141, 0.101, 0.08, 0.06, 0.1],
     95_000,
   );
   assert.notEqual(unrelatedUserLoss.classification, "overcorrected");
   assert.ok(unrelatedUserLoss.userRateDelta <= -0.05);
 
   const stabilized = outcomeFor(
-    [0.34, 0.18, 0.14, 0.1, 0.08, 0.06, 0.05, 0.05],
-    [0.3, 0.16, 0.13, 0.11, 0.09, 0.08, 0.07, 0.06],
+    [0.34, 0.18, 0.14, 0.1, 0.08, 0.06, 0.1],
+    [0.3, 0.16, 0.13, 0.11, 0.09, 0.08, 0.13],
   );
   assert.equal(stabilized.classification, "stabilized");
 
   const overcorrected = outcomeFor(
-    [0.34, 0.18, 0.14, 0.1, 0.08, 0.06, 0.05, 0.05],
-    [0.2, 0.2, 0.16, 0.13, 0.1, 0.08, 0.07, 0.06],
+    [0.34, 0.18, 0.14, 0.1, 0.08, 0.06, 0.1],
+    [0.2, 0.2, 0.16, 0.13, 0.1, 0.08, 0.13],
   );
   assert.equal(overcorrected.classification, "overcorrected");
 });
 
-test("support proposals have a thirty-day cooldown and are guaranteed on the next slate", () => {
+const RESTRICTION_OUTCOME_DECISION_SHARES = [
+  0.34,
+  0.18,
+  0.14,
+  0.1,
+  0.08,
+  0.06,
+  0.1,
+] as const;
+
+function makeRestrictionOutcomeConsequenceFixture(
+  followupShares: readonly number[],
+  seed = 13_507,
+  decisionShares: readonly number[] = RESTRICTION_OUTCOME_DECISION_SHARES,
+): State {
+  const state = createInitialGame(seed);
+  const themeIds = state.activeThemeIds.slice(0, 7);
+  assert.equal(themeIds.length, 7);
+  assert.equal(followupShares.length, themeIds.length);
+  assert.equal(decisionShares.length, themeIds.length);
+  assert.ok(
+    Math.abs(followupShares.reduce((sum, share) => sum + share, 0) - 1) <
+      1e-9,
+  );
+  const targetThemeId = themeIds[0];
+  const targetContent = THEMES.find((theme) => theme.id === targetThemeId);
+  assert.ok(targetContent);
+  const targetPart = targetContent.parts.find(
+    (part) =>
+      state.themes[targetThemeId].releasedPartIds.includes(part.id) &&
+      part.preferredCopies >= 2,
+  );
+  assert.ok(targetPart);
+  const isDecisionEvent = (event: State["community"][number]) =>
+    event.day === 45 &&
+    (event.type === "restriction-applied" ||
+      event.type === "cosmetic-restriction" ||
+      event.type === "restriction-no-change");
+  state.community = state.community.filter((event) => !isDecisionEvent(event));
+  state.community.push({
+    id: "restriction-outcome-consequence-fixture",
+    day: 45,
+    category: "restriction",
+    type: "restriction-applied",
+    themeId: targetThemeId,
+    partId: targetPart.id,
+    previousValue: 3,
+    value: 1,
+    body: "fixture",
+  });
+
+  const sharesFor = (values: readonly number[]) =>
+    Object.fromEntries(
+      themeIds.map((themeId, index) => [themeId, values[index]]),
+    );
+  const decisionSnapshot = state.history.find((entry) => entry.day === 45);
+  assert.ok(decisionSnapshot);
+  decisionSnapshot.shares = sharesFor(decisionShares);
+  decisionSnapshot.topThemeId = targetThemeId;
+  state.day = 48;
+  state.purchaseTrust = 60;
+  for (const [index, themeId] of themeIds.entries()) {
+    state.themes[themeId].share = followupShares[index];
+    state.themes[themeId].previousWeekShare = followupShares[index];
+  }
+  state.currentTopThemeId = themeIds.reduce((topThemeId, themeId) =>
+    state.themes[themeId].share > state.themes[topThemeId].share
+      ? themeId
+      : topThemeId,
+  );
+  return state;
+}
+
+test("D+4 restriction outcomes apply each ownership consequence once and update history", () => {
+  const naturalState = createInitialGame(13_507);
+  const naturalShares = naturalState.activeThemeIds
+    .slice(0, 7)
+    .map((themeId) => naturalState.themes[themeId].share);
+  const fixtures = [
+    {
+      classification: "stabilized",
+      shares: [0.3, 0.16, 0.13, 0.11, 0.09, 0.08, 0.13],
+      trustDelta: 1.5,
+    },
+    {
+      classification: "overcorrected",
+      shares: [0.2, 0.2, 0.16, 0.13, 0.1, 0.08, 0.13],
+      trustDelta: -7,
+    },
+    {
+      classification: "replacement",
+      shares: [0.3, 0.4, 0.08, 0.06, 0.05, 0.04, 0.07],
+      trustDelta: -3.5,
+    },
+    {
+      classification: "ineffective",
+      shares: naturalShares,
+      decisionShares: naturalShares,
+      trustDelta: 0,
+    },
+    {
+      classification: "mixed",
+      shares: [0.35, 0.17, 0.14, 0.1, 0.08, 0.06, 0.1],
+      trustDelta: -0.25,
+    },
+  ] as const;
+  const resolvedByClassification = new Map<string, State>();
+
+  for (const fixture of fixtures) {
+    const input = makeRestrictionOutcomeConsequenceFixture(
+      fixture.shares,
+      13_507,
+      "decisionShares" in fixture
+        ? fixture.decisionShares
+        : RESTRICTION_OUTCOME_DECISION_SHARES,
+    );
+    const controlInput = structuredClone(input);
+    controlInput.community = controlInput.community.filter(
+      (event) => event.id !== "restriction-outcome-consequence-fixture",
+    );
+    const control = reduceGame(controlInput, {
+      type: "ADVANCE_DAYS",
+      days: 1,
+    });
+    const resolved = reduceGame(input, { type: "ADVANCE_DAYS", days: 1 });
+    const outcome = getRestrictionHistoricalOutcome(resolved, 45, 49);
+    assert.equal(
+      outcome.classification,
+      fixture.classification,
+      JSON.stringify(outcome),
+    );
+    assert.equal(
+      resolved.purchaseTrust,
+      Math.round((control.purchaseTrust + fixture.trustDelta) * 10_000) /
+        10_000,
+    );
+    assert.equal(
+      resolved.history.find((entry) => entry.day === 49)?.purchaseTrust,
+      resolved.purchaseTrust,
+    );
+    assert.deepEqual(
+      resolved,
+      reduceGame(structuredClone(input), { type: "ADVANCE_DAYS", days: 1 }),
+    );
+    resolvedByClassification.set(fixture.classification, resolved);
+  }
+
+  const overcorrected = resolvedByClassification.get("overcorrected");
+  assert.ok(overcorrected);
+  const withoutDecision = structuredClone(overcorrected);
+  withoutDecision.community = withoutDecision.community.filter(
+    (event) => event.id !== "restriction-outcome-consequence-fixture",
+  );
+  const ordinaryNextDay = reduceGame(withoutDecision, {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
+  const outcomeNextDay = reduceGame(overcorrected, {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
+  assert.equal(outcomeNextDay.purchaseTrust, ordinaryNextDay.purchaseTrust);
+
+  const normalizedRisk = (state: State) => {
+    const normalized = structuredClone(state);
+    normalized.purchaseTrust = 70;
+    const share = 1 / normalized.activeThemeIds.length;
+    for (const themeId of normalized.activeThemeIds) {
+      normalized.themes[themeId].share = share;
+      normalized.themes[themeId].previousWeekShare = share;
+      normalized.themes[themeId].winRate = 0.5;
+    }
+    normalized.currentTopThemeId = normalized.activeThemeIds[0];
+    return getStrategicProjectRiskProfile(
+      normalized,
+      "season-overhaul",
+    );
+  };
+  const stabilizedRisk = normalizedRisk(
+    resolvedByClassification.get("stabilized")!,
+  );
+  const mixedRisk = normalizedRisk(resolvedByClassification.get("mixed")!);
+  const ineffectiveRisk = normalizedRisk(
+    resolvedByClassification.get("ineffective")!,
+  );
+  const replacementRisk = normalizedRisk(
+    resolvedByClassification.get("replacement")!,
+  );
+  const overcorrectedRisk = normalizedRisk(overcorrected);
+  assert.ok(stabilizedRisk.risk < mixedRisk.risk);
+  assert.ok(mixedRisk.risk < ineffectiveRisk.risk);
+  assert.ok(ineffectiveRisk.risk < replacementRisk.risk);
+  assert.ok(replacementRisk.risk < overcorrectedRisk.risk);
+  assert.equal(overcorrectedRisk.context.primaryRisk, "policy");
+});
+
+test("a first ineffective review is trust-neutral while a repeated miss erodes trust and raises risk", () => {
+  const base = advanceThroughDecisions(createInitialGame(13_508), 108);
+  assert.equal(base.day, 108);
+  assert.equal(base.phase, "running");
+  const themeIds = base.activeThemeIds.slice(0, 8);
+  const targetThemeId = themeIds[0];
+  const targetContent = THEMES.find((theme) => theme.id === targetThemeId);
+  assert.ok(targetContent);
+  const targetPart = targetContent.parts.find(
+    (part) => base.themes[targetThemeId].releasedPartIds.includes(part.id),
+  );
+  assert.ok(targetPart);
+  const decisionType = (event: State["community"][number]) =>
+    event.type === "restriction-applied" ||
+    event.type === "cosmetic-restriction" ||
+    event.type === "restriction-no-change";
+  base.community = base.community.filter(
+    (event) => !([45, 105].includes(event.day) && decisionType(event)),
+  );
+  const makeDecisionEvent = (day: number) => ({
+    id: `repeated-ineffective-${day}`,
+    day,
+    category: "restriction" as const,
+    type: "restriction-applied" as const,
+    themeId: targetThemeId,
+    partId: targetPart.id,
+    previousValue: 3,
+    value: 1,
+    body: "fixture",
+  });
+  base.community.push(makeDecisionEvent(45), makeDecisionEvent(105));
+  const firstDecisionSnapshot = base.history.find((entry) => entry.day === 45);
+  const firstFollowupSnapshot = base.history.find((entry) => entry.day === 49);
+  const currentDecisionSnapshot = base.history.find(
+    (entry) => entry.day === 105,
+  );
+  assert.ok(firstDecisionSnapshot);
+  assert.ok(firstFollowupSnapshot);
+  assert.ok(currentDecisionSnapshot);
+  firstFollowupSnapshot.shares = { ...firstDecisionSnapshot.shares };
+  firstFollowupSnapshot.topThemeId = firstDecisionSnapshot.topThemeId;
+  for (const themeId of base.activeThemeIds) {
+    const share = currentDecisionSnapshot.shares[themeId];
+    assert.ok(Number.isFinite(share));
+    base.themes[themeId].share = share;
+    base.themes[themeId].previousWeekShare = share;
+  }
+  base.currentTopThemeId = currentDecisionSnapshot.topThemeId;
+  base.purchaseTrust = 60;
+
+  const firstInput = structuredClone(base);
+  firstInput.community = firstInput.community.filter(
+    (event) => event.id !== "repeated-ineffective-45",
+  );
+  const first = reduceGame(firstInput, { type: "ADVANCE_DAYS", days: 1 });
+  const repeated = reduceGame(base, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(
+    getRestrictionHistoricalOutcome(first, 105, 109).classification,
+    "ineffective",
+  );
+  assert.equal(
+    getRestrictionHistoricalOutcome(repeated, 45, 49).classification,
+    "ineffective",
+  );
+  assert.equal(
+    getRestrictionHistoricalOutcome(repeated, 105, 109).classification,
+    "ineffective",
+  );
+  assert.equal(repeated.purchaseTrust, first.purchaseTrust - 1.5);
+  assert.equal(
+    repeated.history.find((entry) => entry.day === 109)?.purchaseTrust,
+    repeated.purchaseTrust,
+  );
+
+  const firstRiskState = structuredClone(first);
+  const repeatedRiskState = structuredClone(repeated);
+  firstRiskState.purchaseTrust = 70;
+  repeatedRiskState.purchaseTrust = 70;
+  const firstRisk = getStrategicProjectRiskProfile(
+    firstRiskState,
+    "season-overhaul",
+  );
+  const repeatedRisk = getStrategicProjectRiskProfile(
+    repeatedRiskState,
+    "season-overhaul",
+  );
+  assert.ok(repeatedRisk.risk >= firstRisk.risk + 0.014);
+  assert.equal(repeatedRisk.context.primaryRisk, "policy");
+});
+
+test("support requests replace their lane and the latest request reaches the next slate", () => {
   let state = createInitialGame(77);
   const targetId = state.activeThemeIds[0];
   state = reduceGame(state, {
@@ -1422,37 +2005,34 @@ test("support proposals have a thirty-day cooldown and are guaranteed on the nex
   assert.equal(firstRequest.proposedDay, 46);
   assert.equal(firstRequest.eligibleReleaseDay, 60);
   assert.equal(firstRequest.status, "queued");
-  assert.throws(
-    () =>
-      reduceGame(state, {
-        type: "PROPOSE_SUPPORT",
-        themeId: state.activeThemeIds[1],
-        direction: "counterplay",
-      }),
-    /30-day cooldown/,
-  );
+  const replacementThemeId = state.activeThemeIds[1];
+  state = reduceGame(state, {
+    type: "PROPOSE_SUPPORT",
+    themeId: replacementThemeId,
+    direction: "counterplay",
+  });
+  const replacement = state.supportRequests[1];
+  assert.equal(state.supportRequests[0].status, "replaced");
+  assert.equal(replacement.status, "queued");
 
   state = advanceToFirstRelease(state);
   assert.ok(state.releaseSlate);
   const requestedOption = state.releaseSlate.options.find(
-    (option) => option.requestId === firstRequest.id,
+    (option) =>
+      option.kind === "support" && option.requestId === replacement.id,
   );
-  assert.ok(requestedOption);
-  assert.equal(requestedOption.kind, "support");
-  assert.equal(requestedOption.themeId, targetId);
-  assert.equal(requestedOption.direction, "recovery");
+  if (!requestedOption || requestedOption.kind !== "support") {
+    assert.fail("expected requested support option");
+  }
+  assert.equal(requestedOption.themeId, replacementThemeId);
+  assert.equal(requestedOption.direction, "counterplay");
   assert.equal(requestedOption.requested, true);
   assert.equal(
-    state.supportRequests.find((request) => request.id === firstRequest.id)?.status,
+    state.supportRequests.find((request) => request.id === replacement.id)?.status,
     "offered",
   );
 
-  const selected = [
-    requestedOption,
-    ...state.releaseSlate.options.filter(
-      (option) => option.id !== requestedOption.id,
-    ),
-  ].slice(0, 3);
+  const selected = completeReleaseOptions(state, [requestedOption]);
   state = reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: selected.map((option) => ({
@@ -1460,29 +2040,19 @@ test("support proposals have a thirty-day cooldown and are guaranteed on the nex
       powerAdjustment: 0,
     })),
   });
-  assert.equal(state.supportRequests[0].status, "released");
-  assert.equal(state.supportRequests[0].releasedDay, 60);
+  assert.equal(state.supportRequests[1].status, "released");
+  assert.equal(state.supportRequests[1].releasedDay, 60);
 
   state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 75);
   assert.equal(state.day, 75);
-  assert.throws(
-    () =>
-      reduceGame(state, {
-        type: "PROPOSE_SUPPORT",
-        themeId: state.activeThemeIds[1],
-        direction: "counterplay",
-      }),
-    /30-day cooldown/,
-  );
-  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 76);
   state = reduceGame(state, {
     type: "PROPOSE_SUPPORT",
     themeId: state.activeThemeIds[1],
     direction: "counterplay",
   });
-  assert.equal(state.day, 76);
-  assert.equal(state.supportRequests.length, 2);
-  assert.equal(state.supportRequests[1].eligibleReleaseDay, 90);
+  assert.equal(state.day, 75);
+  assert.equal(state.supportRequests.length, 3);
+  assert.equal(state.supportRequests[2].eligibleReleaseDay, 90);
 });
 
 test("a support release can bring a Tier Out theme back into the observed meta", () => {
@@ -1501,9 +2071,14 @@ test("a support release can bring a Tier Out theme back into the observed meta",
   state = advanceToFirstRelease(state);
   assert.ok(state.releaseSlate);
   const requested = state.releaseSlate.options.find(
-    (option) => option.requested && option.themeId === targetId,
+    (option) =>
+      option.kind === "support" &&
+      option.requested &&
+      option.themeId === targetId,
   );
-  assert.ok(requested);
+  if (!requested || requested.kind !== "support") {
+    assert.fail("expected requested support option");
+  }
 
   const runtime = state.themes[targetId];
   const recipient = state.themes[state.currentTopThemeId];
@@ -1512,10 +2087,7 @@ test("a support release can bring a Tier Out theme back into the observed meta",
   runtime.previousWeekShare = META_ADOPTION_SHARE_FLOOR;
   recipient.share += transferred;
 
-  const selected = [
-    requested,
-    ...state.releaseSlate.options.filter((option) => option.id !== requested.id),
-  ].slice(0, 3);
+  const selected = completeReleaseOptions(state, [requested]);
   state = reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: selected.map((option, index) => ({
@@ -1553,13 +2125,15 @@ test("support releases unlock exactly three prepared cards and stop after three 
     assert.equal(state.phase, "release-edit");
     assert.ok(state.releaseSlate);
     const requested = state.releaseSlate.options.find(
-      (option) => option.requested && option.themeId === targetId,
+      (option) =>
+        option.kind === "support" &&
+        option.requested &&
+        option.themeId === targetId,
     );
-    assert.ok(requested);
-    const selected = [
-      requested,
-      ...state.releaseSlate.options.filter((option) => option.id !== requested.id),
-    ].slice(0, 3);
+    if (!requested || requested.kind !== "support") {
+      assert.fail("expected requested support option");
+    }
+    const selected = completeReleaseOptions(state, [requested]);
     state = reduceGame(state, {
       type: "SUBMIT_RELEASE",
       selections: selected.map((option) => ({
@@ -1643,11 +2217,11 @@ test("support releases unlock exactly three prepared cards and stop after three 
   );
 });
 
-test("day 60 release review offers exactly three new themes and three supports", () => {
+test("day 60 release review offers three choices in every product category", () => {
   const state = advanceToFirstRelease(createInitialGame(321));
   assert.ok(state.releaseSlate);
   assert.equal(state.releaseSlate.day, 60);
-  assert.equal(state.releaseSlate.options.length, 6);
+  assert.equal(state.releaseSlate.options.length, 9);
   assert.equal(
     state.releaseSlate.options.filter((option) => option.kind === "new-theme")
       .length,
@@ -1655,6 +2229,11 @@ test("day 60 release review offers exactly three new themes and three supports",
   );
   assert.equal(
     state.releaseSlate.options.filter((option) => option.kind === "support")
+      .length,
+    3,
+  );
+  assert.equal(
+    state.releaseSlate.options.filter((option) => option.kind === "generic")
       .length,
     3,
   );
@@ -1670,7 +2249,7 @@ test("day 60 release review offers exactly three new themes and three supports",
   );
 });
 
-test("packs for themes with stronger recent placements sell harder", () => {
+test("actual meta tiers create ordered and material pack-demand gaps", () => {
   const atRelease = advanceToFirstRelease(createInitialGame(3_221));
   assert.ok(atRelease.releaseSlate);
   const supportOption = atRelease.releaseSlate.options.find(
@@ -1678,16 +2257,22 @@ test("packs for themes with stronger recent placements sell harder", () => {
       option.kind === "support" &&
       atRelease.history[0].shares[option.themeId] !== undefined,
   );
-  assert.ok(supportOption);
+  if (!supportOption || supportOption.kind !== "support") {
+    assert.fail("expected support option");
+  }
   const newOptions = atRelease.releaseSlate.options.filter(
     (option) => option.kind === "new-theme",
   );
+  const genericOption = atRelease.releaseSlate.options.find(
+    (option) => option.kind === "generic",
+  );
   assert.ok(newOptions.length >= 2);
+  assert.ok(genericOption);
   const donorId = Object.keys(atRelease.history[0].shares).find(
     (themeId) => themeId !== supportOption.themeId,
   );
   assert.ok(donorId);
-  const selections = [supportOption, ...newOptions.slice(0, 2)].map(
+  const selections = [supportOption, ...newOptions.slice(0, 2), genericOption].map(
     (option) => ({
       optionId: option.id,
       powerAdjustment: 0 as const,
@@ -1708,15 +2293,36 @@ test("packs for themes with stronger recent placements sell harder", () => {
     return state;
   };
 
-  const highTier = reduceGame(
-    withTargetPlacements(DAILY_TOP_CUT_SLOTS),
-    { type: "SUBMIT_RELEASE", selections },
-  );
-  const tierOut = reduceGame(
-    withTargetPlacements(0),
-    { type: "SUBMIT_RELEASE", selections },
-  );
-  assert.ok(highTier.finance.today > tierOut.finance.today);
+  const revenueByTier = {
+    tier0: reduceGame(withTargetPlacements(21), {
+      type: "SUBMIT_RELEASE",
+      selections,
+    }).finance.today,
+    tier1: reduceGame(withTargetPlacements(5), {
+      type: "SUBMIT_RELEASE",
+      selections,
+    }).finance.today,
+    tier2: reduceGame(withTargetPlacements(2), {
+      type: "SUBMIT_RELEASE",
+      selections,
+    }).finance.today,
+    tier3: reduceGame(withTargetPlacements(1), {
+      type: "SUBMIT_RELEASE",
+      selections,
+    }).finance.today,
+    tierOut: reduceGame(withTargetPlacements(0), {
+      type: "SUBMIT_RELEASE",
+      selections,
+    }).finance.today,
+  };
+  assert.ok(revenueByTier.tier0 > revenueByTier.tier1);
+  assert.ok(revenueByTier.tier1 > revenueByTier.tier2);
+  assert.ok(revenueByTier.tier2 > revenueByTier.tier3);
+  assert.ok(revenueByTier.tier3 > revenueByTier.tierOut);
+  assert.ok(revenueByTier.tier0 - revenueByTier.tier1 >= 0.04);
+  assert.ok(revenueByTier.tier1 - revenueByTier.tier2 >= 0.05);
+  assert.ok(revenueByTier.tier2 - revenueByTier.tier3 >= 0.04);
+  assert.ok(revenueByTier.tier3 - revenueByTier.tierOut >= 0.015);
 
   const withConflictingPlacementWindows = (
     latestFourteenDaysStrong: boolean,
@@ -1766,7 +2372,8 @@ test("new-theme launch power and same-day sales ignore stale slate forecasts", (
     (option) => option.kind === "new-theme",
   );
   assert.equal(newOptions.length, 3);
-  const adjustments = [-3, 0, 3] as const;
+  const selectedNewOptions = newOptions.slice(0, 2);
+  const adjustments = [-3, 3] as const;
 
   for (const option of newOptions) {
     const content = THEMES.find((theme) => theme.id === option.themeId);
@@ -1777,9 +2384,16 @@ test("new-theme launch power and same-day sales ignore stale slate forecasts", (
     );
   }
 
-  const selections = newOptions.map((option, index) => ({
+  const selectedOptions = completeReleaseOptions(atRelease, selectedNewOptions);
+  const selections = selectedOptions.map((option) => ({
     optionId: option.id,
-    powerAdjustment: adjustments[index],
+    powerAdjustment: (
+      option.id === selectedNewOptions[0].id
+        ? adjustments[0]
+        : option.id === selectedNewOptions[1].id
+          ? adjustments[1]
+          : 0
+    ) as Adjustment,
   }));
   const released = reduceGame(atRelease, {
     type: "SUBMIT_RELEASE",
@@ -1806,7 +2420,7 @@ test("new-theme launch power and same-day sales ignore stale slate forecasts", (
     type: "ADVANCE_DAYS",
     days: 1,
   });
-  for (const [index, option] of newOptions.entries()) {
+  for (const [index, option] of selectedNewOptions.entries()) {
     const content = THEMES.find((theme) => theme.id === option.themeId);
     assert.ok(content);
     const expectedLaunchPower = getNewThemeLaunchPower(
@@ -1828,7 +2442,7 @@ test("new-theme launch power and same-day sales ignore stale slate forecasts", (
   }
 });
 
-test("release submission requires three unique valid selections and applies their adjustments", () => {
+test("release submission requires four mixed valid selections and applies their adjustments", () => {
   const atRelease = advanceToFirstRelease(createInitialGame(654));
   assert.ok(atRelease.releaseSlate);
   const newOptions = atRelease.releaseSlate.options.filter(
@@ -1837,8 +2451,13 @@ test("release submission requires three unique valid selections and applies thei
   const supportOption = atRelease.releaseSlate.options.find(
     (option) => option.kind === "support",
   );
+  const genericOption = atRelease.releaseSlate.options.find(
+    (option) => option.kind === "generic",
+  );
   assert.equal(newOptions.length, 3);
-  assert.ok(supportOption);
+  if (!supportOption || supportOption.kind !== "support" || !genericOption) {
+    assert.fail("expected support and generic options");
+  }
 
   assert.throws(
     () =>
@@ -1849,7 +2468,18 @@ test("release submission requires three unique valid selections and applies thei
           powerAdjustment: 0,
         })),
       }),
-    /Exactly three release options/,
+    /Exactly 4 release options/,
+  );
+  assert.throws(
+    () =>
+      reduceGame(atRelease, {
+        type: "SUBMIT_RELEASE",
+        selections: [...newOptions, supportOption].map((option) => ({
+          optionId: option.id,
+          powerAdjustment: 0,
+        })),
+      }),
+    /at least one new theme, support, and generic card/,
   );
   assert.throws(
     () =>
@@ -1857,8 +2487,9 @@ test("release submission requires three unique valid selections and applies thei
         type: "SUBMIT_RELEASE",
         selections: [
           { optionId: newOptions[0].id, powerAdjustment: 0 },
-          { optionId: newOptions[1].id, powerAdjustment: 0 },
           { optionId: supportOption.id, powerAdjustment: 4 },
+          { optionId: genericOption.id, powerAdjustment: 0 },
+          { optionId: newOptions[1].id, powerAdjustment: 0 },
         ],
       } as never),
     /integer from -3 to 3/,
@@ -1868,6 +2499,7 @@ test("release submission requires three unique valid selections and applies thei
     { option: newOptions[0], adjustment: -3 as const },
     { option: newOptions[1], adjustment: 3 as const },
     { option: supportOption, adjustment: 0 as const },
+    { option: genericOption, adjustment: 0 as const },
   ];
   const supportBefore = atRelease.themes[supportOption.themeId].supportPower;
   const activeBefore = [...atRelease.activeThemeIds];
@@ -1908,10 +2540,13 @@ test("release submission requires three unique valid selections and applies thei
     0,
   );
   assert.ok(released.finance.today > atRelease.history.at(-1)!.revenue);
-  assert.equal(released.releaseHistory.length, 2);
-  assert.equal(released.releaseHistory[1].day, 60);
+  const regularReleaseHistory = released.releaseHistory.filter(
+    (batch) => !batch.baseline,
+  );
+  assert.equal(regularReleaseHistory.length, 2);
+  assert.equal(regularReleaseHistory[1].day, 60);
   assert.deepEqual(
-    released.releaseHistory[1].products.map((product) => ({
+    regularReleaseHistory[1].products.map((product) => ({
       optionId: product.optionId,
       powerAdjustment: product.powerAdjustment,
     })),
@@ -1934,10 +2569,12 @@ test("release submission requires three unique valid selections and applies thei
         event.day === 61 &&
         (event.type === "release-reaction" || event.type === "support-released"),
     ).length,
-    3,
+    4,
   );
+  assert.equal(observed.genericLimits[genericOption.genericCardId], 3);
 
-  for (const { option, adjustment } of selected.slice(0, 2)) {
+  for (const [index, option] of newOptions.slice(0, 2).entries()) {
+    const adjustment = ([-3, 3] as const)[index];
     assert.ok(
       Math.abs(
         observed.themes[option.themeId].power -
@@ -1956,7 +2593,7 @@ test("keeps shares finite and normalized through every release and restriction g
     if (state.operations.pendingEvent) {
       state = choosePendingBusinessEvent(state);
     } else if (state.phase === "release-edit") {
-      assert.equal(state.releaseSlate?.options.length, 6);
+      assert.equal(state.releaseSlate?.options.length, 9);
       state = submitFirstThree(state, [-1, 0, 1]);
       reviews += 1;
     } else if (state.phase === "ban-edit") {
@@ -1976,7 +2613,10 @@ test("keeps shares finite and normalized through every release and restriction g
 
   assert.equal(state.day, CAMPAIGN_END_DAY);
   assert.equal(state.phase, "ended");
-  assert.equal(state.releaseHistory.length, 15);
+  assert.equal(
+    state.releaseHistory.filter((batch) => !batch.baseline).length,
+    15,
+  );
   assert.equal(sawTierOut, true);
   const finalShares = state.activeThemeIds
     .map((themeId) => state.themes[themeId].share)
@@ -1989,7 +2629,7 @@ test("keeps shares finite and normalized through every release and restriction g
   assertHealthyShares(state);
 });
 
-test("keeps six choices when a support-heavy strategy exhausts eligible themes", () => {
+test("keeps nine choices when a support-heavy strategy exhausts eligible themes", () => {
   let state = createInitialGame(10_031);
   let releaseReviews = 0;
 
@@ -1998,14 +2638,14 @@ test("keeps six choices when a support-heavy strategy exhausts eligible themes",
       state = choosePendingBusinessEvent(state);
     } else if (state.phase === "release-edit") {
       assert.ok(state.releaseSlate);
-      assert.equal(state.releaseSlate.options.length, 6);
-      const supportFirst = [
-        ...state.releaseSlate.options.filter((option) => option.kind === "support"),
-        ...state.releaseSlate.options.filter((option) => option.kind === "new-theme"),
-      ];
+      assert.equal(state.releaseSlate.options.length, 9);
+      const supportFirst = state.releaseSlate.options
+        .filter((option) => option.kind === "support")
+        .slice(0, 2);
+      const selected = completeReleaseOptions(state, supportFirst);
       state = reduceGame(state, {
         type: "SUBMIT_RELEASE",
-        selections: supportFirst.slice(0, 3).map((option) => ({
+        selections: selected.map((option) => ({
           optionId: option.id,
           powerAdjustment: 0,
         })),
@@ -2042,10 +2682,10 @@ test("charges scaled operating costs every day after the DAY 46 handover", () =>
   assert.equal(next.finance.todayOperatingCost, expectedCost);
   assert.equal(next.finance.cumulativeOperatingCosts, expectedCost);
   assert.equal(next.finance.todayOperatingCash, expectedNet);
-  assert.equal(getMonthlyOperatingCost(10_000), 1.3);
+  assert.equal(getMonthlyOperatingCost(10_000), 1.7);
   assert.equal(getDailyOperatingCost(46, 10_000), 0);
-  assert.equal(getDailyOperatingCost(47, 10_000), 0.0433);
-  assert.equal(getOperatingRunwayMonths(10, 10_000), 7.7);
+  assert.equal(getDailyOperatingCost(47, 10_000), 0.0567);
+  assert.equal(getOperatingRunwayMonths(10, 10_000), 5.9);
 });
 
 test("revenue shock alerts discount the normal post-release sales tail", () => {
@@ -2156,14 +2796,22 @@ test("business actions spend operating cash without double-booking the current d
     Math.round((todayOperatingCash - 0.6) * 10_000) / 10_000,
   );
   assert.equal(next.finance.cumulativeExpenses, 0.6);
-  assert.deepEqual(next.operations.records[0], {
-    id: "business-action-1",
-    type: "tv-cm",
-    startedDay: 1,
-    endsDay: 22,
-    cost: 0.6,
-    outcome: "active",
-  });
+  assert.deepEqual(
+    {
+      ...next.operations.records[0],
+      risk: undefined,
+    },
+    {
+      id: "business-action-1",
+      type: "tv-cm",
+      startedDay: 1,
+      endsDay: 22,
+      cost: 0.6,
+      outcome: "active",
+      risk: undefined,
+    },
+  );
+  assert.ok(next.operations.records[0].risk !== undefined);
   assert.throws(
     () => reduceGame(next, {
       type: "RUN_BUSINESS_ACTION",
@@ -2220,15 +2868,21 @@ test("marketing and store tours affect users and trust from the following day", 
   });
   const tvNext = reduceGame(tv, { type: "ADVANCE_DAYS", days: 1 });
   const controlNext = reduceGame(control, { type: "ADVANCE_DAYS", days: 1 });
-  assert.ok(tvNext.users.casual > controlNext.users.casual);
+  assert.equal(tvNext.operations.records[0].resolvedDay, 2);
+  assert.equal(
+    tvNext.users.casual > controlNext.users.casual,
+    tvNext.operations.records[0].outcome === "success",
+  );
 
   const anime = reduceGame(control, {
     type: "RUN_BUSINESS_ACTION",
     action: "animation-promotion",
   });
   const animeNext = reduceGame(anime, { type: "ADVANCE_DAYS", days: 1 });
-  assert.ok(animeNext.users.collector > controlNext.users.collector);
-  assert.ok(animeNext.users.casual > tvNext.users.casual);
+  assert.equal(
+    animeNext.users.collector > controlNext.users.collector,
+    animeNext.operations.records[0].outcome === "success",
+  );
 
   const lowTrust = structuredClone(control);
   lowTrust.purchaseTrust = 50;
@@ -2238,29 +2892,27 @@ test("marketing and store tours affect users and trust from the following day", 
   });
   const tourNext = reduceGame(tour, { type: "ADVANCE_DAYS", days: 1 });
   const lowTrustNext = reduceGame(lowTrust, { type: "ADVANCE_DAYS", days: 1 });
-  assert.ok(tourNext.purchaseTrust > lowTrustNext.purchaseTrust);
+  assert.equal(
+    tourNext.purchaseTrust > lowTrustNext.purchaseTrust,
+    tourNext.operations.records[0].outcome === "success",
+  );
 });
 
-test("direct-revenue business actions project a positive cash contribution", () => {
+test("low-risk direct revenue needs scale while risky events break the saturation cap", () => {
   const state = createCampaignStart(21_099);
   const cases = [
-    { type: "store-tour", dailyGross: 0.086, projectedCash: 0.0353 },
-    { type: "beginner-camp", dailyGross: 0.094, projectedCash: 0.0211 },
-    { type: "local-league", dailyGross: 0.081, projectedCash: 0.0443 },
-    { type: "reprint-campaign", dailyGross: 0.065, projectedCash: 0.074 },
-    { type: "collector-fair", dailyGross: 0.17, projectedCash: 0.1116 },
+    "store-tour",
+    "beginner-camp",
+    "local-league",
+    "reprint-campaign",
+    "collector-fair",
   ] as const;
 
-  for (const fixture of cases) {
-    assert.equal(
-      getBusinessActionDailyGrossRevenue(state, fixture.type),
-      fixture.dailyGross,
-      fixture.type,
-    );
-    assert.equal(
-      getBusinessActionProjectedDirectCash(state, fixture.type),
-      fixture.projectedCash,
-      fixture.type,
+  for (const actionType of cases) {
+    assert.ok(getBusinessActionDailyGrossRevenue(state, actionType) > 0);
+    assert.ok(
+      getBusinessActionProjectedDirectCash(state, actionType) < 0,
+      `${actionType} should not print cash at the starting audience`,
     );
   }
 
@@ -2268,29 +2920,27 @@ test("direct-revenue business actions project a positive cash contribution", () 
     getBusinessActionDailyGrossRevenue(state, "championship", "backlash"),
     0,
   );
-  assert.equal(
-    getBusinessActionDailyGrossRevenue(state, "championship", "success"),
-    0.47,
-  );
-  assert.equal(
-    getBusinessActionProjectedDirectCash(state, "championship", "success"),
-    0.2528,
+  assert.ok(
+    getBusinessActionDailyGrossRevenue(state, "championship", "success") >
+      Math.max(
+        ...cases.map((actionType) =>
+          getBusinessActionDailyGrossRevenue(state, actionType),
+        ),
+      ),
   );
 
   assert.equal(BUSINESS_ACTION_DAILY_REVENUE_CAP, 0.18);
-  assert.equal(
+  assert.ok(
     getStackedBusinessActionDailyGrossRevenue(state, [
       { type: "store-tour", outcome: "active" },
       { type: "collector-fair", outcome: "active" },
-    ]),
-    0.18,
+    ]) <= BUSINESS_ACTION_DAILY_REVENUE_CAP,
   );
-  assert.equal(
+  assert.ok(
     getStackedBusinessActionDailyGrossRevenue(state, [
       { type: "championship", outcome: "success" },
       { type: "collector-fair", outcome: "active" },
-    ]),
-    0.64,
+    ]) > BUSINESS_ACTION_DAILY_REVENUE_CAP,
   );
 
   const largeAudience = structuredClone(state);
@@ -2304,7 +2954,9 @@ test("direct-revenue business actions project a positive cash contribution", () 
     0.1564,
   );
 
-  const overlapping = reduceGame(state, {
+  const operatingState = createInitialGame(21_099);
+  operatingState.finance.cash = 10;
+  const overlapping = reduceGame(operatingState, {
     type: "RUN_BUSINESS_ACTION",
     action: "collector-fair",
   });
@@ -2341,42 +2993,53 @@ test("recurring business events generate revenue and grow their intended audienc
         10_000,
       fixture.type,
     );
-    assert.deepEqual(launched.operations.records.at(-1), {
-      id: "business-action-2",
-      type: fixture.type,
-      startedDay: 46,
-      endsDay:
-        46 +
+    const launchedRecord = launched.operations.records.at(-1)!;
+    assert.equal(launchedRecord.id, "business-action-2");
+    assert.equal(launchedRecord.type, fixture.type);
+    assert.equal(launchedRecord.startedDay, 46);
+    assert.equal(
+      launchedRecord.endsDay,
+      46 +
         (fixture.type === "local-league"
           ? 21
           : fixture.type === "reprint-campaign"
             ? 30
             : 14),
-      cost: fixture.cost,
-      outcome: "active",
-    });
+    );
+    assert.equal(launchedRecord.cost, fixture.cost);
+    assert.equal(launchedRecord.outcome, "active");
+    assert.ok(launchedRecord.risk !== undefined);
 
     const active = reduceGame(launched, { type: "ADVANCE_DAYS", days: 1 });
     const baseline = reduceGame(control, { type: "ADVANCE_DAYS", days: 1 });
-    assert.ok(
+    const succeeded = active.operations.records.at(-1)!.outcome === "success";
+    assert.equal(
       active.users[fixture.segment] > baseline.users[fixture.segment],
-      `${fixture.type} should grow ${fixture.segment}`,
+      succeeded,
+      `${fixture.type} audience direction should match its result`,
     );
-    assert.ok(
+    assert.equal(
       active.finance.today > baseline.finance.today,
-      `${fixture.type} should add event revenue`,
+      succeeded,
+      `${fixture.type} revenue direction should match its result`,
     );
-    assert.ok(
+    assert.equal(
       active.purchaseTrust > baseline.purchaseTrust,
-      `${fixture.type} should recover purchase trust`,
+      succeeded,
+      `${fixture.type} trust direction should match its result`,
     );
   }
 });
 
 test("championships turn a healthy environment into growth and a hostile one into churn", () => {
   function prepare(seed: number, hostile: boolean): State {
-    const state = createCampaignStart(seed);
+    let state = createCampaignStart(seed);
     state.finance.cash = 10;
+    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 29 });
+    state = reduceGame(state, {
+      type: "SUBMIT_RELEASE",
+      selections: getPrologueReleaseSelections(state),
+    });
     if (hostile) {
       const [topId, ...otherIds] = state.activeThemeIds;
       state.themes[topId].share = 0.44;
@@ -2395,43 +3058,31 @@ test("championships turn a healthy environment into growth and a hostile one int
     return state;
   }
 
-  let selectedSeed: number | undefined;
-  let healthyResult: State | undefined;
-  let hostileResult: State | undefined;
-  for (let seed = 1; seed <= 200; seed += 1) {
-    const healthy = reduceGame(
-      reduceGame(prepare(seed, false), {
-        type: "RUN_BUSINESS_ACTION",
-        action: "championship",
-      }),
-      { type: "ADVANCE_DAYS", days: 1 },
-    );
-    const hostile = reduceGame(
-      reduceGame(prepare(seed, true), {
-        type: "RUN_BUSINESS_ACTION",
-        action: "championship",
-      }),
-      { type: "ADVANCE_DAYS", days: 1 },
-    );
-    if (
-      healthy.operations.records[0].outcome === "success" &&
-      hostile.operations.records[0].outcome === "backlash"
-    ) {
-      selectedSeed = seed;
-      healthyResult = healthy;
-      hostileResult = hostile;
-      break;
-    }
-  }
-  assert.ok(selectedSeed !== undefined && healthyResult && hostileResult);
-  assert.ok(getChampionshipBacklashRisk(prepare(selectedSeed, false)) < 0.2);
-  assert.ok(getChampionshipBacklashRisk(prepare(selectedSeed, true)) > 0.8);
+  const seed = 21_104;
+  const healthyBase = prepare(seed, false);
+  const hostileBase = prepare(seed, true);
+  const healthyResult = reduceGame(
+    reduceGame(healthyBase, {
+      type: "RUN_BUSINESS_ACTION",
+      action: "championship",
+    }),
+    { type: "ADVANCE_DAYS", days: 1 },
+  );
+  const hostileResult = reduceGame(
+    reduceGame(hostileBase, {
+      type: "RUN_BUSINESS_ACTION",
+      action: "championship",
+    }),
+    { type: "ADVANCE_DAYS", days: 1 },
+  );
+  assert.equal(healthyResult.operations.records.at(-1)?.outcome, "success");
+  assert.equal(hostileResult.operations.records.at(-1)?.outcome, "backlash");
 
-  const healthyControl = reduceGame(prepare(selectedSeed, false), {
+  const healthyControl = reduceGame(healthyBase, {
     type: "ADVANCE_DAYS",
     days: 1,
   });
-  const hostileControl = reduceGame(prepare(selectedSeed, true), {
+  const hostileControl = reduceGame(hostileBase, {
     type: "ADVANCE_DAYS",
     days: 1,
   });
@@ -2440,7 +3091,7 @@ test("championships turn a healthy environment into growth and a hostile one int
   assert.ok(hostileResult.users.casual < hostileControl.users.casual);
 
   const replay = reduceGame(
-    reduceGame(prepare(selectedSeed, true), {
+    reduceGame(prepare(seed, true), {
       type: "RUN_BUSINESS_ACTION",
       action: "championship",
     }),
@@ -2535,7 +3186,7 @@ test("business actions fit inside the settlement window and close before the fin
   }
 });
 
-test("strategic projects snapshot their risk, use one campaign slot, and pay only on success", () => {
+test("strategic projects snapshot context, use one campaign slot, and pay only on success", () => {
   const tooEarly = createInitialGame(21_007);
   assert.equal(
     getBusinessActionAvailability(tooEarly, "season-overhaul").available,
@@ -2554,7 +3205,7 @@ test("strategic projects snapshot their risk, use one campaign slot, and pay onl
   });
   const launchedRecord = launched.operations.records.at(-1)!;
   assert.equal(launchedRecord.outcome, "active");
-  assert.equal(launchedRecord.risk, profile.risk);
+  assert.equal(launchedRecord.risk, undefined);
   assert.deepEqual(launchedRecord.riskContext, profile.context);
   assert.match(
     getBusinessActionAvailability(launched, "global-launch").reason ?? "",
@@ -2578,6 +3229,7 @@ test("strategic projects snapshot their risk, use one campaign slot, and pay onl
   assert.equal(failureRecord.cashReturn, undefined);
   assert.ok(success.finance.cash - failure.finance.cash > 6);
   assert.ok(success.purchaseTrust - failure.purchaseTrust > 14);
+
 });
 
 test("strategic failure odds respond to the environment, trust, and recent release state", () => {

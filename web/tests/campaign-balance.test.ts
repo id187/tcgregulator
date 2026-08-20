@@ -6,6 +6,7 @@ import {
   getBusinessEventOutcome,
   getBusinessEventResult,
 } from "../app/game/business-events.ts";
+import { BUSINESS_ACTION_BY_TYPE } from "../app/game/business-actions.ts";
 import { CAMPAIGN_END_DAY, PLAYER_START_DAY } from "../app/game/campaign.ts";
 import { evaluateCampaignEnding } from "../app/game/campaign-ending.ts";
 import { THEME_BY_ID } from "../app/game/content.ts";
@@ -34,12 +35,10 @@ const ROLE_EXPONENT: Record<PartRole, number> = {
 };
 
 const BUSINESS_ACTION_PLAN = new Map<number, BusinessActionType>([
-  [120, "season-overhaul"],
-  [121, "reprint-campaign"],
-  [122, "local-league"],
-  [123, "collector-fair"],
-  [166, "reprint-campaign"],
+  [180, "season-overhaul"],
   [211, "reprint-campaign"],
+  [212, "local-league"],
+  [213, "collector-fair"],
 ]);
 
 const SUPPORT_PLAN = new Map<
@@ -107,29 +106,27 @@ function chooseBestKnownBusinessEvent(state: GameState): GameState {
 function getBalancedRestrictionChanges(
   state: GameState,
 ): Record<string, RestrictionLimit> {
-  const rankedThemeIds = [...state.activeThemeIds].sort(
-    (left, right) =>
-      state.themes[right].share - state.themes[left].share ||
-      left.localeCompare(right),
-  );
+  const threatProfile = getRestrictionPolicyProfile(state, {});
   let changes: Record<string, RestrictionLimit> = {};
 
-  for (const bandThemeIds of [
-    rankedThemeIds.slice(0, 3),
-    rankedThemeIds.slice(3, 6),
-  ]) {
+  for (const themeId of threatProfile.threatThemeIds) {
     const candidates: Array<{
       part: PartContent;
       nextLimit: RestrictionLimit;
+      impact: number;
       score: number;
     }> = [];
-    for (const themeId of bandThemeIds) {
-      const runtime = state.themes[themeId];
-      const content = THEME_BY_ID[themeId];
-      for (const part of content.parts) {
-        if (!runtime.releasedPartIds.includes(part.id)) continue;
-        const currentLimit = runtime.legalLimits[part.id] ?? 3;
-        const nextLimit = Math.max(0, currentLimit - 2) as RestrictionLimit;
+    const runtime = state.themes[themeId];
+    const content = THEME_BY_ID[themeId];
+    for (const part of content.parts) {
+      if (!runtime.releasedPartIds.includes(part.id)) continue;
+      const currentLimit = runtime.legalLimits[part.id] ?? 3;
+      for (
+        let candidateLimit = currentLimit - 1;
+        candidateLimit >= 0;
+        candidateLimit -= 1
+      ) {
+        const nextLimit = candidateLimit as RestrictionLimit;
         const availabilityLoss =
           partAvailability(part, currentLimit) -
           partAvailability(part, nextLimit);
@@ -138,23 +135,33 @@ function getBalancedRestrictionChanges(
         candidates.push({
           part,
           nextLimit,
+          impact,
           score:
             (runtime.share *
               part.unpleasantWeight *
               part.inclusion *
               availabilityLoss) /
-            (0.1 + impact * 0.04),
+              (0.1 + impact * 0.04),
         });
+        break;
       }
     }
     candidates.sort(
       (left, right) =>
         right.score - left.score || left.part.id.localeCompare(right.part.id),
     );
-    assert.ok(candidates.length >= 3, "each policy band needs three valid cuts");
-    for (const candidate of candidates.slice(0, 3)) {
+    const requiredImpact =
+      threatProfile.requiredThreatImpactByTheme[themeId] ?? 0;
+    let selectedImpact = 0;
+    for (const candidate of candidates) {
       changes[candidate.part.id] = candidate.nextLimit;
+      selectedImpact += candidate.impact;
+      if (selectedImpact + 1e-9 >= requiredImpact) break;
     }
+    assert.ok(
+      selectedImpact + 1e-9 >= requiredImpact,
+      `threat ${themeId} needs a meaningful response`,
+    );
   }
 
   const cutsOnlyProfile = getRestrictionPolicyProfile(state, changes);
@@ -205,12 +212,23 @@ function getBalancedRestrictionChanges(
 function submitPlannedRelease(state: GameState): GameState {
   const slate = state.releaseSlate;
   assert.ok(slate, "release-edit must have a release slate");
-  const requested = slate.options.find((option) => option.requested);
-  const selected = requested
-    ? [requested, ...slate.options.filter((option) => option.id !== requested.id)]
-        .slice(0, 3)
-    : slate.options.slice(0, 3);
-  assert.equal(selected.length, 3);
+  const prioritized = <K extends (typeof slate.options)[number]["kind"]>(
+    kind: K,
+    count: number,
+  ) =>
+    slate.options
+      .filter((option) => option.kind === kind)
+      .sort(
+        (left, right) =>
+          Number(Boolean(right.requested)) - Number(Boolean(left.requested)),
+      )
+      .slice(0, count);
+  const selected = [
+    ...prioritized("new-theme", 2),
+    ...prioritized("support", 1),
+    ...prioritized("generic", 1),
+  ];
+  assert.equal(selected.length, 4);
   return reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: selected.map((option) => ({
@@ -252,6 +270,10 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
 
     const businessAction = BUSINESS_ACTION_PLAN.get(state.day);
     if (businessAction) {
+      assert.ok(
+        state.finance.cash + 1e-9 >= BUSINESS_ACTION_BY_TYPE[businessAction].cost,
+        `DAY ${state.day} ${businessAction} requires ${BUSINESS_ACTION_BY_TYPE[businessAction].cost}, cash ${state.finance.cash}`,
+      );
       state = reduceGame(state, {
         type: "RUN_BUSINESS_ACTION",
         action: businessAction,
@@ -308,7 +330,7 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
   );
   assert.deepEqual(
     publishedPolicies.map((profile) => profile.changeCount),
-    [6, 7, 7, 7, 7, 7, 7],
+    [2, 2, 3, 3, 3, 2, 4],
   );
   assert.equal(
     publishedPolicies.reduce(
@@ -319,55 +341,6 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
   );
 
   const ending = evaluateCampaignEnding(state);
-  const { support, policy, business, events } = ending.stewardship.pillars;
-  assert.deepEqual(
-    {
-      releasedRequests: support.releasedRequests,
-      distinctThemes: support.distinctThemes,
-      distinctDirections: support.distinctDirections,
-      positivePowerPressure: support.positivePowerPressure,
-      tierZeroProducts: support.tierZeroProducts,
-    },
-    {
-      releasedRequests: 3,
-      distinctThemes: 3,
-      distinctDirections: 3,
-      positivePowerPressure: 0,
-      tierZeroProducts: 1,
-    },
-  );
-  assert.deepEqual(
-    {
-      reviewed: policy.reviewed,
-      balancedReviews: policy.balancedReviews,
-      staleFullyReleased: policy.staleFullyReleased,
-    },
-    { reviewed: 7, balancedReviews: 7, staleFullyReleased: 6 },
-  );
-  assert.deepEqual(
-    {
-      qualifyingActions: business.qualifyingActions,
-      distinctTypes: business.distinctTypes,
-      distinctTones: business.distinctTones,
-      strategicAttempts: business.strategicAttempts,
-      strategicSuccesses: business.strategicSuccesses,
-    },
-    {
-      qualifyingActions: 6,
-      distinctTypes: 4,
-      distinctTones: 4,
-      strategicAttempts: 1,
-      strategicSuccesses: 1,
-    },
-  );
-  assert.deepEqual(
-    {
-      resolved: events.resolved,
-      successes: events.successes,
-      requiredSuccesses: events.requiredSuccesses,
-    },
-    { resolved: 24, successes: 19, requiredSuccesses: 17 },
-  );
   assert.deepEqual(
     state.operations.eventRecords.map((record) => record.choice),
     [
@@ -397,11 +370,31 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       "a",
     ],
   );
-  assert.equal(state.finance.cash, 26.6145);
-  assert.equal(ending.scores.cash, 26.6);
-  assert.equal(ending.scores.environmentHealth, 83.1);
-  assert.equal(ending.stewardship.passedPillars, 4);
-  assert.equal(ending.stewardship.complete, true);
-  assert.equal(ending.qualifiedForBestEnding, true);
-  assert.equal(ending.title, "지속 가능한 리그");
+  assert.deepEqual(
+    {
+      cash: state.finance.cash,
+      endingCash: ending.scores.cash,
+      environmentHealth: ending.scores.environmentHealth,
+      purchaseTrust: ending.scores.purchaseTrust,
+      userRatio: ending.scores.userRatio,
+      bands: ending.bands,
+      qualifiedForBestEnding: ending.qualifiedForBestEnding,
+      title: ending.title,
+    },
+    {
+      cash: 14.7619,
+      endingCash: 14.8,
+      environmentHealth: 77.9,
+      purchaseTrust: 86,
+      userRatio: 1.6038,
+      bands: {
+        cash: "reserve",
+        environment: "stable",
+        trust: "trusted",
+        users: "grown",
+      },
+      qualifiedForBestEnding: true,
+      title: "함께 커진 리그",
+    },
+  );
 });

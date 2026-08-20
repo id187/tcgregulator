@@ -250,7 +250,10 @@ function latestProductAge(
   for (const batch of state.releaseHistory) {
     if (
       batch.day <= decisionDay &&
-      batch.products.some((product) => product.themeId === themeId)
+      batch.products.some(
+        (product) =>
+          product.kind !== "generic" && product.themeId === themeId,
+      )
     ) {
       latestDay = latestDay === null ? batch.day : Math.max(latestDay, batch.day);
     }
@@ -870,9 +873,9 @@ function buildSignals(
     )[0];
     add("balanced", 76 + Math.min(20, profile.totalImpact * 0.12), target, {
       stakeholders: ["competitive", "casual", "collector", "regulator"],
-      title: "상위권·중위권·장기 제한을 함께 본 균형안",
-      supportingArgument: `상위권 ${profile.upperMeaningfulCuts}건, Tier 2 ${profile.tier2MeaningfulCuts}건을 실질 조정하고 오래된 제한의 순환 조건도 충족했습니다.`,
-      opposingArgument: "범위가 균형적이어도 각 카드의 개별 충격과 대체재 이동은 사후 관찰이 필요합니다.",
+      title: "실제 위협과 장기 제한을 함께 본 균형안",
+      supportingArgument: `판정된 위협 ${profile.threatThemeIds.length}개를 빠짐없이 다루고, 압력이 낮은 테마를 미리 자르지 않으면서 오래된 제한의 순환 조건도 충족했습니다.`,
+      opposingArgument: "대상 선정이 타당해도 각 카드의 보유가치 충격과 대체재 이동은 사후 관찰이 필요합니다.",
       recommendedLimit: target.nextLimit,
     });
   }

@@ -1,7 +1,7 @@
 import { PLAYER_START_DAY } from "./campaign.ts";
 
 /** Monetary values are expressed in eok won (KRW 100,000,000). */
-export const MONTHLY_BASE_OPERATING_COST = 1.05;
+export const MONTHLY_BASE_OPERATING_COST = 1.45;
 export const MONTHLY_OPERATING_COST_PER_USER_KRW = 2_500;
 export const OPERATING_COST_MONTH_DAYS = 30;
 export const OPERATING_COST_START_DAY = PLAYER_START_DAY + 1;

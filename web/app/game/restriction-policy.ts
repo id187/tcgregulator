@@ -4,6 +4,12 @@ import {
   THEMES,
   THEME_BY_ID,
 } from "./content.ts";
+import { FIRST_BAN_DAY } from "./campaign.ts";
+import {
+  getGenericCard,
+  type GenericCardId,
+  type GenericCardRole,
+} from "./generic-card-catalog.ts";
 import type {
   CommunityEvent,
   DailyHistory,
@@ -46,6 +52,12 @@ export interface RestrictionPolicyProfile {
   recentProductChanges: number;
   roleCounts: Record<PartRole, number>;
   totalImpact: number;
+  threatThemeIds: ThemeId[];
+  threatPressureByTheme: Partial<Record<ThemeId, number>>;
+  requiredThreatImpactByTheme: Partial<Record<ThemeId, number>>;
+  appliedThreatImpactByTheme: Partial<Record<ThemeId, number>>;
+  unaddressedThreatThemeIds: ThemeId[];
+  preemptiveCutThemeIds: ThemeId[];
   coverageComplete: boolean;
   staleReliefComplete: boolean;
 }
@@ -86,6 +98,8 @@ type RestrictionDirection = "tighten" | "loosen" | "unchanged";
 type RestrictionChangeRecord = {
   themeId: ThemeId;
   part: PartContent;
+  genericCardId?: GenericCardId;
+  countsForThreatCoverage: boolean;
   previousLimit: RestrictionLimit;
   nextLimit: RestrictionLimit;
   direction: RestrictionDirection;
@@ -116,9 +130,31 @@ const PART_BY_ID = new Map(
   ),
 );
 
+const GENERIC_ROLE_TO_PART_ROLE: Record<GenericCardRole, PartRole> = {
+  enabler: "starter1",
+  extender: "starter2",
+  interaction: "bridge",
+  defense: "bridge",
+  recovery: "recursion",
+  payoff: "finisher",
+};
+
+const THREAT_MINIMUM_SHARE = 0.03;
+const THREAT_ADOPTION_START = 0.12;
+const THREAT_ADOPTION_RANGE = 0.12;
+const THREAT_WIN_RATE_START = 0.51;
+const THREAT_WIN_RATE_RANGE = 0.05;
+const THREAT_PRESSURE_THRESHOLD = 1;
+const THREAT_BASE_REQUIRED_IMPACT = 0.75;
+const THREAT_PRESSURE_REQUIRED_IMPACT = 0.9;
+
 function round(value: number, digits = 6): number {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value));
 }
 
 function partAvailability(part: PartContent, limit: RestrictionLimit): number {
@@ -147,6 +183,7 @@ function makeChangeRecord(
   return {
     themeId,
     part,
+    countsForThreatCoverage: true,
     previousLimit,
     nextLimit,
     direction,
@@ -156,18 +193,65 @@ function makeChangeRecord(
   };
 }
 
-function rankedThemeIds(
+function makeGenericChangeRecord(
+  state: GameState,
+  themeId: ThemeId,
+  genericCardId: GenericCardId,
+  previousLimit: RestrictionLimit,
+  nextLimit: RestrictionLimit,
+): RestrictionChangeRecord | null {
+  const card = getGenericCard(genericCardId);
+  if (!card) return null;
+  const part: PartContent = {
+    id: card.id,
+    name: card.name,
+    role: GENERIC_ROLE_TO_PART_ROLE[card.role],
+    inclusion: clamp(card.appeal / 100, 0.5, 0.95),
+    averageCopies: 3,
+    preferredCopies: 3,
+    powerWeight: clamp((card.basePower - 45) / 2, 3, 22),
+    unpleasantWeight: card.unpleasantness / 10,
+    tags: ["외부 사용", "범용"],
+  };
+  const record = makeChangeRecord(
+    state.themes[themeId] ? themeId : state.currentTopThemeId,
+    part,
+    previousLimit,
+    nextLimit,
+  );
+  return {
+    ...record,
+    genericCardId,
+    // A generic cut is counted and scored, but must not masquerade as a
+    // theme-specific hit when checking whether every measured threat was cut.
+    countsForThreatCoverage: false,
+  };
+}
+
+function decisionSnapshot(
   state: GameState,
   decisionDay: number,
   source: "draft" | "published",
-): ThemeId[] {
-  const snapshot =
+): DailyHistory | undefined {
+  return (
     state.history.find((entry) => entry.day === decisionDay) ??
     (source === "published"
       ? [...state.history]
           .filter((entry) => entry.day <= decisionDay)
           .sort((left, right) => right.day - left.day)[0]
-      : undefined);
+      : undefined)
+  );
+}
+
+function decisionMeta(
+  state: GameState,
+  decisionDay: number,
+  source: "draft" | "published",
+): {
+  shares: Readonly<Record<ThemeId, number>>;
+  winRates: Readonly<Record<ThemeId, number>>;
+} {
+  const snapshot = decisionSnapshot(state, decisionDay, source);
   const shares = snapshot
     ? snapshot.shares
     : source === "draft"
@@ -178,6 +262,24 @@ function rankedThemeIds(
           ]),
         )
       : {};
+  const winRates = snapshot?.winRates ??
+    (source === "draft"
+      ? Object.fromEntries(
+          state.activeThemeIds.map((themeId) => [
+            themeId,
+            state.themes[themeId].winRate,
+          ]),
+        )
+      : {});
+  return { shares, winRates };
+}
+
+function rankedThemeIds(
+  state: GameState,
+  decisionDay: number,
+  source: "draft" | "published",
+): ThemeId[] {
+  const { shares } = decisionMeta(state, decisionDay, source);
   return Object.entries(shares)
     .filter(
       ([themeId, share]) =>
@@ -188,6 +290,45 @@ function rankedThemeIds(
         rightShare - leftShare || leftId.localeCompare(rightId),
     )
     .map(([themeId]) => themeId);
+}
+
+function restrictionThreats(
+  state: GameState,
+  decisionDay: number,
+  source: "draft" | "published",
+): Array<{ themeId: ThemeId; pressure: number }> {
+  const { shares, winRates } = decisionMeta(state, decisionDay, source);
+  return Object.entries(shares)
+    .flatMap(([themeId, share]): Array<{
+      themeId: ThemeId;
+      pressure: number;
+      share: number;
+    }> => {
+      if (!THEME_BY_ID[themeId] || !Number.isFinite(share)) return [];
+      const winRate = winRates[themeId] ?? 0.5;
+      if (!Number.isFinite(winRate) || share < THREAT_MINIMUM_SHARE) return [];
+      const adoptionPressure = clamp(
+        (share - THREAT_ADOPTION_START) / THREAT_ADOPTION_RANGE,
+        0,
+        1,
+      );
+      const winRatePressure = clamp(
+        (winRate - THREAT_WIN_RATE_START) / THREAT_WIN_RATE_RANGE,
+        0,
+        1,
+      );
+      const pressure = adoptionPressure + winRatePressure;
+      return pressure + 1e-9 >= THREAT_PRESSURE_THRESHOLD
+        ? [{ themeId, pressure, share }]
+        : [];
+    })
+    .sort(
+      (left, right) =>
+        right.pressure - left.pressure ||
+        right.share - left.share ||
+        left.themeId.localeCompare(right.themeId),
+    )
+    .map(({ themeId, pressure }) => ({ themeId, pressure }));
 }
 
 function tierBandByTheme(
@@ -249,7 +390,10 @@ function latestProductAge(
   for (const batch of state.releaseHistory) {
     if (
       batch.day <= decisionDay &&
-      batch.products.some((product) => product.themeId === themeId)
+      batch.products.some(
+        (product) =>
+          product.kind !== "generic" && product.themeId === themeId,
+      )
     ) {
       latestDay = latestDay === null ? batch.day : Math.max(latestDay, batch.day);
     }
@@ -264,17 +408,11 @@ function staleRestrictionKeys(
   source: "draft" | "published",
 ): Set<string> {
   const keys = new Set<string>();
-  const decisionSnapshot =
-    state.history.find((entry) => entry.day === decisionDay) ??
-    (source === "published"
-      ? [...state.history]
-          .filter((entry) => entry.day <= decisionDay)
-          .sort((left, right) => right.day - left.day)[0]
-      : undefined);
+  const decisionSnapshotAtDay = decisionSnapshot(state, decisionDay, source);
   const activeThemeIds =
     source === "published"
-      ? decisionSnapshot
-        ? Object.keys(decisionSnapshot.shares)
+      ? decisionSnapshotAtDay
+        ? Object.keys(decisionSnapshotAtDay.shares)
         : []
       : state.activeThemeIds;
   for (const themeId of activeThemeIds) {
@@ -336,20 +474,33 @@ function buildProfile(
     loosen: records.filter((record) => record.direction === "loosen").length,
     unchanged: records.filter((record) => record.direction === "unchanged").length,
   };
-  const affectedThemeIds = [...new Set(records.map((record) => record.themeId))];
+  const affectedThemeIds = [
+    ...new Set(
+      records
+        .filter((record) => record.countsForThreatCoverage)
+        .map((record) => record.themeId),
+    ),
+  ];
   const affectedThemeCount = affectedThemeIds.length;
   const scope: RestrictionPolicyScope =
     actualChanges.length === 0
       ? "none"
       : actualChanges.length === 1
         ? "single-card"
-        : new Set(actualChanges.map((record) => record.themeId)).size === 1
+        : new Set(
+              actualChanges.map((record) =>
+                record.genericCardId ?? record.themeId
+              ),
+            ).size === 1
           ? "single-theme"
           : "multi-theme";
   const bandByTheme = tierBandByTheme(state, decisionDay, source);
   const meaningfulCuts = actualChanges.filter((record) => record.meaningfulCut);
+  const threatCoverageCuts = meaningfulCuts.filter(
+    (record) => record.countsForThreatCoverage,
+  );
   const countBand = (band: RestrictionTierBand) =>
-    meaningfulCuts.filter((record) => bandByTheme.get(record.themeId) === band).length;
+    threatCoverageCuts.filter((record) => bandByTheme.get(record.themeId) === band).length;
   const upperMeaningfulCuts = countBand("upper");
   const tier2MeaningfulCuts = countBand("tier2");
   const lowerMeaningfulCuts = countBand("lower");
@@ -380,7 +531,54 @@ function buildProfile(
       )
       .map((record) => record.part.id),
   ).size;
-  const coverageComplete = upperMeaningfulCuts >= 2 && tier2MeaningfulCuts >= 2;
+  const threats = restrictionThreats(
+    state,
+    decisionDay,
+    source,
+  );
+  const threatThemeIds = threats.map(({ themeId }) => themeId);
+  const threatPressureByTheme = Object.fromEntries(
+    threats.map(({ themeId, pressure }) => [themeId, round(pressure)]),
+  );
+  const requiredThreatImpactByTheme = Object.fromEntries(
+    threats.map(({ themeId, pressure }) => [
+      themeId,
+      round(
+        THREAT_BASE_REQUIRED_IMPACT +
+          THREAT_PRESSURE_REQUIRED_IMPACT * pressure,
+      ),
+    ]),
+  );
+  const appliedThreatImpactByTheme = Object.fromEntries(
+    threats.map(({ themeId }) => [
+      themeId,
+      round(
+        threatCoverageCuts
+          .filter((record) => record.themeId === themeId)
+          .reduce((sum, record) => sum + record.impact, 0),
+      ),
+    ]),
+  );
+  const threatThemeSet = new Set(threatThemeIds);
+  const cutThemeIds = new Set(
+    threatCoverageCuts.map((record) => record.themeId),
+  );
+  const unaddressedThreatThemeIds = threatThemeIds.filter(
+    (themeId) =>
+      (appliedThreatImpactByTheme[themeId] ?? 0) + 1e-9 <
+      (requiredThreatImpactByTheme[themeId] ?? Number.POSITIVE_INFINITY),
+  );
+  const preemptiveCutThemeIds = [...cutThemeIds]
+    .filter((themeId) => !threatThemeSet.has(themeId))
+    .sort((left, right) => left.localeCompare(right));
+  const threatCoverageComplete =
+    unaddressedThreatThemeIds.length === 0 &&
+    preemptiveCutThemeIds.length === 0;
+  // DAY 45 is an authored tutorial contract: its fixed two-upper/two-chaser
+  // shallow list teaches the editing surface before threat snapshots exist.
+  const coverageComplete = decisionDay === FIRST_BAN_DAY
+    ? upperMeaningfulCuts >= 2 && tier2MeaningfulCuts >= 2
+    : threatCoverageComplete;
   const staleReliefComplete = staleKeys.size === 0 || staleFullyReleased >= 1;
   const quality: RestrictionPolicyQuality =
     coverageComplete && staleReliefComplete
@@ -411,13 +609,30 @@ function buildProfile(
       record.part.tags.includes("외부 사용"),
     ).length,
     recentProductChanges: actualChanges.filter((record) => {
-      const age = latestProductAge(state, decisionDay, record.themeId);
+      const age = record.genericCardId
+        ? (() => {
+            const release = state.releaseHistory.find((batch) =>
+              batch.products.some(
+                (product) =>
+                  product.kind === "generic" &&
+                  product.genericCardId === record.genericCardId,
+              ),
+            );
+            return release ? decisionDay - release.day : null;
+          })()
+        : latestProductAge(state, decisionDay, record.themeId);
       return age !== null && age <= 30;
     }).length,
     roleCounts,
     totalImpact: round(
       actualChanges.reduce((sum, record) => sum + record.impact, 0),
     ),
+    threatThemeIds,
+    threatPressureByTheme,
+    requiredThreatImpactByTheme,
+    appliedThreatImpactByTheme,
+    unaddressedThreatThemeIds,
+    preemptiveCutThemeIds,
     coverageComplete,
     staleReliefComplete,
   };
@@ -431,7 +646,21 @@ export function getRestrictionPolicyProfile(
   const records: RestrictionChangeRecord[] = [];
   for (const [partId, nextLimit] of Object.entries(changes)) {
     const found = PART_BY_ID.get(partId);
-    if (!found) continue;
+    if (!found) {
+      const genericCard = getGenericCard(partId);
+      if (!genericCard || state.genericLimits[genericCard.id] === undefined) {
+        continue;
+      }
+      const genericRecord = makeGenericChangeRecord(
+        state,
+        state.currentTopThemeId,
+        genericCard.id,
+        state.genericLimits[genericCard.id] ?? 3,
+        nextLimit,
+      );
+      if (genericRecord) records.push(genericRecord);
+      continue;
+    }
     const runtime = state.themes[found.themeId];
     if (!runtime?.releasedPartIds.includes(partId)) continue;
     const previousLimit = runtime.legalLimits[partId] ?? 3;
@@ -458,6 +687,25 @@ export function getPublishedRestrictionPolicyProfile(
     )
     .flatMap((event): RestrictionChangeRecord[] => {
       const found = event.partId ? PART_BY_ID.get(event.partId) : undefined;
+      if (
+        !found &&
+        event.genericCardId &&
+        Number.isInteger(event.previousValue) &&
+        Number.isInteger(event.value) &&
+        event.previousValue! >= 0 &&
+        event.previousValue! <= 3 &&
+        event.value! >= 0 &&
+        event.value! <= 3
+      ) {
+        const genericRecord = makeGenericChangeRecord(
+          state,
+          event.themeId,
+          event.genericCardId,
+          event.previousValue as RestrictionLimit,
+          event.value as RestrictionLimit,
+        );
+        return genericRecord ? [genericRecord] : [];
+      }
       if (
         !found ||
         event.previousValue! < 0 ||

@@ -40,6 +40,12 @@ export interface RecentPlacementReport {
   themes: Record<ThemeId, ThemePlacementReport>;
 }
 
+export interface RecentPlacementLeader {
+  themeId: ThemeId;
+  placements: number;
+  placementShare: number;
+}
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
@@ -275,6 +281,33 @@ export function getRecentPlacementReport(
     recordedDays: rows.length,
     totalPlacements,
     themes,
+  };
+}
+
+/**
+ * Returns the leader of the rolling top-cut window. Equal placement totals are
+ * resolved by stable theme ID so history order and object-key order cannot
+ * change a reported leader.
+ */
+export function getRecentPlacementLeader(
+  history: readonly PlacementHistoryEntry[],
+  seed: number,
+  endDay: number,
+  windowDays = PLACEMENT_WINDOW_DAYS,
+): RecentPlacementLeader | null {
+  const report = getRecentPlacementReport(history, seed, endDay, windowDays);
+  if (report.totalPlacements <= 0) return null;
+  const leader = (Object.entries(report.themes) as Array<
+    [ThemeId, ThemePlacementReport]
+  >).sort(
+    ([leftId, left], [rightId, right]) =>
+      right.placements - left.placements || leftId.localeCompare(rightId),
+  )[0];
+  if (!leader || leader[1].placements <= 0) return null;
+  return {
+    themeId: leader[0],
+    placements: leader[1].placements,
+    placementShare: leader[1].placementShare,
   };
 }
 

@@ -12,9 +12,21 @@ import {
   TrendIcon,
   UsersIcon,
 } from "./components/MetricGlyphs";
-import { BrandMark } from "./components/BrandMark";
+import { GuidedTutorialBar } from "./components/GuidedTutorialBar";
+import { HeaderReferenceTools } from "./components/HeaderReferenceTools";
+import { LotusSymbol } from "./components/LotusSymbol";
+import { CardMarketQuote } from "./components/CardMarketQuote";
+import { DailyNewsView, ImpactMessageStack } from "./components/NewsViews";
+import { ReleasePackCard } from "./components/ReleasePackCard";
+import { ReleaseDecisionPanel } from "./components/ReleaseDecisionPanel";
 import { ThemeEmblem } from "./components/ThemeEmblem";
-import { THEME_BY_ID, THEMES } from "./game/content";
+import { TitleScreen } from "./components/TitleScreen";
+import {
+  INITIAL_THEME_PART_COUNT,
+  SUPPORT_PARTS_PER_RELEASE,
+  THEME_BY_ID,
+  THEMES,
+} from "./game/content";
 import {
   CAMPAIGN_END_DAY,
   FIRST_BAN_DAY,
@@ -32,6 +44,8 @@ import {
   type CampaignCashBand,
   type CampaignEndingEvaluation,
   type CampaignEnvironmentBand,
+  type CampaignTrustBand,
+  type CampaignUserBand,
 } from "./game/campaign-ending";
 import {
   getMarketDivergenceLag,
@@ -48,16 +62,39 @@ import {
   type ReleaseReactionProfile,
 } from "./game/daily-community";
 import { getDailyCommunitySentiment } from "./game/community-sentiment";
-import { getChartEnvironmentHealth } from "./game/environment-health";
+import { rankCommunityPostsByLikes } from "./game/community-engagement";
 import {
-  isNamedMetaTier,
-  type MetaTier,
-} from "./game/meta-tiers";
+  getGenericCardMarketQuote,
+  getThemeCardMarketQuote,
+} from "./game/card-market";
+import { getImpactNewsRange, type DailyNewsItem } from "./game/daily-news";
+import {
+  buildDistributionEntries,
+  type DistributionMode,
+} from "./game/distribution-model";
+import {
+  getEnvironmentTargetGenericPool,
+  getIndirectSupportGenericPool,
+  getReprintCandidates,
+} from "./game/release-requests";
+import { getChartEnvironmentHealth } from "./game/environment-health";
+import { isInitialGenericReleaseBatch } from "./game/initial-generic-cards";
+import {
+  getPlayKeyword,
+  PLAY_KEYWORD_IDS,
+} from "./game/play-keywords";
+import {
+  getGenericCard,
+  type GenericCardCatalogEntry,
+  type GenericCardId,
+} from "./game/generic-card-catalog";
+import type { GenericCardMetaEntry } from "./game/generic-card-meta";
+import { getSupportNeglectPressure } from "./game/support-continuity";
 import {
   getPlacementTier,
+  getDailyTopCutPlacements,
   getRecentPlacementReport,
   getThemeDebutDay,
-  hasCompletePlacementSample,
   PLACEMENT_WINDOW_DAYS,
   type RecentPlacementReport,
   type ThemePlacementReport,
@@ -70,15 +107,19 @@ import {
   getBusinessActionDailyGrossRevenue,
   getBusinessActionProjectedDirectCash,
   getBusinessActionProjectedDirectGrossRevenue,
+  getBusinessActionSuccessProbability,
   getBusinessEnvironmentHealth,
   getBusinessEnvironmentHealthBreakdown,
-  getChampionshipBacklashRisk,
   getPackOddsDetectionRisk,
-  getStrategicProjectRiskProfile,
   isBusinessActionEffectActive,
+  isProbabilisticBusinessAction,
   isStrategicBusinessAction,
   type StrategicBusinessActionType,
 } from "./game/business-actions";
+import {
+  BUSINESS_CHALLENGE_BY_TYPE,
+  isChallengeBusinessAction,
+} from "./game/business-challenges";
 import {
   BUSINESS_EVENT_BY_TYPE,
   BUSINESS_STRATEGY_AXES,
@@ -90,12 +131,14 @@ import {
   createCampaignStart,
   createFirstBanGame,
   formatCommunityEvent,
-  getBanDemand,
   getCommittedSupportCount,
-  getExpectedTier,
+  getCurrentGenericMetaModel,
+  getEffectiveThemePlayKeywords,
   getNextBanDay,
   getNextReleaseDay,
-  getPrologueReleaseSelections,
+  getPrologueReleaseCommand,
+  getPrologueReleasePlan,
+  getProspectiveSupportKeyword,
   isBanDay,
   reduceGame,
 } from "./game/engine";
@@ -108,9 +151,11 @@ import {
   getRestrictionPolicyProfile,
   type RestrictionPolicyProfile,
 } from "./game/restriction-policy";
+import { getRestrictionChangeCapacity } from "./game/restriction-cap";
 import type {
   BusinessActionRecord,
   BusinessActionType,
+  BusinessChallengeMetric,
   BusinessEventChoice,
   BusinessEventRecord,
   CommunityEvent,
@@ -118,6 +163,7 @@ import type {
   GameState,
   PartRole,
   PowerAdjustment,
+  ReleaseSelection,
   RestrictionLimit,
   SupportDirection,
   ThemeContent,
@@ -127,20 +173,20 @@ import type {
 
 type TabId =
   | "distribution"
-  | "themes"
-  | "restrictions"
+  | "cards"
   | "releases"
   | "operations"
   | "community"
+  | "news"
   | "finance";
 
 const NAV_ITEMS: { id: TabId; label: string }[] = [
   { id: "distribution", label: "분포" },
-  { id: "themes", label: "테마" },
-  { id: "restrictions", label: "파츠·금제" },
-  { id: "releases", label: "발매 제안" },
+  { id: "cards", label: "카드" },
+  { id: "releases", label: "발매" },
   { id: "operations", label: "사업 운영" },
   { id: "community", label: "커뮤니티" },
+  { id: "news", label: "소식" },
   { id: "finance", label: "재무" },
 ];
 
@@ -394,6 +440,246 @@ const LIMIT_LABELS: Record<RestrictionLimit, string> = {
   3: "무제한",
 };
 
+function PlayKeywordChips({
+  theme,
+  game,
+  previewKeyword = null,
+}: {
+  theme: ThemeContent;
+  game?: GameState;
+  previewKeyword?: ReturnType<typeof getProspectiveSupportKeyword>;
+}) {
+  const effectiveKeywords = game && game.themes[theme.id]
+    ? getEffectiveThemePlayKeywords(game, theme.id)
+    : theme.playKeywords;
+  const keywords = previewKeyword && !effectiveKeywords.includes(previewKeyword)
+    ? [...effectiveKeywords, previewKeyword]
+    : effectiveKeywords;
+  return (
+    <span className="play-keyword-list" aria-label={`${theme.name} 플레이 키워드`}>
+      {keywords.map((keyword, index) => {
+        const entry = getPlayKeyword(keyword);
+        const gainedFromSupport = index >= theme.playKeywords.length;
+        const isPreview = keyword === previewKeyword;
+        return (
+          <span
+            className={`play-keyword-chip${gainedFromSupport ? " is-support" : ""}${isPreview ? " is-preview" : ""}`}
+            key={keyword}
+            title={`${gainedFromSupport ? isPreview ? "이번 지원 예정 · " : "지원으로 획득 · " : ""}${entry.description}`}
+          >
+            {isPreview ? "+ " : ""}{entry.label}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+function GenericCardMark({ compact = false }: { compact?: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`generic-card-mark${compact ? " compact" : ""}`}
+    >
+      <i />
+      <i />
+      <i />
+    </span>
+  );
+}
+
+function PlayKeywordGlossary({ expanded = false }: { expanded?: boolean }) {
+  return (
+    <details className="play-keyword-glossary" open={expanded}>
+      <summary>플레이 키워드 도감</summary>
+      <p className="play-keyword-guide">
+        테마는 기본 3종으로 시작하며 지원 발매마다 1종을 얻어 최대 6종으로
+        확장됩니다. 유불리 수치는 공개되지 않으므로 설명·입상 변화·커뮤니티 연구로
+        상성을 추론하십시오.
+      </p>
+      <div>
+        {PLAY_KEYWORD_IDS.map((keyword) => {
+          const entry = getPlayKeyword(keyword);
+          return (
+            <article key={keyword}>
+              <strong>{entry.label}</strong>
+              <p>{entry.description}</p>
+            </article>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
+function buildPageGenericMeta(game: GameState) {
+  return getCurrentGenericMetaModel(game);
+}
+
+type ReleasedGenericCardReference = {
+  card: GenericCardCatalogEntry;
+  releaseDay: number;
+  powerAdjustment: PowerAdjustment;
+  legalLimit: RestrictionLimit;
+  meta: GenericCardMetaEntry | null;
+};
+
+function getReleasedGenericCardReferences(
+  game: GameState,
+): ReleasedGenericCardReference[] {
+  const meta = buildPageGenericMeta(game);
+  const releases = new Map<
+    GenericCardId,
+    { day: number; powerAdjustment: PowerAdjustment }
+  >();
+  for (const batch of game.releaseHistory) {
+    for (const product of batch.products) {
+      if (product.kind !== "generic" || releases.has(product.genericCardId)) {
+        continue;
+      }
+      releases.set(product.genericCardId, {
+        day: batch.day,
+        powerAdjustment: product.powerAdjustment,
+      });
+    }
+  }
+  return [...releases.entries()]
+    .flatMap(([cardId, release]) => {
+      const card = getGenericCard(cardId);
+      if (!card) return [];
+      return [{
+        card,
+        releaseDay: release.day,
+        powerAdjustment: release.powerAdjustment,
+        legalLimit: game.genericLimits[cardId] ?? 3,
+        meta: meta.cardMetaById[cardId] ?? null,
+      }];
+    })
+    .sort(
+      (left, right) =>
+        right.releaseDay - left.releaseDay ||
+        left.card.name.localeCompare(right.card.name),
+    );
+}
+
+function getGenericAdopterThemeIds(
+  game: GameState,
+  meta: GenericCardMetaEntry | null,
+  limit = 4,
+): ThemeId[] {
+  if (!meta || meta.legalLimit === 0) return [];
+  return Object.entries(meta.adoptionByTheme)
+    .filter(([, adoption]) => adoption >= 0.12)
+    .sort(
+      ([leftId, leftAdoption], [rightId, rightAdoption]) =>
+        rightAdoption - leftAdoption ||
+        (game.themes[rightId]?.share ?? 0) -
+          (game.themes[leftId]?.share ?? 0) ||
+        leftId.localeCompare(rightId),
+    )
+    .slice(0, limit)
+    .map(([themeId]) => themeId);
+}
+
+function GenericAdopterNames({
+  game,
+  meta,
+  limit = 4,
+}: {
+  game: GameState;
+  meta: GenericCardMetaEntry | null;
+  limit?: number;
+}) {
+  const themeIds = getGenericAdopterThemeIds(game, meta, limit);
+  if (themeIds.length === 0) {
+    return <span className="generic-researching">채용 연구 중</span>;
+  }
+  return (
+    <span className="generic-adopter-names">
+      {themeIds.map((themeId) => THEME_BY_ID[themeId]?.shortName ?? themeId).join(" · ")}
+    </span>
+  );
+}
+
+function CurrentBanList({
+  expanded = false,
+  game,
+}: {
+  expanded?: boolean;
+  game: GameState;
+}) {
+  const themeEntries = game.activeThemeIds
+    .flatMap((themeId) => {
+      const theme = THEME_BY_ID[themeId];
+      const runtime = game.themes[themeId];
+      if (!theme || !runtime) return [];
+      return theme.parts
+        .filter((part) => runtime.releasedPartIds.includes(part.id))
+        .flatMap((part) => {
+          const limit = runtime.legalLimits[part.id] ?? 3;
+          return limit < 3 ? [{ theme, part, limit }] : [];
+        });
+    })
+    .sort(
+      (left, right) =>
+        left.limit - right.limit ||
+        left.theme.shortName.localeCompare(right.theme.shortName) ||
+        left.part.name.localeCompare(right.part.name),
+    );
+  const genericEntries = getReleasedGenericCardReferences(game)
+    .filter((entry) => entry.legalLimit < 3)
+    .sort(
+      (left, right) =>
+        left.legalLimit - right.legalLimit ||
+        left.card.name.localeCompare(right.card.name),
+    );
+  const entryCount = themeEntries.length + genericEntries.length;
+
+  return (
+    <details className="current-banlist-reference" open={expanded}>
+      <summary>
+        현재 밴리스트 <span>{entryCount}장</span>
+      </summary>
+      {entryCount > 0 ? (
+        <div className="current-banlist-reference-table">
+          <div className="current-banlist-reference-head" role="row">
+            <span>테마 / 카드</span>
+            <span>출시</span>
+            <span>현행</span>
+          </div>
+          {themeEntries.map(({ theme, part, limit }) => (
+            <div className="current-banlist-reference-row" key={part.id} role="row">
+              <span>
+                <small>{theme.shortName}</small>
+                <strong>{part.name}</strong>
+              </span>
+              <span>{getPartReleaseLabel(game, theme, part.id)}</span>
+              <strong>{LIMIT_LABELS[limit]}</strong>
+            </div>
+          ))}
+          {genericEntries.map((entry) => (
+            <div
+              className="current-banlist-reference-row generic-banlist-row"
+              key={entry.card.id}
+              role="row"
+            >
+              <span>
+                <small>범용 · {getPlayKeyword(entry.card.keyword).label}</small>
+                <strong>{entry.card.name}</strong>
+                <GenericAdopterNames game={game} limit={3} meta={entry.meta} />
+              </span>
+              <span>DAY {entry.releaseDay}</span>
+              <strong>{LIMIT_LABELS[entry.legalLimit]}</strong>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="current-banlist-empty">현재 금제된 카드는 없습니다.</p>
+      )}
+    </details>
+  );
+}
+
 const SUPPORT_DIRECTIONS: {
   value: SupportDirection;
   label: string;
@@ -404,18 +690,6 @@ const SUPPORT_DIRECTIONS: {
   { value: "finisher", label: "결과물", description: "최종 필드와 승리 수단 강화" },
   { value: "recovery", label: "회수", description: "장기전과 재전개 자원 보강" },
 ];
-
-const POWER_ADJUSTMENTS = [-3, -2, -1, 0, 1, 2, 3] as const;
-
-const POWER_ADJUSTMENT_LABELS: Record<PowerAdjustment, string> = {
-  [-3]: "매우 약하게",
-  [-2]: "약하게",
-  [-1]: "조금 약하게",
-  0: "기준",
-  1: "조금 강하게",
-  2: "강하게",
-  3: "매우 강하게",
-};
 
 function totalUsers(game: GameState) {
   return game.users.tier + game.users.casual + game.users.collector;
@@ -438,15 +712,23 @@ function formatSignedRevenue(value: number) {
   return `${sign}₩${formatRevenue(Math.abs(value))}`;
 }
 
+const BUSINESS_CHALLENGE_METRIC_LABEL = {
+  "environment-health": "환경 건강도",
+  "purchase-trust": "구매 신뢰",
+  "release-quality": "발매 품질",
+} satisfies Record<BusinessChallengeMetric, string>;
+
 function getBusinessRecordStatus(record: BusinessActionRecord, day: number) {
   const remaining = Math.max(0, record.endsDay - day);
   switch (record.outcome) {
     case "pending":
       return "다음 정기 발매 대기";
     case "success":
-      return remaining > 0 ? `흥행 · ${remaining}일 남음` : "흥행 종료";
+      if (record.challenge) return "목표 달성";
+      return remaining > 0 ? `성공 · ${remaining}일 남음` : "효과 종료";
     case "backlash":
-      return remaining > 0 ? `역풍 · ${remaining}일 남음` : "역풍 종료";
+      if (record.challenge) return "목표 미달";
+      return remaining > 0 ? `실패 · ${remaining}일 남음` : "실패 종료";
     case "clean":
       return remaining > 0 ? `미적발 · ${remaining}일 남음` : "조정 종료";
     case "detected":
@@ -454,6 +736,15 @@ function getBusinessRecordStatus(record: BusinessActionRecord, day: number) {
     case "completed":
       return "집행 종료";
     case "active":
+      if (record.challenge) {
+        const remainingDays = Math.max(0, record.challenge.deadlineDay - day);
+        return remainingDays > 0
+          ? `조건 심사 중 · D-${remainingDays}`
+          : "조건 확정 대기";
+      }
+      if (isProbabilisticBusinessAction(record.type)) {
+        return day <= record.startedDay ? "결과 판정 · D-1" : "결과 확정 대기";
+      }
       if (isStrategicBusinessAction(record.type)) {
         const resultDay = record.startedDay +
           (BUSINESS_ACTION_BY_TYPE[record.type].resolutionDelay ?? 1);
@@ -467,6 +758,17 @@ function getBusinessRecordStatus(record: BusinessActionRecord, day: number) {
 }
 
 function getBusinessRecordProgress(record: BusinessActionRecord, day: number) {
+  if (record.challenge) {
+    return Math.max(
+      0,
+      Math.min(
+        100,
+        (record.challenge.qualifyingDays /
+          Math.max(1, record.challenge.requiredQualifyingDays)) *
+          100,
+      ),
+    );
+  }
   if (record.outcome === "pending") return 0;
   if (record.outcome === "completed" || record.outcome === "detected") {
     return 100;
@@ -494,11 +796,17 @@ function getBusinessTransitionToast(previous: GameState, next: GameState) {
       return "예약한 봉입률 조정이 이번 정기 발매에 적용됐습니다.";
     }
     if (record.outcome === "backlash") {
+      if (isProbabilisticBusinessAction(record.type)) {
+        return `${BUSINESS_ACTION_BY_TYPE[record.type].title}이 기대한 반응을 얻지 못했습니다. 실패 효과가 이어집니다.`;
+      }
       return isStrategicBusinessAction(record.type)
         ? `${BUSINESS_ACTION_BY_TYPE[record.type].title}이 실패했습니다. 투자금을 회수하지 못했고 후속 역풍이 시작됩니다.`
         : "챔피언십 중계가 환경 문제를 노출해 역풍이 시작됐습니다.";
     }
     if (record.outcome === "success") {
+      if (isProbabilisticBusinessAction(record.type)) {
+        return `${BUSINESS_ACTION_BY_TYPE[record.type].title}이 성공했습니다. 사업 효과가 이어집니다.`;
+      }
       return isStrategicBusinessAction(record.type)
         ? `${BUSINESS_ACTION_BY_TYPE[record.type].title}이 성공했습니다. ₩${formatRevenue(record.cashReturn ?? 0)}을 회수했습니다.`
         : "챔피언십이 흥행했습니다. 대회 유입 효과가 시작됩니다.";
@@ -546,9 +854,12 @@ const EMPTY_PLACEMENT_METRICS: ThemePlacementReport = {
 
 function makeRestrictionDraft(game: GameState) {
   return Object.fromEntries(
-    Object.values(game.themes).flatMap((theme) =>
-      Object.entries(theme.legalLimits),
-    ),
+    [
+      ...Object.values(game.themes).flatMap((theme) =>
+        Object.entries(theme.legalLimits),
+      ),
+      ...Object.entries(game.genericLimits),
+    ],
   ) as Record<string, RestrictionLimit>;
 }
 
@@ -567,7 +878,10 @@ type FatigueSignal = {
 function getReleaseAge(game: GameState, day: number): number | null {
   const latestRelease = [...game.releaseHistory]
     .reverse()
-    .find((batch) => batch.day <= day);
+    .find(
+      (batch) =>
+        batch.day <= day && !isInitialGenericReleaseBatch(batch),
+    );
   if (!latestRelease) return null;
   const age = day - latestRelease.day;
   return age < RELEASE_SALES_WINDOW_DAYS ? age : null;
@@ -586,14 +900,6 @@ function getFatigueSignal(runtime: ThemeRuntime): FatigueSignal {
   return { level: "none", label: "피로 안정" };
 }
 
-type ImpactNotice = {
-  key: string;
-  headline: string;
-  metrics: string[];
-  cause: string;
-  tone: "positive" | "negative" | "alert";
-};
-
 type AdvisorBrief = {
   tone: "calm" | "info" | "caution" | "critical";
   kicker: string;
@@ -601,98 +907,8 @@ type AdvisorBrief = {
   submessage?: string;
 };
 
-function buildImpactNotice(game: GameState): ImpactNotice | null {
-  const current = [...game.history]
-    .reverse()
-    .find((entry) => entry.day === game.day);
-  const previous = [...game.history]
-    .reverse()
-    .find((entry) => entry.day < game.day);
-  const currentTotal = totalUsers(game);
-  const userDelta = current && previous
-    ? Math.round(current.totalUsers - previous.totalUsers)
-    : 0;
-  const revenueRate = current && previous && previous.revenue > 0
-    ? ((current.revenue - previous.revenue) / previous.revenue) * 100
-    : 0;
-  const heat = getCommunityHeat(game, game.day);
-  const profile = getReleaseReactionProfile(game, game.day);
-  const mostFatiguedTheme = game.activeThemeIds.reduce<ThemeId | null>(
-    (highest, themeId) => {
-      if (!highest) return themeId;
-      return game.themes[themeId].fatigue > game.themes[highest].fatigue
-        ? themeId
-        : highest;
-    },
-    null,
-  );
-  const fatigue = mostFatiguedTheme ? game.themes[mostFatiguedTheme].fatigue : 0;
-  const revenueSignal = getRevenueChangeSignal(
-    revenueRate,
-    getReleaseAge(game, game.day),
-    current && previous ? current.day - previous.day : 1,
-  );
-  const revenueShock = revenueSignal !== null;
-  const userShock = Math.abs(userDelta) >= Math.max(150, currentTotal * 0.0015);
-  const heatShock = heat >= 75;
-
-  if (!revenueShock && !userShock && !heatShock) return null;
-
-  const metrics: string[] = [];
-  if (revenueShock) {
-    metrics.push(`매출 ${revenueRate >= 0 ? "급등" : "급락"} ${revenueRate >= 0 ? "+" : ""}${revenueRate.toFixed(1)}%`);
-  }
-  if (userShock) {
-    metrics.push(`활성 유저 ${userDelta >= 0 ? "급증" : "급락"} ${userDelta >= 0 ? "+" : ""}${formatUsers(userDelta)}명`);
-  }
-  if (heatShock) metrics.push(`커뮤니티 열기 ${heat}`);
-
-  const releaseToday = game.releaseHistory.some((batch) => batch.day === game.day);
-  const activeRevenueAction = [...game.operations.records]
-    .reverse()
-    .find(
-      (record) =>
-        isBusinessActionEffectActive(record, game.day) &&
-        getBusinessActionDailyGrossRevenue(
-          game,
-          record.type,
-          record.outcome,
-        ) > 0,
-    );
-  const cause = releaseToday
-    ? profile.headline || "신제품 발매 직후 반응"
-    : isBanDay(game.day)
-      ? "금제 시행 후 시장 재평가"
-      : activeRevenueAction
-        ? `${BUSINESS_ACTION_BY_TYPE[activeRevenueAction.type].title} 직접 매출 효과`
-      : fatigue >= 75 && mostFatiguedTheme
-        ? `${THEME_BY_ID[mostFatiguedTheme].shortName} 장기 노출 · 반감 폭발`
-        : "메타와 시장의 일일 급변";
-  const headline = heatShock
-    ? "반응 폭발"
-    : revenueSignal === "surge"
-      ? `매출 급등 +${revenueRate.toFixed(1)}%`
-      : userDelta < 0
-        ? `활성 유저 급락 ${formatUsers(userDelta)}명`
-        : "시장 급변 감지";
-  const tone = userDelta < 0 || revenueSignal === "drop"
-    ? "negative"
-    : heatShock
-      ? "alert"
-      : "positive";
-
-  return {
-    key: `${game.day}-${game.releaseHistory.length}-${Math.round(current?.revenue ?? game.finance.today)}-${Math.round(currentTotal)}`,
-    headline,
-    metrics,
-    cause,
-    tone,
-  };
-}
-
 function getAdvisorBrief(
   game: GameState,
-  impactNotice: ImpactNotice | null,
   activeTab: TabId,
   concentratedRestrictionRisk: boolean,
   restrictionPolicy: RestrictionPolicyProfile,
@@ -703,20 +919,15 @@ function getAdvisorBrief(
       kicker: "탑컷 해석",
       message: "탑컷 점유율은 최근 14일 본선 자리의 비중입니다. 채용률·승률과 함께 보십시오.",
     },
-    themes: {
+    cards: {
       tone: "info",
-      kicker: "테마 해석",
-      message: "승률과 채용률은 같은 지표가 아닙니다. 다른 테마로 출장하는 파츠도 확인하십시오.",
-    },
-    restrictions: {
-      tone: "info",
-      kicker: "금제 해석",
-      message: "허용 매수보다 실제 의존도가 충격의 크기를 결정합니다.",
+      kicker: "카드 해석",
+      message: "테마 카드와 범용 카드를 전환해 채용률·현행 제한·시세를 함께 비교하십시오.",
     },
     releases: {
       tone: "info",
       kicker: "발매 해석",
-      message: "예상 티어는 추정치입니다. 파워 조정은 판매 기대와 환경 충격을 함께 바꿉니다.",
+      message: "키워드는 플레이 성향만 보여줍니다. 현재 환경의 상성과 순수 체급을 함께 추론하십시오.",
     },
     operations: {
       tone: "info",
@@ -729,6 +940,11 @@ function getAdvisorBrief(
       kicker: "커뮤니티 해석",
       message: "커뮤니티는 모든 사람이 글을 작성할 수 있습니다. 게임을 하지 않은 사람들조차요.",
       submessage: "반응은 체감의 기록이지, 실제 매출이나 환경의 판정이 아닙니다.",
+    },
+    news: {
+      tone: "info",
+      kicker: "오늘의 소식",
+      message: "큰 변동과 플레이어 반응을 날짜별로 모았습니다. 숫자가 바뀐 날부터 확인하십시오.",
     },
     finance: {
       tone: "info",
@@ -759,9 +975,9 @@ function getAdvisorBrief(
 
   if (game.phase === "release-edit") {
     return withActiveTabHint({
-      tone: "caution",
-      kicker: "발매 검토 대기",
-      message: "6개 시안과 7단계 조정폭이 열려 있습니다. 로터스는 예상 파급만 정리하며 선택은 대신하지 않습니다.",
+      tone: "info",
+      kicker: "정기 발매 검토",
+      message: "신테마·지원·범용을 각각 1종 이상 포함해 이번 카드팩 구성을 직접 확정하십시오.",
     });
   }
   if (game.phase === "ban-edit") {
@@ -774,10 +990,14 @@ function getAdvisorBrief(
     }
     if (restrictionPolicy.changeCount === 0) {
       return withActiveTabHint({
-        tone: "caution",
-        kicker: "환경 유지안",
-        message: "아무 파츠도 바꾸지 않으면 현재 메타와 구매 흐름이 그대로 이어집니다. 이것도 하나의 운영 결정입니다.",
-        submessage: "채용률·승률·불쾌도와 실제 파츠 의존도를 비교한 뒤 제출하십시오.",
+        tone: restrictionPolicy.coverageComplete ? "calm" : "caution",
+        kicker: restrictionPolicy.coverageComplete
+          ? "정당화 가능한 유지안"
+          : "환경 유지안",
+        message: restrictionPolicy.coverageComplete
+          ? "현재 점유율과 승률에서 즉시 제재할 위협은 잡히지 않았습니다. 무변경도 정상적인 정책 선택입니다."
+          : "압력이 높은 테마를 그대로 두면 현재 메타와 구매 흐름이 이어집니다. 이것도 하나의 운영 결정입니다.",
+        submessage: `판정 위협 ${restrictionPolicy.threatThemeIds.length}개 · 미대응 ${restrictionPolicy.unaddressedThreatThemeIds.length}개입니다. 불쾌도와 자연 카운터의 움직임도 함께 보십시오.`,
       });
     }
     if (restrictionPolicy.meaningfulCutCount === 0) {
@@ -785,18 +1005,30 @@ function getAdvisorBrief(
         tone: "caution",
         kicker: "실효성 낮은 조정",
         message: `${restrictionPolicy.changeCount}건을 바꿨지만 현재 채용 매수 기준으로 환경에 미치는 영향은 작게 예측됩니다.`,
-        submessage: "상징적 조치가 필요한지, 실제 메타 변화가 필요한지는 책임자님의 판단입니다.",
+        submessage: "단발성 상징 조치는 구매 신뢰보다 여론과 경쟁층 잔존에 먼저 악영향을 줍니다. 반복해서 문제를 미루면 구매 신뢰도 뒤따라 무너집니다.",
+      });
+    }
+    if (
+      restrictionPolicy.totalImpact >= 18 ||
+      restrictionPolicy.recentProductChanges > 0
+    ) {
+      return withActiveTabHint({
+        tone: "caution",
+        kicker: "환경 회복과 보유가치",
+        message: `정책 대상이 타당해도 이 강도의 금제는 카드 보유가치와 구매 신뢰를 직접 훼손합니다. 최근 30일 제품 변경은 ${restrictionPolicy.recentProductChanges}종입니다.`,
+        submessage: `판정 위협 ${restrictionPolicy.threatThemeIds.length}개 · 미대응 ${restrictionPolicy.unaddressedThreatThemeIds.length}개 · 추정 충격 ${Math.round(restrictionPolicy.totalImpact)}입니다.`,
       });
     }
     return withActiveTabHint({
-      tone: restrictionPolicy.totalImpact >= 45 ? "caution" : "calm",
+      tone: "calm",
       kicker: "금제 파급 예측",
       message: `실효 조정 ${restrictionPolicy.meaningfulCutCount}종 · 영향 테마 ${restrictionPolicy.affectedThemeCount}개 · 추정 충격 ${Math.round(restrictionPolicy.totalImpact)}입니다.`,
-      submessage: `상위권 ${restrictionPolicy.upperMeaningfulCuts}종 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts}종 · 하위권 ${restrictionPolicy.lowerMeaningfulCuts}종에 영향을 줍니다. 로터스는 결과를 예측할 뿐 정답을 정하지 않습니다.`,
+      submessage: `판정 위협 ${restrictionPolicy.threatThemeIds.length}개 · 미대응 ${restrictionPolicy.unaddressedThreatThemeIds.length}개 · 비위협 선제 제재 ${restrictionPolicy.preemptiveCutThemeIds.length}개입니다. 로터스는 결과를 예측할 뿐 정답을 정하지 않습니다.`,
     });
   }
   const releasePublishedToday = game.releaseHistory.some(
-    (batch) => batch.day === game.day,
+    (batch) =>
+      batch.day === game.day && !isInitialGenericReleaseBatch(batch),
   );
   const restrictionPublishedToday =
     isBanDay(game.day) && game.phase === "running";
@@ -805,13 +1037,6 @@ function getAdvisorBrief(
       tone: restrictionPublishedToday ? "caution" : "info",
       kicker: restrictionPublishedToday ? "금제안 공표" : "신제품 발매 공표",
       message: `결정이 공표되었습니다. 티어와 커뮤니티 반응 관측은 DAY ${game.day + 1}부터 시작됩니다.`,
-    });
-  }
-  if (impactNotice) {
-    return withActiveTabHint({
-      tone: impactNotice.tone === "negative" ? "critical" : "caution",
-      kicker: impactNotice.headline,
-      message: `${impactNotice.metrics.join(" · ")} — ${impactNotice.cause}`,
     });
   }
   if (game.phase === "running" && game.day > LAST_DECISION_DAY) {
@@ -893,34 +1118,34 @@ function hasConcentratedRestrictionRisk(
   );
 }
 
-function supportStatusLabel(
-  status: GameState["supportRequests"][number]["status"],
-) {
-  if (status === "queued") return "시안 대기";
-  if (status === "offered") return "이번 시안";
-  if (status === "released") return "발매 완료";
-  return "미선정";
-}
-
-function getRestrictionTenureLabel(
+function getPartReleaseLabel(
   game: GameState,
-  themeId: ThemeId,
+  theme: ThemeContent,
   partId: string,
-  official: RestrictionLimit,
-) {
-  if (official === 3) return null;
-  const establishingEvent = [...game.community].reverse().find(
-    (event) =>
-      event.themeId === themeId &&
-      event.partId === partId &&
-      (event.type === "restriction-applied" ||
-        event.type === "cosmetic-restriction") &&
-      event.value === official &&
-      typeof event.previousValue === "number" &&
-      event.previousValue > official,
+): string {
+  const partIndex = theme.parts.findIndex((part) => part.id === partId);
+  if (partIndex < 0) return "출시 기록 없음";
+
+  if (partIndex < INITIAL_THEME_PART_COUNT) {
+    const debut = game.releaseHistory.find((batch) =>
+      batch.products.some(
+        (product) =>
+          product.kind === "new-theme" && product.themeId === theme.id,
+      ),
+    );
+    return debut ? `DAY ${debut.day}` : "DAY 0";
+  }
+
+  const supportWave = Math.floor(
+    (partIndex - INITIAL_THEME_PART_COUNT) / SUPPORT_PARTS_PER_RELEASE,
   );
-  if (!establishingEvent) return "장기 유지";
-  return `금제 유지 ${Math.max(0, game.day - establishingEvent.day)}일`;
+  const supportReleases = game.releaseHistory.filter((batch) =>
+    batch.products.some(
+      (product) => product.kind === "support" && product.themeId === theme.id,
+    ),
+  );
+  const release = supportReleases[supportWave];
+  return release ? `DAY ${release.day}` : "출시 기록 없음";
 }
 
 type BootState =
@@ -1057,15 +1282,31 @@ export default function Home() {
   if (boot.status !== "playing") {
     const savedGame = boot.status === "title" ? boot.savedGame : null;
     const ready = boot.status === "title";
+    const savedGameSummary = !ready
+      ? "저장 확인 중"
+      : savedGame
+        ? !savedGame.handoverComplete
+          ? `DAY ${savedGame.day} · 인수인계 진행 중`
+          : savedGame.phase === "ended"
+            ? `DAY ${savedGame.day} · 임기 결과 보기`
+            : savedGame.phase === "running" &&
+                savedGame.day >= SETTLEMENT_START_DAY
+              ? `DAY ${savedGame.day} · 결산 관찰 중`
+              : `DAY ${savedGame.day} · 임기 진행 중`
+        : "저장된 임기 없음";
     return (
-      <PlayScreen
+      <TitleScreen
         busy={!ready}
-        interfaceSettings={settings}
         message={titleMessage}
         onContinue={continueGame}
         onNewGame={() => void beginNewGame()}
-        savedGame={savedGame}
-        updateInterfaceSetting={updateSetting}
+        onSettingsChange={updateSetting}
+        onSoundTest={() => undefined}
+        savedGame={{
+          available: Boolean(savedGame),
+          summary: savedGameSummary,
+        }}
+        settings={settings}
       >
         {confirmNewGame ? (
           <ConfirmNewGameDialog
@@ -1073,7 +1314,7 @@ export default function Home() {
             onConfirm={() => void beginNewGame(true)}
           />
         ) : null}
-      </PlayScreen>
+      </TitleScreen>
     );
   }
 
@@ -1094,50 +1335,48 @@ export default function Home() {
   );
 }
 
-function LotusSymbol({ tone = "calm" }: { tone?: "calm" | "info" | "caution" | "critical" }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={`lotus-symbol ${tone}`}
-      focusable="false"
-      viewBox="0 0 100 100"
-    >
-      <circle className="lotus-orbit" cx="50" cy="50" r="43" />
-      <g className="lotus-petals">
-        {Array.from({ length: 6 }, (_, index) => (
-          <path
-            d="M50 51 C38 39 39 22 50 9 C61 22 62 39 50 51 Z"
-            key={index}
-            transform={`rotate(${index * 60} 50 50)`}
-          />
-        ))}
-      </g>
-      <circle className="lotus-core-glow" cx="50" cy="50" r="14" />
-      <circle className="lotus-core" cx="50" cy="50" r="5" />
-    </svg>
-  );
-}
-
 type GuidedStep =
+  | "day1-controls"
+  | "day1-banlist"
+  | "day1-keywords"
+  | "day1-distribution-mode"
   | "day1-community"
   | "day1-community-read"
+  | "day1-card-overview"
   | "day1-advance"
+  | "day8-placement-read"
+  | "day8-distribution-links"
+  | "day8-community"
   | "day8-advance"
-  | "day15-themes"
-  | "day15-theme"
+  | "day15-card-catalog-generic"
+  | "day15-card-catalog-theme"
   | "day15-part"
+  | "day15-request-support"
+  | "day15-request-indirect"
+  | "day15-request-target"
+  | "day15-request-reprint"
   | "day15-finance"
   | "day15-finance-read"
   | "day15-operations"
+  | "day15-operations-overview"
   | "day15-tv-cm"
+  | "day1-distribution-return"
   | "day15-advance"
   | "day22-advance"
   | "day29-advance"
-  | "day30-release"
+  | "day30-releases-nav"
+  | "day30-release-principles"
+  | "day30-release-select"
+  | "day30-releases-read"
   | "day30-advance"
   | "day31-community-read"
+  | "day31-community-controls"
+  | "day31-community-open"
+  | "day31-news"
+  | "day31-news-controls"
   | "day31-advance"
   | "day38-advance"
+  | "day45-restriction-controls"
   | "day45-restriction"
   | "day45-advance"
   | "day46-community"
@@ -1146,29 +1385,15 @@ type GuidedStep =
   | "day46-distribution-read"
   | "day46-start";
 
-type GuidedReleaseTarget =
-  | { kind: "option"; optionId: string; adjustment: PowerAdjustment }
-  | { kind: "adjustment"; optionId: string; adjustment: PowerAdjustment }
-  | { kind: "submit" };
-
 type GuidedRestrictionTarget =
   | { kind: "limit"; partId: string; limit: RestrictionLimit }
   | { kind: "submit" };
-
-type GuidedDossierTarget = { themeId: ThemeId; partId: string };
 
 function getGuidedRestrictionTarget(): GuidedRestrictionTarget | null {
   // The first restriction review is intentionally unguided. Keep the nullable
   // target shape for the shared restriction workspace without letting a
   // constant `null` narrow its TypeScript branches to `never`.
   return null;
-}
-
-function getGuidedDossierTarget(game: GameState): GuidedDossierTarget {
-  const themeId: ThemeId = "cycle";
-  const partId = game.themes[themeId]?.releasedPartIds[0];
-  if (!partId) throw new Error("The guided dossier theme needs a released part.");
-  return { themeId, partId };
 }
 
 function getGuidedRestrictionThemeId(game: GameState): ThemeId {
@@ -1184,40 +1409,100 @@ type GuidedBrief = {
   kicker: string;
   title: string;
   message: string;
-  placement?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+  controlIds?: readonly string[];
   inspection?: boolean;
+  hoverInspection?: boolean;
+  informational?: boolean;
   freeInteraction?: boolean;
-  confirmLabel?: string;
-  actionLabel?: string;
 };
 
 function getGuidedStep(game: GameState): GuidedStep {
   if (game.day >= 46) return "day46-community";
-  if (game.day <= 1) return "day1-community";
-  if (game.day <= 8) return "day8-advance";
-  if (game.day <= 15) {
+  if (game.day <= 1) return "day1-controls";
+  if (game.day < 8) return "day1-advance";
+  if (game.day === 8) return "day8-placement-read";
+  if (game.day < 15) return "day8-advance";
+  if (game.day === 15) {
     const guidedTvCmComplete = game.operations.records.some(
       (record) => record.type === "tv-cm" && record.startedDay === 15,
     );
-    return guidedTvCmComplete ? "day15-advance" : "day15-themes";
+    return guidedTvCmComplete ? "day15-advance" : "day15-finance";
   }
-  if (game.day <= 22) return "day22-advance";
-  if (game.day <= 29) return "day29-advance";
+  if (game.day < 22) return "day15-advance";
+  if (game.day < 29) return "day22-advance";
+  if (game.day < 30) return "day29-advance";
   if (game.day === 30) {
-    return game.phase === "release-edit" ? "day30-release" : "day30-advance";
+    return game.phase === "release-edit"
+      ? "day30-releases-nav"
+      : "day30-releases-read";
   }
-  if (game.day <= 31) return "day31-community-read";
+  if (game.day < 38) return "day31-community-read";
   if (game.day < 45) return "day38-advance";
   return game.phase === "ban-edit"
-    ? "day45-restriction"
+    ? "day45-restriction-controls"
     : "day45-advance";
 }
 
+function isGuidedTimeAdvanceStep(step: GuidedStep): boolean {
+  return step.endsWith("-advance") || step === "day46-start";
+}
+
+function isGuidedAdvanceDaysAllowed(
+  step: GuidedStep,
+  days: 1 | 7,
+): boolean {
+  if (!isGuidedTimeAdvanceStep(step)) return false;
+  const requiredDaysByStep: Partial<Record<GuidedStep, 1 | 7>> = {
+    "day1-advance": 7,
+    "day8-advance": 7,
+    "day15-advance": 7,
+    "day22-advance": 7,
+    "day29-advance": 1,
+    "day30-advance": 1,
+    "day31-advance": 7,
+    "day38-advance": 7,
+    "day45-advance": 1,
+    "day46-start": 1,
+  };
+  return requiredDaysByStep[step] === days;
+}
+
+function getGuidedAdvanceTab(step: GuidedStep): TabId | null {
+  if (
+    step === "day8-placement-read" ||
+    step === "day8-distribution-links" ||
+    step === "day8-advance"
+  ) {
+    return "distribution";
+  }
+  if (
+    step === "day15-card-catalog-generic" ||
+    step === "day15-card-catalog-theme" ||
+    step.startsWith("day15-request-")
+  ) return "cards";
+  if (step === "day22-advance" || step === "day29-advance") return "finance";
+  if (step === "day30-advance") return "releases";
+  if (step === "day31-community-read" || step === "day38-advance") {
+    return "community";
+  }
+  if (
+    step === "day45-restriction-controls" ||
+    step === "day45-restriction" ||
+    step === "day45-advance" ||
+    step === "day46-community"
+  ) {
+    return "cards";
+  }
+  return null;
+}
+
 function getGuidedInitialTab(game: GameState): TabId {
-  if (game.day >= 46) return "restrictions";
-  if (game.phase === "release-edit") return "releases";
-  if (game.phase === "ban-edit" || game.day === 45) return "restrictions";
+  if (game.day >= 46) return "cards";
+  if (game.phase === "release-edit") return "finance";
+  if (game.phase === "ban-edit" || game.day === 45) return "cards";
+  if (game.day === 30) return "releases";
   if (game.day === 1) return "distribution";
+  if (game.day === 8) return "distribution";
   if (game.day === 15) {
     return game.operations.records.some(
       (record) => record.type === "tv-cm" && record.startedDay === 15,
@@ -1241,67 +1526,173 @@ function withKoreanObjectParticle(value: string) {
 function getGuidedBrief(
   step: GuidedStep,
   game: GameState,
-  releaseTarget: GuidedReleaseTarget | null,
   restrictionPolicy: RestrictionPolicyProfile,
 ): GuidedBrief {
+  if (step === "day1-controls") {
+    return {
+      kicker: "LOTUS",
+      title: "인수인계를 시작하겠습니다",
+      message: "안녕하십니까. 저는 비서 LOTUS라고 합니다. TCG 매니지먼트 인수인계를 시작하겠습니다.",
+      informational: true,
+    };
+  }
+  if (step === "day1-banlist") {
+    return {
+      kicker: "LOTUS · REFERENCE",
+      title: "금제 리스트를 열어보세요",
+      message: "금제 리스트는 현재 금지·제한·준제한 카드만 모아보는 참고 창입니다. 버튼을 직접 눌러 여세요.",
+      controlIds: ["header-banlist"],
+      inspection: true,
+    };
+  }
+  if (step === "day1-keywords") {
+    return {
+      kicker: "LOTUS · REFERENCE",
+      title: "키워드 도감을 열어보세요",
+      message: "키워드 도감은 카드와 테마의 역할 용어를 짧게 풀이합니다. 버튼을 직접 눌러 참고 창을 바꿔보세요.",
+      controlIds: ["header-keywords"],
+      inspection: true,
+    };
+  }
+  if (step === "day1-distribution-mode") {
+    return {
+      kicker: "LOTUS · DISTRIBUTION MODE",
+      title: "유저 비율로 바꿔보세요",
+      message: "분포 화면은 탑컷 비율과 유저 비율을 전환할 수 있습니다. ‘유저 비율’을 직접 눌러 네 플레이어 계층을 확인하세요.",
+      controlIds: ["distribution-users"],
+      inspection: true,
+    };
+  }
   if (step === "day1-community") {
     return {
-      kicker: "LOTUS · META BASELINE",
-      title: "분포를 확인했습니다",
-      message: "첫 환경은 5개 테마와 활성 유저 10,000명으로 고정되어 있습니다. 이제 상단의 ‘커뮤니티’를 선택해주세요.",
-      placement: "bottom-right",
+      kicker: "LOTUS",
+      title: "유저 구성을 읽었습니다",
+      message: "각 계층은 서로 다른 이유로 게임에 남습니다. 설명을 확인한 뒤 상단의 ‘커뮤니티’를 직접 눌러 체감 반응과 대조하세요.",
+      controlIds: ["nav-community"],
+      inspection: true,
     };
   }
   if (step === "day1-community-read") {
     return {
       kicker: "LOTUS · PUBLIC SENTIMENT",
-      title: "오늘의 커뮤니티 글을 읽어보세요",
-      message: "밝게 열린 글 목록을 직접 스크롤해 확인해주세요. 커뮤니티는 모든 사람이 글을 쓰는 곳이므로, 의견은 판정이 아니라 하나의 신호입니다.",
-      placement: "bottom-left",
-      inspection: true,
-      confirmLabel: "확인 · 다음",
+      title: "강조된 커뮤니티 글을 열어보세요",
+      message: "강조된 글을 직접 누르세요. 글이 언급한 테마와 카드 화면으로 이동해 커뮤니티 반응을 실제 수치와 비교합니다.",
+      controlIds: ["community-post"],
     };
   }
   if (step === "day1-advance") {
     return {
-      kicker: "LOTUS · PUBLIC SENTIMENT",
-      title: "커뮤니티 확인을 마쳤습니다",
-      message: "첫 일주일의 변화를 보기 위해 강조된 진행 버튼을 선택해주세요.",
+      kicker: "LOTUS · META CHECK",
+      title: "첫 메타 변화를 관측합니다",
+      message: "분포 화면을 그대로 둔 채 강조된 +7일 버튼을 눌러 DAY 8까지 진행하세요. 간섭 없이 바뀌는 1위와 입상표를 비교합니다.",
+    };
+  }
+  if (step === "day8-placement-read") {
+    return {
+      kicker: "LOTUS · PLACEMENT RESULTS",
+      title: "입상 결과를 확인하세요",
+      message: "입상표로 마우스를 옮겨 오늘 대회 결과를 확인하세요. 이 결과는 다음 날 메타와 카드 시세에 반영됩니다.",
+      inspection: true,
+      hoverInspection: true,
+    };
+  }
+  if (step === "day8-distribution-links") {
+    return {
+      kicker: "LOTUS · DISTRIBUTION LINKS",
+      title: "분포에서 상세 화면으로 이동할 수 있습니다",
+      message: "도넛 조각이나 오른쪽 테마 행은 같은 분포를 다른 방식으로 보여줍니다. 테마를 선택하면 카드 상세 화면으로 이동합니다.",
+      controlIds: ["distribution-donut", "distribution-legend"],
+      informational: true,
+    };
+  }
+  if (step === "day8-community") {
+    return {
+      kicker: "LOTUS · COMMUNITY CHECK",
+      title: "커뮤니티 화면을 여세요",
+      message: "입상표의 변화를 확인했습니다. 상단의 ‘커뮤니티’를 직접 눌러 같은 기간의 플레이어 반응을 이어서 관찰하세요.",
+      controlIds: ["nav-community"],
+      inspection: true,
     };
   }
   if (step === "day8-advance") {
     return {
-      kicker: "LOTUS · COUNTER RESEARCH",
-      title: "환경은 발매 없이도 움직입니다",
-      message: "카운터 연구와 유행이 채용률을 바꿉니다. DAY 15까지 진행해주세요.",
+      kicker: "LOTUS · COMMUNITY CHECK",
+      title: "커뮤니티 반응을 일주일 더 관찰합니다",
+      message: "커뮤니티 화면을 그대로 둔 채 강조된 +7일 버튼을 눌러 DAY 15까지 진행하세요. 다음 단계에서 재무 지표와 함께 비교합니다.",
     };
   }
-  if (step === "day15-themes") {
+  if (step === "day1-card-overview") {
     return {
       kicker: "LOTUS · THEME DOSSIER",
-      title: "이번에는 테마를 열어보겠습니다",
-      message: "상단의 ‘테마’를 선택해주세요. 테마 안에서 개별 파츠의 채용률과 역할을 확인할 수 있습니다.",
-      placement: "bottom-right",
+      title: "테마 지표를 읽어보세요",
+      message: "테마 지표로 마우스를 옮겨 유저 비율·탑컷 비율·승률을 확인하세요.",
+      controlIds: ["theme-metrics"],
+      inspection: true,
+      hoverInspection: true,
+    };
+  }
+  if (step === "day15-card-catalog-generic") {
+    return {
+      kicker: "LOTUS · CARD CATALOG",
+      title: "범용 리스트로 바꿔보세요",
+      message: "카드 탭은 테마 전용 카드와 여러 테마가 함께 쓰는 범용 카드를 나눠 봅니다. ‘범용 리스트’를 직접 누르세요.",
+      controlIds: ["card-catalog-generic"],
+      inspection: true,
+    };
+  }
+  if (step === "day15-card-catalog-theme") {
+    return {
+      kicker: "LOTUS · CARD CATALOG",
+      title: "테마 리스트로 돌아오세요",
+      message: "테마 리스트는 테마별 카드와 채용률·승률을 함께 봅니다. ‘테마 리스트’를 직접 눌러 돌아오세요.",
+      controlIds: ["card-catalog-themes"],
+      inspection: true,
     };
   }
   if (step === "day15-part") {
-    const target = getGuidedDossierTarget(game);
-    const theme = THEME_BY_ID[target.themeId];
-    const part = theme.parts.find((candidate) => candidate.id === target.partId);
     return {
       kicker: "LOTUS · CORE PARTS",
-      title: "핵심 파츠를 선택해주세요",
-      message: `‘${part?.name ?? "핵심 파츠"}’을 선택하면 파츠별 채용률·평균 매수·현행 제한을 함께 볼 수 있습니다.`,
-      placement: "top-right",
+      title: "카드 표를 읽습니다",
+      message: "카드 표로 마우스를 옮겨 역할·출시일·채용률·평균 매수·시세·현행 제한을 확인하세요.",
+      controlIds: ["theme-card-table"],
+      inspection: true,
+      hoverInspection: true,
     };
   }
-  if (step === "day15-theme") {
-    const target = getGuidedDossierTarget(game);
+  if (step === "day15-request-support") {
     return {
-      kicker: "LOTUS · THEME DOSSIER",
-      title: `${THEME_BY_ID[target.themeId].shortName} 테마를 선택해주세요`,
-      message: "테마를 열면 채용률·승률·불쾌도와 핵심 파츠 구성을 한 화면에서 확인할 수 있습니다.",
-      placement: "top-right",
+      kicker: "LOTUS · RELEASE REQUEST",
+      title: "지원 요청 기능입니다",
+      message: "지원은 기존 테마의 안정성·대응력·결과물·회수 중 다음 보강 방향을 요청합니다. 튜토리얼에서는 버튼이 잠겨 있고 요청도 기록되지 않습니다.",
+      controlIds: ["release-request-support"],
+      informational: true,
+    };
+  }
+  if (step === "day15-request-indirect") {
+    return {
+      kicker: "LOTUS · RELEASE REQUEST",
+      title: "간접 지원 기능입니다",
+      message: "간접은 선택한 테마와 키워드가 맞는 범용 카드가 다음 발매 후보에 들어오도록 요청합니다. 지금은 설명만 확인합니다.",
+      controlIds: ["release-request-indirect"],
+      informational: true,
+    };
+  }
+  if (step === "day15-request-target") {
+    return {
+      kicker: "LOTUS · RELEASE REQUEST",
+      title: "환경 저격 기능입니다",
+      message: "저격은 선택한 테마를 상대하기 좋은 범용 카드가 다음 발매 후보에 들어오도록 요청합니다. 지금은 설명만 확인합니다.",
+      controlIds: ["release-request-target"],
+      informational: true,
+    };
+  }
+  if (step === "day15-request-reprint") {
+    return {
+      kicker: "LOTUS · RELEASE REQUEST",
+      title: "재판 요청 기능입니다",
+      message: "재판은 이미 발매된 카드의 공급을 늘립니다. 접근성은 좋아지지만 기존 보유가치와 구매 신뢰가 흔들릴 수 있으며, 지금은 설명만 확인합니다.",
+      controlIds: ["release-request-reprint"],
+      informational: true,
     };
   }
   if (step === "day15-finance") {
@@ -1309,17 +1700,17 @@ function getGuidedBrief(
       kicker: "LOTUS · FINANCE",
       title: "이제 재무를 선택해주세요",
       message: "커뮤니티의 큰 목소리가 실제 구매로 이어졌는지는 매출 흐름에서 따로 확인해야 합니다.",
-      placement: "bottom-right",
+      controlIds: ["nav-finance"],
+      inspection: true,
     };
   }
   if (step === "day15-finance-read") {
     return {
       kicker: "LOTUS · DAILY MARKET",
       title: "매출과 유저 흐름을 확인해주세요",
-      message: "밝게 열린 차트에서 커뮤니티의 큰 목소리가 실제 구매와 잔류로 이어졌는지 확인한 뒤 다음 안내로 넘어갑니다.",
-      placement: "bottom-left",
+      message: "차트의 날짜 구간에 마우스를 올리거나 키보드 초점을 옮겨 그날의 매출·자금·환경·신뢰·여론을 직접 확인하세요.",
       inspection: true,
-      confirmLabel: "확인 · 다음",
+      hoverInspection: true,
     };
   }
   if (step === "day15-operations") {
@@ -1327,74 +1718,90 @@ function getGuidedBrief(
       kicker: "LOTUS · BUSINESS OPERATIONS",
       title: "이제 사업 운영을 선택해주세요",
       message: "운영자금은 쌓아두는 점수가 아니라 유입과 신뢰를 만드는 수단입니다. 밝게 표시된 ‘사업 운영’을 여세요.",
-      placement: "bottom-right",
+      controlIds: ["nav-operations"],
+      inspection: true,
+    };
+  }
+  if (step === "day15-operations-overview") {
+    return {
+      kicker: "LOTUS · BUSINESS OPERATIONS",
+      title: "사업 액션의 기능군을 확인하세요",
+      message: "광고·유통·대회·전략 액션은 비용·기간·쿨다운과 공개된 도전 조건이 다릅니다. 봉입률 조정만 적발 확률을 사용합니다.",
+      controlIds: ["business-actions"],
+      informational: true,
     };
   }
   if (step === "day15-tv-cm") {
     return {
       kicker: "LOTUS · FIRST CAMPAIGN",
       title: "TV CM 집중 편성을 집행해주세요",
-      message: "사업 액션은 하루에 한 번만 집행할 수 있습니다. 비용·기간·쿨다운을 확인하고 강조된 버튼을 선택해주세요.",
-      placement: "top-right",
+      message: "TV CM의 현재 성공 확률·비용·기간·쿨다운을 확인하고 강조된 집행 버튼을 눌러주세요. 결과는 다음 날 확정됩니다.",
+    };
+  }
+  if (step === "day1-distribution-return") {
+    return {
+      kicker: "LOTUS · META CHECK",
+      title: "분포 화면으로 돌아가세요",
+      message: "DAY 1 카드 표만 확인했으며 아직 어떤 운영 액션도 집행하지 않았습니다. 상단의 ‘분포’를 직접 눌러 현재 그래프를 띄우세요.",
+      controlIds: ["nav-distribution"],
+      inspection: true,
     };
   }
   if (step === "day15-advance") {
     return {
-      kicker: "LOTUS · CAMPAIGN ACTIVE",
-      title: "첫 사업 액션을 집행했습니다",
-      message: "TV CM 효과는 다음 날부터 반영됩니다. DAY 22까지 진행해 유입과 운영 현금의 변화를 확인하겠습니다.",
+      kicker: "LOTUS · CAMPAIGN RESULT",
+      title: "광고 결과를 기다립니다",
+      message: "강조된 +7일 버튼을 눌러 DAY 22까지 진행하세요.",
     };
   }
   if (step === "day22-advance") {
     return {
       kicker: "LOTUS · TREND CHECK",
       title: "광고 효과와 자연 변동을 함께 확인했습니다",
-      message: "한 번의 급등만으로 판단하지 않습니다. 첫 발매 직전인 DAY 29까지 진행해주세요.",
+      message: "한 번의 급등만으로 판단하지 않습니다. 강조된 +7일 버튼을 눌러 첫 발매 직전인 DAY 29까지 진행하세요.",
     };
   }
   if (step === "day29-advance") {
     return {
       kicker: "LOTUS · RELEASE EVE",
       title: "첫 정기 발매가 하루 남았습니다",
-      message: "강조된 +1일 버튼으로 DAY 30 발매 검토를 여세요.",
+      message: "강조된 +1일 버튼으로 DAY 30으로 진행하세요. 이번 발매 시안은 이미 결정되어 있으므로 구성과 파워를 확인한 뒤 확정합니다.",
     };
   }
-  if (step === "day30-release" && releaseTarget) {
-    if (releaseTarget.kind === "submit") {
-      return {
-        kicker: "LOTUS · RELEASE REVIEW",
-        title: "지정된 3개 시안이 준비됐습니다",
-        message: "선택과 파워 조정값을 확인한 뒤 ‘3종 발매 확정’을 선택해주세요.",
-        placement: "top-left",
-      };
-    }
-    const option = game.releaseSlate?.options.find(
-      (candidate) => candidate.id === releaseTarget.optionId,
-    );
-    const name = option ? THEME_BY_ID[option.themeId].name : "강조된 시안";
-    const optionIndex = option
-      ? (game.releaseSlate?.options.indexOf(option) ?? 0)
-      : 0;
-    const optionPlacement: GuidedBrief["placement"] = optionIndex >= 3
-      ? optionIndex % 3 === 2
-        ? "top-left"
-        : "top-right"
-      : optionIndex % 3 === 2
-        ? "bottom-left"
-        : "bottom-right";
-    if (releaseTarget.kind === "option") {
-      return {
-        kicker: "LOTUS · RELEASE REVIEW",
-        title: `${name} 시안을 선택해주세요`,
-        message: "프롤로그에서는 고정된 발매 결정을 함께 실행합니다. 밝게 표시된 시안만 선택할 수 있습니다.",
-        placement: optionPlacement,
-      };
-    }
+  if (step === "day30-releases-nav") {
     return {
-      kicker: "LOTUS · POWER CONTROL",
-      title: `${name} 파워를 ${releaseTarget.adjustment > 0 ? "+" : ""}${releaseTarget.adjustment}로 조정해주세요`,
-      message: "예상 티어는 추정치입니다. 강조된 조정값을 선택해주세요.",
-      placement: optionPlacement,
+      kicker: "LOTUS · RELEASE ARCHIVE",
+      title: "발매 탭을 열어보세요",
+      message: "발매 탭에는 출시일과 카드팩, 신테마·지원·범용 구성이 기록됩니다. 상단의 ‘발매’를 직접 누르세요.",
+      controlIds: ["nav-releases"],
+      inspection: true,
+    };
+  }
+  if (step === "day30-release-principles") {
+    return {
+      kicker: "LOTUS · RELEASE PRINCIPLES",
+      title: "발매 원칙을 먼저 확인합니다",
+      message: "강한 카드는 매출과 관심을 빠르게 올리지만 환경 집중·피로·건강 악화를 부를 수 있습니다. 약한 카드는 매출이 줄 수 있지만 건강과 기존 카드 가치를 지키기 쉽습니다.",
+      controlIds: ["release-review"],
+      informational: true,
+    };
+  }
+  if (step === "day30-release-select") {
+    return {
+      kicker: "LOTUS · RELEASE REVIEW",
+      title: "결정된 발매안을 확인하세요",
+      message: "신테마 2종·지원 1종·범용 1종과 각 파워 값을 확인한 뒤 ‘발매 확정’을 직접 누르세요.",
+      controlIds: ["release-review"],
+    };
+  }
+  if (step === "day30-releases-read") {
+    return {
+      kicker: "LOTUS · RELEASE ARCHIVE",
+      title: "발매 기록을 읽어보세요",
+      message: "발매 기록으로 마우스를 옮겨 카드팩과 새로 들어온 테마·지원·범용 카드를 확인하세요.",
+      controlIds: ["release-archive"],
+      inspection: true,
+      hoverInspection: true,
     };
   }
   if (step === "day30-advance") {
@@ -1408,25 +1815,69 @@ function getGuidedBrief(
     return {
       kicker: "LOTUS · DAY-AFTER REACTION",
       title: "발매 다음 날의 글을 읽어보세요",
-      message: "발매 반응이 집중된 20개 글을 직접 확인해주세요. 체감과 실제 수치를 구분해서 읽어야 합니다.",
-      placement: "bottom-left",
+      message: "글 목록으로 마우스를 옮겨 제목과 좋아요를 확인하세요. 체감과 실제 수치는 구분해야 합니다.",
       inspection: true,
-      confirmLabel: "확인 · 다음",
+      hoverInspection: true,
+    };
+  }
+  if (step === "day31-community-controls") {
+    return {
+      kicker: "LOTUS · COMMUNITY HISTORY",
+      title: "날짜별 글을 다시 볼 수 있습니다",
+      message: "날짜 버튼으로 마우스를 옮겨 기능을 확인하세요. 이 버튼들은 글 목록만 바꾸며 게임 시간은 진행하지 않습니다.",
+      controlIds: ["community-day"],
+      inspection: true,
+      hoverInspection: true,
+    };
+  }
+  if (step === "day31-community-open") {
+    return {
+      kicker: "LOTUS · COMMUNITY LINK",
+      title: "대표 글을 열어보세요",
+      message: "커뮤니티 글을 누르면 그 글이 언급한 테마나 카드 상세로 이동합니다. 강조된 글을 직접 누르세요.",
+      controlIds: ["community-post"],
+    };
+  }
+  if (step === "day31-news") {
+    return {
+      kicker: "LOTUS · DAILY NEWS",
+      title: "소식 탭을 열어보세요",
+      message: "소식은 큰 수치 변화와 인기 커뮤니티 화제를 날짜별로 압축합니다. 상단의 ‘소식’을 직접 누르세요.",
+      controlIds: ["nav-news"],
+      inspection: true,
+    };
+  }
+  if (step === "day31-news-controls") {
+    return {
+      kicker: "LOTUS · DAILY NEWS",
+      title: "소식도 날짜별로 확인합니다",
+      message: "날짜 버튼과 소식 목록으로 마우스를 옮겨 기능을 확인하세요. 좋은 소식은 푸른색, 나쁜 소식은 붉은색입니다.",
+      controlIds: ["news-day", "news-list"],
+      inspection: true,
+      hoverInspection: true,
     };
   }
   if (step === "day31-advance") {
     return {
       kicker: "LOTUS · DAY-AFTER REACTION",
       title: "발매 반응을 확인했습니다",
-      message: "초기 반응이 얼마나 남는지 보기 위해 DAY 38까지 진행합니다.",
+      message: "초기 반응이 얼마나 남는지 보기 위해 강조된 +7일 버튼을 눌러 DAY 38까지 진행하세요.",
     };
   }
   if (step === "day38-advance") {
     return {
       kicker: "LOTUS · REACTION DECAY",
       title: "초기 폭발 이후의 환경을 확인했습니다",
-      message: "아래 버튼으로 DAY 45까지 진행해 첫 금제위원회를 여세요.",
-      actionLabel: "DAY 45 금제위원회 열기",
+      message: "강조된 +7일 버튼을 눌러 DAY 45까지 진행하고 첫 금제위원회를 여세요.",
+    };
+  }
+  if (step === "day45-restriction-controls") {
+    return {
+      kicker: "LOTUS · FIRST MANDATE",
+      title: "금제 원칙을 먼저 확인합니다",
+      message: "강한 제재는 환경을 빠르게 회복시키지만 시세·보유가치·구매 신뢰 충격이 큽니다. 약한 제재나 무변경은 충격이 작지만 문제 환경이 남을 수 있습니다.",
+      controlIds: ["restriction-limits", "restriction-actions"],
+      informational: true,
     };
   }
   if (step === "day45-restriction") {
@@ -1434,9 +1885,8 @@ function getGuidedBrief(
       kicker: "LOTUS · FIRST MANDATE",
       title: "첫 금제는 책임자님의 결정입니다",
       message: restrictionPolicy.changeCount > 0
-        ? `현재 실효 조정 ${restrictionPolicy.meaningfulCutCount}종 · 영향 테마 ${restrictionPolicy.affectedThemeCount}개 · 추정 충격 ${Math.round(restrictionPolicy.totalImpact)}입니다. 채용률·승률·불쾌도와 파츠 의존도를 비교해 자유롭게 수정하거나 그대로 제출하세요.`
-        : "정해진 정답은 없습니다. 채용률·승률·불쾌도와 파츠 의존도를 비교해 자유롭게 제한을 정하거나, 현 환경 유지안을 제출하세요.",
-      placement: "bottom-left",
+        ? "채용률·승률·파츠 의존도를 비교해 직접 조정하고, 결정했으면 제출하세요. 제출과 동시에 인수인계가 끝납니다."
+        : "정해진 정답은 없습니다. 직접 제한을 정하거나 현 환경 유지안을 제출하세요. 제출과 동시에 인수인계가 끝납니다.",
       freeInteraction: true,
     };
   }
@@ -1445,17 +1895,17 @@ function getGuidedBrief(
       kicker: "LOTUS · POST-RESTRICTION",
       title: "금제 다음 날의 커뮤니티를 확인해주세요",
       message: "금제 당일이 아니라 DAY 46부터 반응과 이탈이 나타납니다. 밝게 표시된 ‘커뮤니티’를 선택해주세요.",
-      placement: "bottom-right",
+      controlIds: ["nav-community"],
+      inspection: true,
     };
   }
   if (step === "day46-community-read") {
     return {
       kicker: "LOTUS · POST-RESTRICTION",
       title: "금제 다음 날의 글을 읽어보세요",
-      message: "밝게 열린 20개 글에서 금제 반응과 이탈 신호를 확인해주세요. 확인 후 실제 메타 분포와 대조합니다.",
-      placement: "bottom-left",
+      message: "글 목록으로 마우스를 옮겨 금제 반응과 이탈 신호를 확인하세요.",
       inspection: true,
-      confirmLabel: "확인 · 분포 대조",
+      hoverInspection: true,
     };
   }
   if (step === "day46-distribution") {
@@ -1463,7 +1913,8 @@ function getGuidedBrief(
       kicker: "LOTUS · FINAL META CHECK",
       title: "반응과 실제 분포를 대조해주세요",
       message: "커뮤니티의 목소리가 곧 대회 성과는 아닙니다. ‘분포’에서 최근 14일 탑컷 점유율과 활성 유저를 마지막으로 확인합니다.",
-      placement: "bottom-right",
+      controlIds: ["nav-distribution"],
+      inspection: true,
     };
   }
   if (step === "day46-distribution-read") {
@@ -1471,9 +1922,8 @@ function getGuidedBrief(
       kicker: "LOTUS · FINAL META CHECK",
       title: "최종 메타표를 확인해주세요",
       message: "탑컷 점유율은 최근 14일 전체 본선 자리 중 차지한 비율이며 티어 기준입니다. 본선 진출률은 그 테마 참가자 중 탑컷에 오른 비율입니다. 채용률·승률과 함께 비교해주세요.",
-      placement: "bottom-left",
       inspection: true,
-      confirmLabel: "확인 · 인수 완료",
+      hoverInspection: true,
     };
   }
   if (step === "day46-start") {
@@ -1494,362 +1944,6 @@ function getGuidedBrief(
     title: "결과 관측은 다음 날 시작됩니다",
     message: "강조된 +1일 버튼으로 DAY 46에 진입한 뒤 금제 반응과 최종 분포를 확인합니다.",
   };
-}
-
-function GuidedTutorialOverlay({
-  brief,
-  busy,
-  day,
-  onActivate,
-  onConfirm,
-  onPause,
-  targetKey,
-  onSkip,
-}: {
-  brief: GuidedBrief;
-  busy: boolean;
-  day: number;
-  onActivate?: () => void;
-  onConfirm: () => void;
-  onPause: () => void;
-  targetKey: string;
-  onSkip: () => void;
-}) {
-  const [rect, setRect] = useState<{
-    top: number;
-    left: number;
-    width: number;
-    height: number;
-  } | null>(null);
-  const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
-  const skipTriggerRef = useRef<HTMLButtonElement>(null);
-  const skipCancelRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!skipConfirmOpen) return;
-    const previouslyFocused = document.activeElement;
-    const frame = window.requestAnimationFrame(() => {
-      skipCancelRef.current?.focus({ preventScroll: true });
-    });
-    return () => {
-      window.cancelAnimationFrame(frame);
-      if (previouslyFocused instanceof HTMLElement) {
-        previouslyFocused.focus({ preventScroll: true });
-      }
-    };
-  }, [skipConfirmOpen]);
-
-  useEffect(() => {
-    let frame = 0;
-    let targetAttempts = 0;
-    let target: HTMLElement | null = null;
-    const measure = () => {
-      if (!target) {
-        setRect(null);
-        return;
-      }
-      const bounds = target.getBoundingClientRect();
-      const padding = 7;
-      const left = Math.max(0, bounds.left - padding);
-      const top = Math.max(0, bounds.top - padding);
-      const rightEdge = Math.min(window.innerWidth, bounds.right + padding);
-      const bottomEdge = Math.min(window.innerHeight, bounds.bottom + padding);
-      setRect({
-        top,
-        left,
-        width: Math.max(0, rightEdge - left),
-        height: Math.max(0, bottomEdge - top),
-      });
-    };
-    const resizeObserver = new ResizeObserver(measure);
-    const connectTarget = () => {
-      if (brief.freeInteraction) {
-        setRect(null);
-        return;
-      }
-      target = document.querySelector<HTMLElement>(
-        '[data-tutorial-target="active"]',
-      );
-      if (!target) {
-        setRect(null);
-        targetAttempts += 1;
-        if (targetAttempts < 12) {
-          frame = window.requestAnimationFrame(connectTarget);
-        }
-        return;
-      }
-      target.scrollIntoView({ block: "nearest", inline: "nearest" });
-      target.setAttribute("aria-describedby", "guided-tutorial-message");
-      target.focus({ preventScroll: true });
-      resizeObserver.observe(target);
-      measure();
-    };
-    frame = window.requestAnimationFrame(connectTarget);
-    const handleViewportChange = () => {
-      window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(measure);
-    };
-    const trapFocus = (event: KeyboardEvent) => {
-      const skipDialog = document.querySelector<HTMLElement>(
-        ".guided-skip-dialog",
-      );
-      if (skipDialog && event.key === "Escape") {
-        event.preventDefault();
-        setSkipConfirmOpen(false);
-        return;
-      }
-      if (brief.freeInteraction && !skipDialog) return;
-      if (event.key !== "Tab") return;
-      const dialogButtons = skipDialog
-        ? Array.from(
-            skipDialog.querySelectorAll<HTMLElement>("button:not(:disabled)"),
-          )
-        : [];
-      const coachButtons = skipDialog
-        ? []
-        : Array.from(
-            document.querySelectorAll<HTMLElement>(
-              ".guided-coach button:not(:disabled)",
-            ),
-          );
-      const focusables = skipDialog
-        ? dialogButtons
-        : [target, ...coachButtons].filter(
-            (candidate): candidate is HTMLElement => Boolean(candidate),
-          );
-      if (focusables.length === 0) return;
-      const currentIndex = focusables.indexOf(
-        document.activeElement as HTMLElement,
-      );
-      const direction = event.shiftKey ? -1 : 1;
-      const nextIndex = currentIndex < 0
-        ? 0
-        : (currentIndex + direction + focusables.length) % focusables.length;
-      event.preventDefault();
-      focusables[nextIndex].focus({ preventScroll: true });
-    };
-    const guardPointerInput = (event: Event) => {
-      const eventTarget = event.target;
-      if (!(eventTarget instanceof Element)) return;
-      const skipDialog = document.querySelector<HTMLElement>(
-        ".guided-skip-dialog",
-      );
-      if (skipDialog) {
-        if (skipDialog.contains(eventTarget)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        return;
-      }
-      if (brief.freeInteraction) return;
-      const activeTarget = document.querySelector<HTMLElement>(
-        '[data-tutorial-target="active"]',
-      );
-      if (
-        activeTarget?.contains(eventTarget) ||
-        eventTarget.closest(".guided-coach button") ||
-        eventTarget.closest(".guided-spotlight-ring")
-      ) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-    };
-    window.addEventListener("resize", handleViewportChange);
-    window.addEventListener("scroll", handleViewportChange, true);
-    window.addEventListener("keydown", trapFocus);
-    document.addEventListener("pointerdown", guardPointerInput, true);
-    document.addEventListener("click", guardPointerInput, true);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener("resize", handleViewportChange);
-      window.removeEventListener("scroll", handleViewportChange, true);
-      window.removeEventListener("keydown", trapFocus);
-      document.removeEventListener("pointerdown", guardPointerInput, true);
-      document.removeEventListener("click", guardPointerInput, true);
-      resizeObserver.disconnect();
-      target?.removeAttribute("aria-describedby");
-    };
-  }, [brief.freeInteraction, targetKey]);
-
-  return (
-    <div
-      className={`guided-tour-layer${brief.inspection ? " is-inspection" : ""}${
-        brief.freeInteraction ? " is-free-interaction" : ""
-      }${
-        skipConfirmOpen ? " is-skip-confirming" : ""
-      }`}
-    >
-      {brief.freeInteraction ? null : rect ? (
-        <>
-          <div
-            aria-hidden="true"
-            className="guided-spotlight-cutout"
-            style={{
-              height: rect.height,
-              left: rect.left,
-              top: rect.top,
-              width: rect.width,
-            }}
-          />
-          {!brief.inspection && !skipConfirmOpen ? (
-            <button
-              aria-label={`안내 대상 실행: ${brief.title}`}
-              className="guided-spotlight-ring"
-              onClick={() => {
-                if (onActivate) {
-                  onActivate();
-                  return;
-                }
-                const target = document.querySelector<HTMLElement>(
-                  '[data-tutorial-target="active"]',
-                );
-                target?.focus({ preventScroll: true });
-                target?.click();
-              }}
-              style={{ height: rect.height, left: rect.left, top: rect.top, width: rect.width }}
-              tabIndex={-1}
-              type="button"
-            />
-          ) : null}
-        </>
-      ) : (
-        <div aria-hidden="true" className="guided-shade guided-shade-full" />
-      )}
-      <aside
-        aria-live="polite"
-        className={`guided-coach ${brief.placement ?? "bottom-left"}`}
-        id="guided-tutorial-message"
-      >
-        <LotusSymbol tone="info" />
-        <div className="guided-coach-copy">
-          <span>{brief.kicker}</span>
-          <strong>{brief.title}</strong>
-          <p>{brief.message}</p>
-        </div>
-        <div className="guided-coach-footer">
-          <span>DAY {day} / 46 · 인수인계</span>
-          <div>
-            {brief.actionLabel && onActivate ? (
-              <button
-                className="guided-coach-confirm"
-                disabled={busy}
-                onClick={onActivate}
-                type="button"
-              >
-                {brief.actionLabel}
-              </button>
-            ) : null}
-            {brief.inspection && brief.confirmLabel ? (
-              <button
-                className="guided-coach-confirm"
-                disabled={busy}
-                onClick={onConfirm}
-                type="button"
-              >
-                {brief.confirmLabel}
-              </button>
-            ) : null}
-            <button
-              className="guided-coach-pause"
-              disabled={busy}
-              onClick={onPause}
-              type="button"
-            >
-              PLAY 화면
-            </button>
-            {day < FIRST_BAN_DAY ? (
-              <button
-                className="guided-coach-skip"
-                disabled={busy}
-                onClick={() => setSkipConfirmOpen(true)}
-                ref={skipTriggerRef}
-                type="button"
-              >
-                {busy ? "저장 중" : "건너뛰기"}
-              </button>
-            ) : null}
-          </div>
-        </div>
-      </aside>
-      {skipConfirmOpen ? (
-        <>
-          <div aria-hidden="true" className="guided-skip-dialog-backdrop" />
-          <section
-            aria-describedby="guided-skip-description"
-            aria-labelledby="guided-skip-title"
-            aria-modal="true"
-            className="guided-skip-dialog"
-            role="alertdialog"
-          >
-            <LotusSymbol tone="caution" />
-            <div className="guided-skip-dialog-copy">
-              <span>LOTUS · HANDOVER OVERRIDE</span>
-              <strong id="guided-skip-title">프롤로그를 건너뛸까요?</strong>
-              <p id="guided-skip-description">
-                고정된 학습 구간만 생략하고 DAY 45 첫 금제위원회에서 직접 결정을 시작합니다.
-              </p>
-            </div>
-            <div className="guided-skip-dialog-note">
-              첫 금제안은 자동 적용되지 않습니다. 제출 뒤 새 임기 시드가 배정됩니다.
-            </div>
-            <div className="guided-skip-dialog-actions">
-              <button
-                className="guided-skip-dialog-cancel"
-                disabled={busy}
-                onClick={() => setSkipConfirmOpen(false)}
-                ref={skipCancelRef}
-                type="button"
-              >
-                계속 안내받기
-              </button>
-              <button
-                className="guided-skip-dialog-confirm"
-                disabled={busy}
-                onClick={() => {
-                  setSkipConfirmOpen(false);
-                  onSkip();
-                }}
-                type="button"
-              >
-                {busy ? "DAY 45 준비 중" : "첫 금제부터 시작"}
-              </button>
-            </div>
-          </section>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-function GuidedMandateBar({
-  brief,
-  busy,
-  day,
-  onPause,
-}: {
-  brief: GuidedBrief;
-  busy: boolean;
-  day: number;
-  onPause: () => void;
-}) {
-  return (
-    <aside aria-live="polite" className="guided-mandate-bar">
-      <LotusSymbol tone="info" />
-      <div className="guided-mandate-copy">
-        <span>{brief.kicker}</span>
-        <strong>{brief.title}</strong>
-        <p>{brief.message}</p>
-      </div>
-      <div className="guided-mandate-actions">
-        <span>DAY {day} / 46 · 자유 검토</span>
-        <button disabled={busy} onClick={onPause} type="button">
-          PLAY 화면
-        </button>
-      </div>
-    </aside>
-  );
 }
 
 function GameSession({
@@ -1888,7 +1982,7 @@ function GameSession({
     : initialGame.operations.pendingEvent
       ? "operations"
     : initialGame.phase === "ban-edit"
-      ? "restrictions"
+      ? "cards"
       : initialGame.phase === "release-edit"
         ? "releases"
         : "distribution";
@@ -1902,14 +1996,12 @@ function GameSession({
       ? makeRestrictionDraft(initialGame)
       : {},
   );
+  const [releaseDraft, setReleaseDraft] = useState<string[]>([]);
   const [supportTarget, setSupportTarget] = useState<ThemeId | null>(null);
   const [supportDirection, setSupportDirection] =
     useState<SupportDirection>("consistency");
-  const [releaseDraft, setReleaseDraft] = useState<
-    Record<string, PowerAdjustment>
-  >({});
   const [reactionFlashDay, setReactionFlashDay] = useState<number | null>(null);
-  const [impactNotice, setImpactNotice] = useState<ImpactNotice | null>(null);
+  const [impactItems, setImpactItems] = useState<DailyNewsItem[]>([]);
   const [impactFx, setImpactFx] = useState<{
     key: number;
     tone: "positive" | "negative" | "caution";
@@ -1939,6 +2031,7 @@ function GameSession({
   const guidedFinishingRef = useRef(false);
   const packOddsCommittedRef = useRef(false);
   const lastImpactFxDayRef = useRef<number | null>(null);
+  const impactTimersRef = useRef<number[]>([]);
 
   const triggerImpactObservation = useCallback((
     day: number,
@@ -1960,6 +2053,7 @@ function GameSession({
   useEffect(() => {
     if (
       game === lastQueuedGameRef.current ||
+      game.phase === "release-edit" ||
       persistence.kind === "unavailable"
     ) {
       return;
@@ -1987,11 +2081,10 @@ function GameSession({
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  useEffect(() => {
-    if (!impactNotice) return;
-    const timer = window.setTimeout(() => setImpactNotice(null), 4200);
-    return () => window.clearTimeout(timer);
-  }, [impactNotice]);
+  useEffect(() => () => {
+    impactTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    impactTimersRef.current = [];
+  }, []);
 
   useEffect(() => {
     if (!impactFx) return;
@@ -2128,16 +2221,6 @@ function GameSession({
 
   const selectedTheme = THEME_BY_ID[selectedThemeId] ?? THEMES[0];
   const selectedRuntime = game.themes[selectedTheme.id];
-  const selectedRank = rankedThemes.findIndex(
-    (theme) => theme.id === selectedTheme.id,
-  );
-  const selectedPlacement =
-    placementReport.themes[selectedTheme.id] ?? EMPTY_PLACEMENT_METRICS;
-  const selectedTierResult = getPlacementTier(
-    selectedPlacement.placementShare,
-    placementEndDay,
-    getThemeDebutDay(game.releaseHistory, selectedTheme.id),
-  );
   const nextReleaseDay = game.phase === "release-edit"
     ? game.day
     : getNextReleaseDay(game.day);
@@ -2151,8 +2234,6 @@ function GameSession({
   const hasFutureBan =
     game.phase === "ban-edit" || game.day < LAST_DECISION_DAY;
   const campaignEnded = game.phase === "ended";
-  const decisionsComplete =
-    game.phase === "running" && game.day >= LAST_DECISION_DAY;
   const settlementPeriod =
     game.phase === "running" && game.day >= SETTLEMENT_START_DAY;
   const mandateProgress =
@@ -2179,16 +2260,6 @@ function GameSession({
       : settlementPeriod
         ? "결산 관찰"
         : "임기 진행률";
-  const nearestEventDay = campaignEnded
-    ? game.day
-    : decisionsComplete
-      ? CAMPAIGN_END_DAY
-      : Math.min(
-          nextReleaseDay,
-          nextBanDay,
-          game.operations.nextEventDay ?? Number.POSITIVE_INFINITY,
-          CAMPAIGN_END_DAY,
-        );
   const total = totalUsers(game);
   const gameOver = total <= 0;
   const campaignComplete = game.phase === "ended" && !gameOver;
@@ -2196,20 +2267,18 @@ function GameSession({
     .reverse()
     .find((entry) => entry.day < game.day)?.totalUsers ?? total;
   const dailyUserDelta = Math.round(total - previousUserTotal);
-  const userBreakdown = `활성 유저 ${formatUsers(total)}명 · 경쟁층 ${formatUsers(game.users.tier)}명 · 캐주얼 ${formatUsers(game.users.casual)}명 · 컬렉터 ${formatUsers(game.users.collector)}명`;
-  const latestCommunity = [...game.community].sort((a, b) => b.day - a.day).slice(0, 3);
-  const selectedRequests = game.supportRequests.filter(
-    (request) => request.themeId === selectedTheme.id,
-  );
+  const userBreakdown = `활성 유저 ${formatUsers(total)}명`;
   const supportCooldown =
     game.lastSupportProposalDay === null
       ? 0
       : Math.max(0, 30 - (game.day - game.lastSupportProposalDay));
 
   const restrictionChanges = Object.entries(banDraft).filter(([partId, value]) => {
-    const official = Object.values(game.themes).find((theme) =>
-      Object.prototype.hasOwnProperty.call(theme.legalLimits, partId),
-    )?.legalLimits[partId];
+    const official = partId.startsWith("generic-")
+      ? game.genericLimits[partId as GenericCardId]
+      : Object.values(game.themes).find((theme) =>
+          Object.prototype.hasOwnProperty.call(theme.legalLimits, partId),
+        )?.legalLimits[partId];
     return official !== undefined && official !== value;
   });
   const restrictionPolicy = getRestrictionPolicyProfile(
@@ -2222,61 +2291,22 @@ function GameSession({
   );
   const advisorBrief = getAdvisorBrief(
     game,
-    impactNotice,
     activeTab,
     concentratedRestrictionRisk,
     restrictionPolicy,
   );
-  const guidedDossierTarget = guided
-    ? getGuidedDossierTarget(game)
-    : null;
-  const guidedReleasePlan = guided && game.day === 30 && game.phase === "release-edit"
-    ? getPrologueReleaseSelections(game)
-    : [];
-  let guidedReleaseTarget: GuidedReleaseTarget | null = null;
-  if (guided && guidedStep === "day30-release") {
-    const unselected = guidedReleasePlan.find(
-      (selection) =>
-        !Object.prototype.hasOwnProperty.call(
-          releaseDraft,
-          selection.optionId,
-        ),
-    );
-    if (unselected) {
-      guidedReleaseTarget = {
-        kind: "option",
-        optionId: unselected.optionId,
-        adjustment: unselected.powerAdjustment,
-      };
-    } else {
-      const unadjusted = guidedReleasePlan.find(
-        (selection) =>
-          releaseDraft[selection.optionId] !== selection.powerAdjustment,
-      );
-      guidedReleaseTarget = unadjusted
-        ? {
-            kind: "adjustment",
-            optionId: unadjusted.optionId,
-            adjustment: unadjusted.powerAdjustment,
-          }
-        : { kind: "submit" };
-    }
-  }
   // DAY 45 is the first real mandate: no hidden answer key or locked control.
   const guidedRestrictionTarget = getGuidedRestrictionTarget();
   const guidedBrief = guided
     ? getGuidedBrief(
         guidedStep,
         game,
-        guidedReleaseTarget,
         restrictionPolicy,
       )
     : null;
-  const guidedTargetKey = guidedReleaseTarget
-    ? `${guidedReleaseTarget.kind}-${"optionId" in guidedReleaseTarget ? guidedReleaseTarget.optionId : "submit"}-${"adjustment" in guidedReleaseTarget ? guidedReleaseTarget.adjustment : ""}`
-    : guidedRestrictionTarget
-      ? `${guidedRestrictionTarget.kind}-${"partId" in guidedRestrictionTarget ? guidedRestrictionTarget.partId : "submit"}-${"limit" in guidedRestrictionTarget ? guidedRestrictionTarget.limit : ""}`
-      : guidedStep;
+  const guidedTargetKey = guidedRestrictionTarget
+    ? `${guidedRestrictionTarget.kind}-${"partId" in guidedRestrictionTarget ? guidedRestrictionTarget.partId : "submit"}-${"limit" in guidedRestrictionTarget ? guidedRestrictionTarget.limit : ""}`
+    : guidedStep;
 
   function dispatch(command: GameCommand) {
     const next = reduceGame(game, command);
@@ -2292,20 +2322,36 @@ function GameSession({
     setActiveTab(nextTab);
   }
 
-  function showImpact(next: GameState) {
-    const notice = buildImpactNotice(next);
-    if (notice) {
-      setImpactNotice(notice);
-      setAdvisorPulseKey((current) => current + 1);
-      triggerImpactObservation(
-        next.day,
-        notice.tone === "negative"
-          ? "negative"
-          : notice.tone === "positive"
-            ? "positive"
-            : "caution",
-      );
-    }
+  function clearImpactMessages() {
+    impactTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    impactTimersRef.current = [];
+    setImpactItems([]);
+  }
+
+  function showImpact(previousDay: number, next: GameState) {
+    clearImpactMessages();
+    const news = getImpactNewsRange(next, previousDay, next.day);
+    news.forEach((item, index) => {
+      const arrivalTimer = window.setTimeout(() => {
+        setImpactItems((current) => [...current, item]);
+        emitGameSound("impact");
+        setAdvisorPulseKey((current) => current + 1);
+        if (
+          interfaceSettings.impactEffectsEnabled &&
+          interfaceSettings.motionPreference !== "reduced"
+        ) {
+          setImpactFx({
+            key: Date.now() + index,
+            tone: item.tone === "negative" ? "negative" : item.tone === "positive" ? "positive" : "caution",
+          });
+        }
+        const dismissTimer = window.setTimeout(() => {
+          setImpactItems((current) => current.filter((entry) => entry.id !== item.id));
+        }, 7600);
+        impactTimersRef.current.push(dismissTimer);
+      }, index * 140);
+      impactTimersRef.current.push(arrivalTimer);
+    });
   }
 
   function advance(days: number) {
@@ -2318,17 +2364,19 @@ function GameSession({
     if (game.phase !== "running") {
       setToast(
         game.phase === "release-edit"
-          ? "발매 시안 3개를 선택해야 날짜를 진행할 수 있습니다."
+          ? "정기 발매 구성을 먼저 선택해주세요."
           : "금제안을 제출해야 날짜를 진행할 수 있습니다.",
       );
+      if (game.phase === "release-edit") activateTab("releases", true);
       return null;
     }
-    const next = dispatch({ type: "ADVANCE_DAYS", days });
+    const next = reduceGame(game, { type: "ADVANCE_DAYS", days });
+    setGame(next);
     const businessToast = getBusinessTransitionToast(game, next);
     const eventResultToast = getBusinessEventTransitionToast(game, next);
     const eventArrived =
       !game.operations.pendingEvent && next.operations.pendingEvent;
-    showImpact(next);
+    showImpact(game.day, next);
     if (reactionFlashDay === next.day) {
       triggerImpactObservation(next.day, "caution");
     }
@@ -2358,12 +2406,12 @@ function GameSession({
           .filter(Boolean)
           .join(" "),
       );
-      activateTab("restrictions", true);
+      activateTab("cards", true);
     } else if (next.phase === "release-edit") {
-      setReleaseDraft({});
+      setReleaseDraft([]);
       setToast(
         [
-          `DAY ${next.day} 발매 시안 6개가 도착했습니다.`,
+          `DAY ${next.day} 정기 발매 후보가 도착했습니다. 카드팩 구성을 직접 선택해주세요.`,
           eventResultToast,
           businessToast,
         ]
@@ -2383,10 +2431,6 @@ function GameSession({
       );
     }
     return next;
-  }
-
-  function advanceToNextEvent() {
-    advance(Math.max(1, nearestEventDay - game.day));
   }
 
   function chooseBusinessEvent(choice: BusinessEventChoice) {
@@ -2415,9 +2459,7 @@ function GameSession({
 
   function selectTheme(themeId: ThemeId, partId?: string) {
     setSelectedThemeId(themeId);
-    activateTab(
-      partId || activeTab === "restrictions" ? "restrictions" : "themes",
-    );
+    activateTab("cards");
     setMobileDetail(true);
     setHighlightedPartId(partId ?? null);
     window.setTimeout(() => detailHeadingRef.current?.focus(), 0);
@@ -2425,6 +2467,10 @@ function GameSession({
   }
 
   function openSupport(themeId: ThemeId) {
+    if (guided) {
+      setToast("튜토리얼에서는 요청을 기록하지 않습니다.");
+      return;
+    }
     const committedSupportCount = getCommittedSupportCount(game, themeId);
     if (committedSupportCount >= 3) {
       setToast(
@@ -2461,9 +2507,12 @@ function GameSession({
       return;
     }
     const next = dispatch({
-      type: "PROPOSE_SUPPORT",
-      themeId: supportTarget,
-      direction: supportDirection,
+      type: "SET_RELEASE_REQUEST",
+      request: {
+        kind: "support",
+        themeId: supportTarget,
+        direction: supportDirection,
+      },
     });
     const newest = next.supportRequests.at(-1);
     setToast(
@@ -2472,6 +2521,52 @@ function GameSession({
         : "지원 제안을 등록하지 못했습니다.",
     );
     setSupportTarget(null);
+  }
+
+  function requestThemeRelease(
+    kind: "indirect-support" | "environment-target" | "reprint",
+    themeId: ThemeId,
+  ) {
+    if (guided) {
+      setToast("튜토리얼에서는 요청을 기록하지 않습니다.");
+      return;
+    }
+    if (kind === "indirect-support") {
+      if (getIndirectSupportGenericPool(game, themeId).length === 0) {
+        setToast("이 테마에 맞는 간접 지원 후보가 없습니다.");
+        return;
+      }
+      dispatch({
+        type: "SET_RELEASE_REQUEST",
+        request: { kind, themeId },
+      });
+      setToast(`${THEME_BY_ID[themeId].shortName} 간접 지원을 다음 발매에 요청했습니다.`);
+      return;
+    }
+    if (kind === "environment-target") {
+      if (getEnvironmentTargetGenericPool(game, themeId).length === 0) {
+        setToast("이 테마를 겨냥할 범용 후보가 없습니다.");
+        return;
+      }
+      dispatch({
+        type: "SET_RELEASE_REQUEST",
+        request: { kind, themeId },
+      });
+      setToast(`${THEME_BY_ID[themeId].shortName} 환경 저격을 다음 발매에 요청했습니다.`);
+      return;
+    }
+    const reprint = getReprintCandidates(game).find(
+      (candidate) => candidate.themeId === themeId,
+    );
+    if (!reprint) {
+      setToast("이 테마에는 재판을 요청할 출시 카드가 없습니다.");
+      return;
+    }
+    dispatch({
+      type: "SET_RELEASE_REQUEST",
+      request: { kind, cardId: reprint.cardId },
+    });
+    setToast(`${reprint.cardName} 재판을 다음 발매에 요청했습니다.`);
   }
 
   function runBusinessAction(
@@ -2501,11 +2596,16 @@ function GameSession({
       return null;
     }
 
+    const successProbability = getBusinessActionSuccessProbability(game, action);
     const next = dispatch({ type: "RUN_BUSINESS_ACTION", action });
     const record = next.operations.records.at(-1);
-    setImpactNotice(null);
+    clearImpactMessages();
     setAdvisorPulseKey((current) => current + 1);
-    if (record?.outcome === "backlash") {
+    if (isProbabilisticBusinessAction(action) && successProbability !== null) {
+      setToast(
+        `${withKoreanObjectParticle(definition.title)} 집행했습니다. 현재 상태 기준 성공 확률 ${Math.round(successProbability * 100)}%가 확정됐고 결과는 DAY ${game.day + 1}에 발표됩니다.`,
+      );
+    } else if (record?.outcome === "backlash") {
       setToast("챔피언십이 환경 문제를 노출해 역풍이 시작됐습니다.");
     } else if (record?.outcome === "success") {
       setToast("챔피언십이 흥행했습니다. 대회 유입 효과가 시작됩니다.");
@@ -2522,50 +2622,16 @@ function GameSession({
     return next;
   }
 
-  function toggleReleaseOption(optionId: string) {
-    if (
-      !Object.prototype.hasOwnProperty.call(releaseDraft, optionId) &&
-      Object.keys(releaseDraft).length >= 3
-    ) {
-      setToast("발매 시안은 정확히 3개까지 선택할 수 있습니다.");
-      return;
-    }
-    setReleaseDraft((current) => {
-      if (Object.prototype.hasOwnProperty.call(current, optionId)) {
-        const next = { ...current };
-        delete next[optionId];
-        return next;
-      }
-      return { ...current, [optionId]: 0 };
-    });
-  }
-
-  function submitRelease() {
-    const selections = Object.entries(releaseDraft).map(
-      ([optionId, powerAdjustment]) => ({ optionId, powerAdjustment }),
-    );
-    if (selections.length !== 3) {
-      setToast("6개 시안 중 정확히 3개를 선택하세요.");
-      return null;
-    }
-    const next = dispatch({ type: "SUBMIT_RELEASE", selections });
-    const businessToast = getBusinessTransitionToast(game, next);
-    setImpactNotice(null);
-    setReleaseDraft({});
-    setReactionFlashDay(next.day + 1);
-    setToast(
-      [`DAY ${next.day} 정기 발매 3종을 출시했습니다.`, businessToast]
-        .filter(Boolean)
-        .join(" "),
-    );
-    return next;
-  }
-
   function submitRestriction() {
     const changes = Object.fromEntries(restrictionChanges) as Record<
       string,
       RestrictionLimit
     >;
+    const capacity = getRestrictionChangeCapacity(game, changes);
+    if (!capacity.withinLimit) {
+      setToast("현재 카드풀에서 더 이상 금제할 수 없습니다.");
+      return null;
+    }
     const isFirstMandate =
       game.day === FIRST_BAN_DAY && !game.handoverComplete;
     const next = dispatch({
@@ -2575,7 +2641,7 @@ function GameSession({
         ? { campaignSeed: mintCampaignSeed(game.seed) }
         : {}),
     });
-    setImpactNotice(null);
+    clearImpactMessages();
     setReactionFlashDay(next.day + 1);
     setToast(
       restrictionChanges.length > 0
@@ -2583,6 +2649,28 @@ function GameSession({
         : "변경 없음으로 금제안을 제출했습니다.",
     );
     if (next.phase !== "ban-edit") setBanDraft({});
+    return next;
+  }
+
+  function submitReleaseSelections(selections: ReleaseSelection[]) {
+    if (game.phase !== "release-edit" || !game.releaseSlate) return null;
+    const next = dispatch(
+      guided && guidedStep === "day30-release-select"
+        ? getPrologueReleaseCommand(game)
+        : { type: "SUBMIT_RELEASE", selections },
+    );
+    impactTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    impactTimersRef.current = [];
+    setImpactItems([]);
+    setReleaseDraft([]);
+    setReactionFlashDay(next.day + 1);
+    setAdvisorPulseKey((current) => current + 1);
+    setToast(`DAY ${next.day} 카드팩 ${next.releaseHistory.at(-1)?.products.length ?? 0}종을 발매했습니다.`);
+    emitGameSound("release");
+    if (guided && next.day === 30) {
+      setGuidedStep("day30-releases-read");
+      activateTab("releases", true);
+    }
     return next;
   }
 
@@ -2596,9 +2684,9 @@ function GameSession({
       setGuidedStep("day1-community-read");
       return;
     }
-    if (guidedStep === "day15-themes" && tab === "themes") {
+    if (guidedStep === "day8-community" && tab === "community") {
       activateTab(tab, true);
-      setGuidedStep("day15-theme");
+      setGuidedStep("day8-advance");
       return;
     }
     if (guidedStep === "day15-finance" && tab === "finance") {
@@ -2608,7 +2696,12 @@ function GameSession({
     }
     if (guidedStep === "day15-operations" && tab === "operations") {
       activateTab(tab, true);
-      setGuidedStep("day15-tv-cm");
+      setGuidedStep("day15-operations-overview");
+      return;
+    }
+    if (guidedStep === "day1-distribution-return" && tab === "distribution") {
+      activateTab(tab, true);
+      setGuidedStep("day1-advance");
       return;
     }
     if (guidedStep === "day46-community" && tab === "community") {
@@ -2619,16 +2712,72 @@ function GameSession({
     if (guidedStep === "day46-distribution" && tab === "distribution") {
       activateTab(tab, true);
       setGuidedStep("day46-distribution-read");
+      return;
+    }
+    if (guidedStep === "day30-releases-nav" && tab === "releases") {
+      activateTab(tab, true);
+      setGuidedStep("day30-release-principles");
+      return;
+    }
+    if (guidedStep === "day31-news" && tab === "news") {
+      activateTab(tab, true);
+      setGuidedStep("day31-news-controls");
     }
   }
 
   function confirmGuidedInspection() {
     if (!guided || guidedBusy) return;
-    if (guidedStep === "day1-community-read") {
-      setGuidedStep("day1-advance");
+    if (guidedStep === "day1-community") {
+      handleGuidedNavigation("community");
+    } else if (guidedStep === "day15-finance") {
+      handleGuidedNavigation("finance");
+    } else if (guidedStep === "day15-operations") {
+      handleGuidedNavigation("operations");
+    } else if (guidedStep === "day1-distribution-return") {
+      handleGuidedNavigation("distribution");
+    } else if (guidedStep === "day30-releases-nav") {
+      handleGuidedNavigation("releases");
+    } else if (guidedStep === "day31-news") {
+      handleGuidedNavigation("news");
+    } else if (guidedStep === "day46-community") {
+      handleGuidedNavigation("community");
+    } else if (guidedStep === "day46-distribution") {
+      handleGuidedNavigation("distribution");
+    } else if (guidedStep === "day1-community-read") {
+      activateTab("cards", true);
+      setMobileDetail(true);
+      setGuidedStep("day1-card-overview");
+    } else if (guidedStep === "day8-community") {
+      handleGuidedNavigation("community");
+    } else if (guidedStep === "day1-banlist") {
+      setGuidedStep("day1-keywords");
+    } else if (guidedStep === "day1-keywords") {
+      setGuidedStep("day1-distribution-mode");
+      activateTab("distribution", true);
+    } else if (guidedStep === "day1-distribution-mode") {
+      setGuidedStep("day1-community");
+    } else if (guidedStep === "day8-placement-read") {
+      setGuidedStep("day8-distribution-links");
+    } else if (guidedStep === "day1-card-overview") {
+      setGuidedStep("day15-card-catalog-generic");
+    } else if (guidedStep === "day15-card-catalog-generic") {
+      setGuidedStep("day15-card-catalog-theme");
+    } else if (guidedStep === "day15-card-catalog-theme") {
+      setMobileDetail(true);
+      setGuidedStep("day15-part");
+    } else if (guidedStep === "day15-part") {
+      setGuidedStep("day15-request-support");
     } else if (guidedStep === "day15-finance-read") {
       setGuidedStep("day15-operations");
+    } else if (guidedStep === "day30-releases-read") {
+      setGuidedStep("day30-advance");
     } else if (guidedStep === "day31-community-read") {
+      setGuidedStep("day31-community-controls");
+    } else if (guidedStep === "day31-community-controls") {
+      setGuidedStep("day31-community-open");
+    } else if (guidedStep === "day31-community-open") {
+      setGuidedStep("day31-news");
+    } else if (guidedStep === "day31-news-controls") {
       setGuidedStep("day31-advance");
     } else if (guidedStep === "day46-community-read") {
       setGuidedStep("day46-distribution");
@@ -2637,14 +2786,40 @@ function GameSession({
     }
   }
 
+  function advanceGuidedInformation() {
+    if (!guided || guidedBusy) return;
+    if (guidedStep === "day1-controls") {
+      setGuidedStep("day1-banlist");
+    } else if (guidedStep === "day8-distribution-links") {
+      setGuidedStep("day8-community");
+    } else if (guidedStep === "day15-request-support") {
+      setGuidedStep("day15-request-indirect");
+    } else if (guidedStep === "day15-request-indirect") {
+      setGuidedStep("day15-request-target");
+    } else if (guidedStep === "day15-request-target") {
+      setGuidedStep("day15-request-reprint");
+    } else if (guidedStep === "day15-request-reprint") {
+      setGuidedStep("day1-distribution-return");
+    } else if (guidedStep === "day15-operations-overview") {
+      setGuidedStep("day15-tv-cm");
+    } else if (guidedStep === "day30-release-principles") {
+      setGuidedStep("day30-release-select");
+    } else if (guidedStep === "day45-restriction-controls") {
+      setGuidedStep("day45-restriction");
+    }
+  }
+
   function isGuidedNavigationTarget(tab: TabId) {
     return (
       (guidedStep === "day1-community" && tab === "community") ||
-      (guidedStep === "day15-themes" && tab === "themes") ||
+      (guidedStep === "day8-community" && tab === "community") ||
       (guidedStep === "day15-finance" && tab === "finance") ||
       (guidedStep === "day15-operations" && tab === "operations") ||
+      (guidedStep === "day1-distribution-return" && tab === "distribution") ||
       (guidedStep === "day46-community" && tab === "community") ||
-      (guidedStep === "day46-distribution" && tab === "distribution")
+      (guidedStep === "day46-distribution" && tab === "distribution") ||
+      (guidedStep === "day30-releases-nav" && tab === "releases") ||
+      (guidedStep === "day31-news" && tab === "news")
     );
   }
 
@@ -2665,6 +2840,11 @@ function GameSession({
         throw new Error(persistence.message);
       }
       await savePersistedGame(persistence, finalGame);
+      // GameSession is reused when the parent switches from guided to normal
+      // play. Clear the transient save lock before that prop change so the
+      // regular +1/+7 controls do not inherit a permanently busy tutorial.
+      guidedFinishingRef.current = false;
+      setGuidedBusy(false);
       onTutorialComplete(finalGame, persistence);
     } catch {
       setToast(
@@ -2683,10 +2863,10 @@ function GameSession({
     lastQueuedGameRef.current = firstBanGame;
     setGame(firstBanGame);
     setBanDraft(makeRestrictionDraft(firstBanGame));
-    setGuidedStep("day45-restriction");
+    setGuidedStep("day45-restriction-controls");
     setSelectedThemeId(targetTheme);
     setMobileDetail(true);
-    activateTab("restrictions", true);
+    activateTab("cards", true);
     setToast("고정 학습 구간을 건너뛰었습니다. 첫 금제안은 직접 결정해주세요.");
     try {
       await saveQueueRef.current;
@@ -2729,115 +2909,66 @@ function GameSession({
     setBanDraft((current) =>
       Object.keys(current).length > 0 ? current : makeRestrictionDraft(next),
     );
-    setGuidedStep("day45-restriction");
-    activateTab("restrictions", true);
+    setGuidedStep("day45-restriction-controls");
+    activateTab("cards", true);
     setSelectedThemeId(targetTheme);
     setMobileDetail(true);
     return true;
   }
 
-  function advanceGuidedTutorial() {
-    if (!guided || guidedBusy) return;
+  function advanceGuidedTime(days: 1 | 7) {
+    if (
+      !guided ||
+      guidedBusy ||
+      !isGuidedAdvanceDaysAllowed(guidedStep, days)
+    ) return;
+
     if (guidedStep === "day46-start") {
-      const finalGame = game.handoverComplete
+      const handover = game.handoverComplete
         ? game
-        : dispatch({ type: "COMPLETE_HANDOVER" });
-      void finishGuidedTutorial(finalGame);
+        : reduceGame(game, { type: "COMPLETE_HANDOVER" });
+      const next = reduceGame(handover, { type: "ADVANCE_DAYS", days });
+      void finishGuidedTutorial(next);
       return;
     }
-    if (
-      guidedStep === "day38-advance" &&
-      openGuidedRestrictionBoard(game)
-    ) {
+
+    if (guidedStep === "day29-advance") {
+      const next = dispatch({ type: "ADVANCE_DAYS", days: 1 });
+      if (next.phase !== "release-edit" || !next.releaseSlate) {
+        setToast("첫 발매 검토를 열지 못했습니다.");
+        return;
+      }
+      setReleaseDraft([]);
+      setGuidedStep("day30-releases-nav");
       return;
     }
-    if (
-      guidedStep === "day38-advance" &&
-      game.day === 45 &&
-      game.phase === "running"
-    ) {
-      setGuidedStep("day45-advance");
-      activateTab("restrictions", true);
-      return;
-    }
-    let targetDay: number | null = null;
-    let nextStep: GuidedStep | null = null;
-    let nextTab: TabId = activeTab;
-    if (guidedStep === "day1-advance") {
-      targetDay = 8;
-      nextStep = "day8-advance";
-      nextTab = "community";
-    } else if (guidedStep === "day8-advance") {
-      targetDay = 15;
-      nextStep = "day15-themes";
-      nextTab = "distribution";
-    } else if (guidedStep === "day15-advance") {
-      targetDay = 22;
-      nextStep = "day22-advance";
-      nextTab = "finance";
-    } else if (guidedStep === "day22-advance") {
-      targetDay = 29;
-      nextStep = "day29-advance";
-      nextTab = "finance";
-    } else if (guidedStep === "day29-advance") {
-      targetDay = 30;
-      nextStep = "day30-release";
-      nextTab = "releases";
-    } else if (guidedStep === "day30-advance") {
-      targetDay = 31;
-      nextStep = "day31-community-read";
-      nextTab = "community";
-    } else if (guidedStep === "day31-advance") {
-      targetDay = 38;
-      nextStep = "day38-advance";
-      nextTab = "community";
-    } else if (guidedStep === "day38-advance") {
-      targetDay = 45;
-      nextStep = "day45-restriction";
-      nextTab = "restrictions";
-    } else if (guidedStep === "day45-advance") {
-      targetDay = 46;
-      nextStep = "day46-community";
-      nextTab = "restrictions";
-    }
-    if (targetDay === null || targetDay <= game.day) return;
-    const next = advance(targetDay - game.day);
+
+    const next = advance(days);
     if (!next) return;
-    if (targetDay === 45) {
+    if (next.phase === "ban-edit") {
       openGuidedRestrictionBoard(next);
       return;
     }
-    if (nextStep) setGuidedStep(nextStep);
-    activateTab(nextTab, true);
-  }
-
-  function submitGuidedRelease() {
-    if (!guided || guidedReleaseTarget?.kind !== "submit") return;
-    const next = submitRelease();
-    if (next) setGuidedStep("day30-advance");
+    const nextStep = getGuidedStep(next);
+    setGuidedStep(nextStep);
+    const nextTab = getGuidedAdvanceTab(nextStep);
+    if (nextTab) activateTab(nextTab, true);
   }
 
   function submitGuidedRestriction() {
     if (!guided || guidedStep !== "day45-restriction") return;
     const next = submitRestriction();
-    if (next) setGuidedStep("day45-advance");
+    if (!next) return;
+    const handover = next.handoverComplete
+      ? next
+      : reduceGame(next, { type: "COMPLETE_HANDOVER" });
+    void finishGuidedTutorial(handover);
   }
 
-  function guidedAdvanceLabel() {
-    if (guidedStep === "day29-advance") return "+1일 · DAY 30 발매 검토";
-    if (guidedStep === "day30-advance") return "+1일 · DAY 31 반응 관측";
-    if (guidedStep === "day45-advance") {
-      return "+1일 · DAY 46 금제 반응";
-    }
-    if (guidedStep === "day46-start") return "업무 시작";
-    if (guidedStep === "day1-advance") return "+7일 · DAY 8까지";
-    if (guidedStep === "day8-advance") return "+7일 · DAY 15까지";
-    if (guidedStep === "day15-advance") return "+7일 · DAY 22까지";
-    if (guidedStep === "day22-advance") return "+7일 · DAY 29까지";
-    if (guidedStep === "day31-advance") return "+7일 · DAY 38까지";
-    if (guidedStep === "day38-advance") return `+${45 - game.day}일 · DAY 45 금제위원회`;
-    return "안내에 따라 진행";
-  }
+  const guidedOneDayAdvanceEnabled =
+    guided && isGuidedAdvanceDaysAllowed(guidedStep, 1);
+  const guidedSevenDayAdvanceEnabled =
+    guided && isGuidedAdvanceDaysAllowed(guidedStep, 7);
 
   return (
     <div
@@ -2856,12 +2987,29 @@ function GameSession({
         />
       ) : null}
       <header className="topbar">
-        <div className="brand-lockup">
-          <BrandMark className="brand-mark" />
-          <div>
-            <div className="brand-name">TCG REGULATOR</div>
-          </div>
-        </div>
+        <HeaderReferenceTools
+          banList={<CurrentBanList expanded game={game} />}
+          guidedToolTarget={
+            guidedStep === "day1-banlist"
+              ? "banlist"
+              : guidedStep === "day1-keywords"
+                ? "keywords"
+                : null
+          }
+          keywordGlossary={<PlayKeywordGlossary expanded />}
+          onGuidedToolOpen={(tool) => {
+            if (!guided) return;
+            if (tool === "banlist" && guidedStep === "day1-banlist") {
+              setGuidedStep("day1-keywords");
+            } else if (
+              tool === "keywords" &&
+              guidedStep === "day1-keywords"
+            ) {
+              setGuidedStep("day1-distribution-mode");
+              activateTab("distribution", true);
+            }
+          }}
+        />
 
         <div className="header-metrics" aria-label="캠페인 핵심 지표">
           <div className="header-metric">
@@ -2879,6 +3027,7 @@ function GameSession({
                   ? "metric-negative"
                   : "metric-flat"
             }`}
+            data-tutorial-term="active-users"
             title={userBreakdown}
           >
             <UsersIcon />
@@ -2936,6 +3085,7 @@ function GameSession({
             aria-label={interfaceSettings.soundEnabled ? "효과음 끄기" : "효과음 켜기"}
             aria-pressed={!interfaceSettings.soundEnabled}
             className="header-mute"
+            data-tutorial-term="sound-control"
             data-sound="none"
             onClick={() =>
               updateInterfaceSetting(
@@ -2948,7 +3098,7 @@ function GameSession({
             {interfaceSettings.soundEnabled ? "SFX" : "MUTE"}
           </button>
           <details className="header-settings">
-            <summary aria-label="화면 및 효과음 설정">설정</summary>
+            <summary aria-label="화면 및 효과음 설정" data-tutorial-term="settings-control">설정</summary>
             <SettingsOptions
               settings={interfaceSettings}
               updateSetting={updateInterfaceSetting}
@@ -2962,6 +3112,7 @@ function GameSession({
           {NAV_ITEMS.map((item) => (
             <button
               className={activeTab === item.id ? "nav-item active" : "nav-item"}
+              data-tutorial-control={`nav-${item.id}`}
               data-tutorial-target={
                 guided && isGuidedNavigationTarget(item.id)
                   ? "active"
@@ -2982,7 +3133,7 @@ function GameSession({
               {item.id === "community" ? (
                 <span className="nav-count">20</span>
               ) : null}
-              {item.id === "restrictions" && game.phase === "ban-edit" ? (
+              {item.id === "cards" && game.phase === "ban-edit" ? (
                 <span className="nav-count nav-alert">!</span>
               ) : null}
               {item.id === "releases" && game.phase === "release-edit" ? (
@@ -2996,6 +3147,7 @@ function GameSession({
         </div>
         <button
           className="reset-button"
+          data-tutorial-control="home"
           disabled={guided && !guidedBrief?.freeInteraction}
           onClick={() => {
             if (guided) {
@@ -3029,14 +3181,7 @@ function GameSession({
           />
         ) : (
           <>
-        {guided && guidedBrief?.freeInteraction ? (
-          <GuidedMandateBar
-            brief={guidedBrief}
-            busy={guidedBusy}
-            day={game.day}
-            onPause={() => void pauseGuidedTutorial()}
-          />
-        ) : (
+        {guided ? null : (
           <aside
             aria-label="로터스 상황 브리핑"
             className={`advisor-brief ${advisorBrief.tone} ${advisorOpen ? "open" : "collapsed"}`}
@@ -3059,39 +3204,29 @@ function GameSession({
           </aside>
         )}
 
-        {activeTab === "themes" || activeTab === "restrictions" ? (
+        {activeTab === "cards" ? (
           <MetaWorkspace
             banDraft={banDraft}
             game={game}
             highlightedPartId={highlightedPartId}
-            latestCommunity={latestCommunity}
             mobileDetail={mobileDetail}
+            guidedCatalogTarget={
+              guidedStep === "day15-card-catalog-generic"
+                ? "generic"
+                : guidedStep === "day15-card-catalog-theme"
+                  ? "themes"
+                  : null
+            }
             nextBanDay={nextBanDay}
             rankedThemes={rankedThemes}
             placementReport={placementReport}
-            previousPlacementReport={previousPlacementReport}
             restrictionChanges={restrictionChanges}
-            restrictionPolicy={restrictionPolicy}
-            guidedThemeTarget={
-              guided && guidedStep === "day15-theme"
-                ? guidedDossierTarget?.themeId
-                : null
-            }
-            guidedPartTarget={
-              guided && guidedStep === "day15-part"
-                ? guidedDossierTarget
-                : null
-            }
             guidedRestrictionTarget={guidedRestrictionTarget}
-            selectedRequests={selectedRequests}
-            selectedRank={selectedRank}
             selectedRuntime={selectedRuntime}
             selectedTheme={selectedTheme}
-            selectedTier={selectedTierResult.tier}
             detailHeadingRef={detailHeadingRef}
             onBackToThemes={() => setMobileDetail(false)}
-            onGuidedPartConfirm={() => setGuidedStep("day15-finance")}
-            onGuidedThemeConfirm={() => setGuidedStep("day15-part")}
+            onGuidedCatalogConfirm={confirmGuidedInspection}
             onDraftChange={(partId, limit) => {
               if (
                 guidedRestrictionTarget &&
@@ -3102,15 +3237,21 @@ function GameSession({
                 return;
               }
               const nextDraft = { ...banDraft, [partId]: limit };
+              const projected = getRestrictionChangeCapacity(game, nextDraft);
+              if (!projected.withinLimit) {
+                setToast("현재 카드풀에서 더 이상 금제할 수 없습니다.");
+                return;
+              }
               setBanDraft(nextDraft);
             }}
             onOpenSupport={openSupport}
+            onRequestThemeRelease={requestThemeRelease}
+            supportDisabled={guided}
             onResetDraft={() => setBanDraft(makeRestrictionDraft(game))}
             onSelectTheme={selectTheme}
             onSubmitRestriction={
               guided ? submitGuidedRestriction : submitRestriction
             }
-            view={activeTab}
           />
         ) : null}
 
@@ -3118,9 +3259,16 @@ function GameSession({
           <DistributionView
             game={game}
             guidedInspection={guided && guidedStep === "day46-distribution-read"}
+            guidedModeTarget={
+              guided && guidedStep === "day1-distribution-mode"
+                ? "users"
+                : null
+            }
+            guidedPlacementInspection={guided && guidedStep === "day8-placement-read"}
             nextBanDay={nextBanDay}
             nextReleaseDay={nextReleaseDay}
             onSelectTheme={selectTheme}
+            onGuidedModeConfirm={() => setGuidedStep("day1-community")}
             placementReport={placementReport}
             previousPlacementReport={previousPlacementReport}
             rankedThemes={rankedThemes}
@@ -3131,33 +3279,11 @@ function GameSession({
         {activeTab === "releases" ? (
           <ReleasesView
             game={game}
-            guidedTarget={guidedReleaseTarget}
-            onAdjustmentChange={(optionId, adjustment) => {
-              if (
-                guided &&
-                (guidedReleaseTarget?.kind !== "adjustment" ||
-                  guidedReleaseTarget.optionId !== optionId ||
-                  guidedReleaseTarget.adjustment !== adjustment)
-              ) {
-                return;
-              }
-              setReleaseDraft((current) => ({
-                ...current,
-                [optionId]: adjustment,
-              }));
-            }}
-            onSubmit={guided ? submitGuidedRelease : submitRelease}
-            onToggle={(optionId) => {
-              if (
-                guided &&
-                (guidedReleaseTarget?.kind !== "option" ||
-                  guidedReleaseTarget.optionId !== optionId)
-              ) {
-                return;
-              }
-              toggleReleaseOption(optionId);
-            }}
+            guidedSelectionActive={guided && guidedStep === "day30-release-select"}
             releaseDraft={releaseDraft}
+            selectionDisabled={guided && guidedStep !== "day30-release-select"}
+            onReleaseDraftChange={setReleaseDraft}
+            onSubmitRelease={submitReleaseSelections}
           />
         ) : null}
 
@@ -3183,14 +3309,21 @@ function GameSession({
             game={game}
             guidedInspection={
               guided &&
-              (guidedStep === "day1-community-read" ||
-                guidedStep === "day31-community-read" ||
+              (guidedStep === "day31-community-read" ||
                 guidedStep === "day46-community-read")
             }
+            guidedPostTarget={
+              guided &&
+              (guidedStep === "day1-community-read" ||
+                guidedStep === "day31-community-open")
+            }
             onFlashComplete={() => setReactionFlashDay(null)}
+            onGuidedPostOpen={confirmGuidedInspection}
             onSelectTheme={selectTheme}
           />
         ) : null}
+
+        {activeTab === "news" ? <DailyNewsView game={game} /> : null}
 
         {activeTab === "finance" ? (
           <FinanceView
@@ -3221,52 +3354,40 @@ function GameSession({
         </div>
         <div className="time-actions">
           <button
-            disabled={
-              guided ||
-              game.phase !== "running" ||
-              Boolean(game.operations.pendingEvent)
+            className="time-step-action"
+            data-tutorial-target={
+              guidedOneDayAdvanceEnabled ? "active" : undefined
             }
-            onClick={() => advance(1)}
+            disabled={
+              game.phase !== "running" ||
+              Boolean(game.operations.pendingEvent) ||
+              guidedBusy ||
+              (guided && !guidedOneDayAdvanceEnabled)
+            }
+            onClick={() =>
+              guided ? advanceGuidedTime(1) : advance(1)
+            }
             type="button"
           >
             +1일
           </button>
           <button
-            disabled={
-              guided ||
-              game.phase !== "running" ||
-              Boolean(game.operations.pendingEvent)
-            }
-            onClick={() => advance(7)}
-            type="button"
-          >
-            +7일
-          </button>
-          <button
-            className="primary-action"
+            className="time-step-action is-week"
             data-tutorial-target={
-              guided &&
-              (guidedStep.endsWith("advance") || guidedStep === "day46-start")
-                ? "active"
-                : undefined
+              guidedSevenDayAdvanceEnabled ? "active" : undefined
             }
             disabled={
               game.phase !== "running" ||
               Boolean(game.operations.pendingEvent) ||
-              (guided &&
-                !guidedStep.endsWith("advance") &&
-                guidedStep !== "day46-start") ||
-              (guided && guidedBusy)
+              guidedBusy ||
+              (guided && !guidedSevenDayAdvanceEnabled)
             }
-            onClick={guided ? advanceGuidedTutorial : advanceToNextEvent}
+            onClick={() =>
+              guided ? advanceGuidedTime(7) : advance(7)
+            }
             type="button"
           >
-            <ClockIcon size={16} />
-            {guided
-              ? guidedAdvanceLabel()
-              : settlementPeriod
-                ? "임기 결산일까지"
-                : "다음 주요 일정까지"}
+            +7일
           </button>
         </div>
       </footer>
@@ -3328,41 +3449,25 @@ function GameSession({
         </div>
       ) : null}
 
-      {impactNotice ? (
-        <aside
-          aria-live="assertive"
-          className={`impact-float ${impactNotice.tone}`}
-          key={impactNotice.key}
-          role="status"
-        >
-          <span className="impact-kicker">LIVE IMPACT</span>
-          <strong>{impactNotice.headline}</strong>
-          <p>{impactNotice.metrics.join(" · ")}</p>
-          <small>{impactNotice.cause}</small>
-          <button
-            aria-label="급변 알림 닫기"
-            onClick={() => setImpactNotice(null)}
-            type="button"
-          >
-            ×
-          </button>
-        </aside>
-      ) : null}
+      <ImpactMessageStack
+        items={impactItems}
+        onDismiss={(id) =>
+          setImpactItems((current) => current.filter((item) => item.id !== id))
+        }
+      />
 
-      {guided && guidedBrief && !guidedBrief.freeInteraction ? (
-        <GuidedTutorialOverlay
+      {guided && guidedBrief ? (
+        <GuidedTutorialBar
+          allowSkip={game.day < FIRST_BAN_DAY}
           brief={guidedBrief}
           busy={guidedBusy}
           day={game.day}
           key={guidedTargetKey}
-          onActivate={
-            guidedStep.endsWith("advance") || guidedStep === "day46-start"
-              ? advanceGuidedTutorial
-              : undefined
-          }
           onConfirm={confirmGuidedInspection}
-          onPause={() => void pauseGuidedTutorial()}
+          onInformationalNext={advanceGuidedInformation}
+          onMain={() => void pauseGuidedTutorial()}
           onSkip={skipGuidedTutorial}
+          step={guidedStep}
           targetKey={guidedTargetKey}
         />
       ) : null}
@@ -3417,10 +3522,6 @@ function BusinessEventDialog({
                   <div>
                     <dt>즉시 비용</dt>
                     <dd>{choice.cost > 0 ? `₩${formatRevenue(choice.cost)}` : "없음"}</dd>
-                  </div>
-                  <div>
-                    <dt>역풍 가능성</dt>
-                    <dd>{Math.round(choice.risk * 100)}%</dd>
                   </div>
                   <div>
                     <dt>결과 발표</dt>
@@ -3504,14 +3605,26 @@ function GameOverPanel({
 
 const CAMPAIGN_CASH_LABEL: Record<CampaignCashBand, string> = {
   crisis: "자금 위기",
-  tight: "긴축 운영",
-  reserve: "투자 여력",
+  tight: "자금 빠듯",
+  reserve: "자금 여력",
 };
 
 const CAMPAIGN_ENVIRONMENT_LABEL: Record<CampaignEnvironmentBand, string> = {
   danger: "환경 위험",
   caution: "환경 주의",
   stable: "환경 안정",
+};
+
+const CAMPAIGN_TRUST_LABEL: Record<CampaignTrustBand, string> = {
+  low: "신뢰 낮음",
+  guarded: "신뢰 경계",
+  trusted: "신뢰 견고",
+};
+
+const CAMPAIGN_USER_LABEL: Record<CampaignUserBand, string> = {
+  contracted: "유저 축소",
+  steady: "유저 유지",
+  grown: "유저 성장",
 };
 
 function CampaignEndingHints({
@@ -3529,25 +3642,19 @@ function CampaignEndingHints({
       <div className="campaign-ending-hints-heading">
         <div>
           <span>LOTUS · POST-MANDATE REVIEW</span>
-          <strong id="campaign-ending-hints-title">
-            {complete ? "지속 가능성 확인" : "다음 임기를 위한 단서"}
-          </strong>
-          <small>
-            {complete
-              ? "운영·재정·환경의 인계 기준을 모두 통과했습니다."
-              : "이번 결산에서 보완할 방향만 요약했습니다."}
-          </small>
+          <strong id="campaign-ending-hints-title">결산 핵심 관측</strong>
+          <small>최종 자금·환경·구매 신뢰·활성 유저 결과를 요약했습니다.</small>
         </div>
       </div>
       {complete ? (
         <p className="campaign-ending-hints-complete">
-          자금과 환경, 장기 운영 기록이 한쪽에 치우치지 않은 채 다음 시즌으로 인계됐습니다.
+          자금 여력과 환경 안정, 견고한 구매 신뢰, 유지 이상의 활성 유저 규모가 함께 다음 시즌으로 인계됐습니다.
         </p>
       ) : (
         <ul>
           {hints.map((hint) => (
             <li key={hint.id}>
-              <span>다음 임기 힌트</span>
+              <span>최종 결과</span>
               <strong>{hint.title}</strong>
               <p>{hint.body}</p>
             </li>
@@ -3566,28 +3673,15 @@ function CampaignEndPanel({
   onReturnToPlay: () => void;
 }) {
   const ending = evaluateCampaignEnding(game);
-  const handoverUsers =
-    game.history.find((entry) => entry.day === 46)?.totalUsers ??
-    game.history[0]?.totalUsers ??
-    ending.totalUsers;
-  const userDelta = Math.round(ending.totalUsers - handoverUsers);
   const runwayMonths = getOperatingRunwayMonths(
     ending.scores.cash,
     ending.totalUsers,
   );
-  const strategicRecord = game.operations.records.find((record) =>
-    isStrategicBusinessAction(record.type)
-  );
-  const strategicEndingCopy = !strategicRecord
-    ? "대형 프로젝트 슬롯은 사용하지 않았습니다."
-    : strategicRecord.outcome === "success"
-      ? `${BUSINESS_ACTION_BY_TYPE[strategicRecord.type].title} 성공으로 ₩${formatRevenue(strategicRecord.cashReturn ?? 0)}을 회수했습니다.`
-      : strategicRecord.outcome === "backlash"
-        ? `${BUSINESS_ACTION_BY_TYPE[strategicRecord.type].title} 실패로 투자금을 회수하지 못했습니다.`
-        : `${BUSINESS_ACTION_BY_TYPE[strategicRecord.type].title}의 성과가 확정되지 않았습니다.`;
   const endingTone = ending.qualifiedForBestEnding
     ? "stable"
-    : ending.bands.environment === "danger" || ending.bands.cash === "crisis"
+    : ending.bands.environment === "danger" ||
+        ending.bands.cash === "crisis" ||
+        (ending.bands.trust === "low" && ending.bands.users === "contracted")
       ? "danger"
       : "caution";
   const tone =
@@ -3607,9 +3701,11 @@ function CampaignEndPanel({
       <h1 id="campaign-end-title">{ending.title}</h1>
       <strong>
         {CAMPAIGN_CASH_LABEL[ending.bands.cash]} ·{" "}
-        {CAMPAIGN_ENVIRONMENT_LABEL[ending.bands.environment]}
+        {CAMPAIGN_ENVIRONMENT_LABEL[ending.bands.environment]} ·{" "}
+        {CAMPAIGN_TRUST_LABEL[ending.bands.trust]} ·{" "}
+        {CAMPAIGN_USER_LABEL[ending.bands.users]}
       </strong>
-      <p>{ending.body} {strategicEndingCopy}</p>
+      <p>{ending.body}</p>
       <dl className="campaign-end-metrics">
         <div>
           <dt>최종 운영자금</dt>
@@ -3624,12 +3720,15 @@ function CampaignEndPanel({
           <dt>활성 유저</dt>
           <dd>{formatUsers(ending.totalUsers)}명</dd>
           <small>
-            인수 대비 {userDelta >= 0 ? "+" : ""}{formatUsers(userDelta)}명
+            인수 대비 {ending.scores.userDelta >= 0 ? "+" : ""}
+            {formatUsers(ending.scores.userDelta)}명 ·{" "}
+            {CAMPAIGN_USER_LABEL[ending.bands.users]}
           </small>
         </div>
         <div>
           <dt>구매 신뢰</dt>
-          <dd>{Math.round(game.purchaseTrust)} / 100</dd>
+          <dd>{Math.round(ending.scores.purchaseTrust)} / 100</dd>
+          <small>{CAMPAIGN_TRUST_LABEL[ending.bands.trust]}</small>
         </div>
       </dl>
       <CampaignEndingHints ending={ending} />
@@ -3641,98 +3740,6 @@ function CampaignEndPanel({
         PLAY 화면으로 돌아가기
       </button>
     </section>
-  );
-}
-
-function PlayScreen({
-  busy,
-  interfaceSettings,
-  savedGame,
-  message,
-  onNewGame,
-  onContinue,
-  children,
-  updateInterfaceSetting,
-}: {
-  busy: boolean;
-  interfaceSettings: InterfaceSettings;
-  savedGame: GameState | null;
-  message: string | null;
-  onNewGame: () => void;
-  onContinue: () => void;
-  children?: React.ReactNode;
-  updateInterfaceSetting: <Key extends keyof InterfaceSettings>(
-    key: Key,
-    value: InterfaceSettings[Key],
-  ) => void;
-}) {
-  return (
-    <main
-      aria-busy={busy}
-      className={`play-screen${
-        interfaceSettings.motionPreference === "reduced"
-          ? " force-reduced-motion"
-          : ""
-      }`}
-    >
-      <section className="play-card" aria-labelledby="play-title">
-        <div className="play-brand">
-          <BrandMark className="play-brand-mark" />
-          <strong>TCG REGULATOR</strong>
-        </div>
-        <div className="play-heading">
-          <span>{CAMPAIGN_END_DAY} DAY META MANDATE</span>
-          <h1 id="play-title">PLAY</h1>
-        </div>
-        <div className="play-promise">
-          <strong>카드를 뽑는 대신, 금제표를 만드세요.</strong>
-          <p>
-            TCG 운영자가 되어 발매 파워와 금제 수위를 정하고, 메타·여론·매출의
-            연쇄 반응을 책임지세요.
-          </p>
-        </div>
-        <div className="play-actions" aria-label="게임 시작">
-          <button disabled={busy} onClick={onNewGame} type="button">
-            <strong>처음부터</strong>
-            <span>업무 인수인계부터 새 임기 시작</span>
-          </button>
-          <button
-            className="continue-action"
-            disabled={busy || !savedGame}
-            onClick={onContinue}
-            type="button"
-          >
-            <strong>이어하기</strong>
-            <span>
-              {busy
-                ? "저장 확인 중"
-                : savedGame
-                  ? !savedGame.handoverComplete
-                    ? `DAY ${savedGame.day} · 인수인계 진행 중`
-                    : savedGame.phase === "ended"
-                      ? `DAY ${savedGame.day} · 임기 결과 보기`
-                      : savedGame.phase === "running" &&
-                          savedGame.day >= SETTLEMENT_START_DAY
-                        ? `DAY ${savedGame.day} · 결산 관찰 중`
-                        : `DAY ${savedGame.day} · 임기 진행 중`
-                  : "저장된 임기 없음"}
-            </span>
-          </button>
-        </div>
-        {message ? <p className="play-message" role="status">{message}</p> : null}
-        <details className="play-settings">
-          <summary>
-            <span>SETTINGS</span>
-            <small>효과음 · 파급 화면 · 모션</small>
-          </summary>
-          <SettingsOptions
-            settings={interfaceSettings}
-            updateSetting={updateInterfaceSetting}
-          />
-        </details>
-      </section>
-      {children}
-    </main>
   );
 }
 
@@ -3853,15 +3860,6 @@ function PackOddsConfirmFloat({
   );
 }
 
-const BUSINESS_RISK_FACTOR_LABEL = {
-  environment: "환경 안정도",
-  trust: "구매 신뢰",
-  policy: "최근 금제 품질",
-  release: "최근 발매 성과",
-  timing: "남은 임기",
-  execution: "실행 변수",
-} as const;
-
 function StrategicProjectConfirmFloat({
   action,
   game,
@@ -3878,7 +3876,7 @@ function StrategicProjectConfirmFloat({
   onConfirm: () => void;
 }) {
   const definition = BUSINESS_ACTION_BY_TYPE[action];
-  const profile = getStrategicProjectRiskProfile(game, action);
+  const challenge = BUSINESS_CHALLENGE_BY_TYPE[action];
   return (
     <div className="pack-odds-confirm-layer">
       <div
@@ -3894,43 +3892,49 @@ function StrategicProjectConfirmFloat({
             <span>!</span>
           </div>
           <header className="pack-odds-confirm-copy">
-            <span>RISK AUTHORIZATION · STRATEGIC PROJECT</span>
+            <span>CHALLENGE AUTHORIZATION · STRATEGIC PROJECT</span>
             <h2 id="strategic-project-confirm-title">
               {withKoreanObjectParticle(definition.title)} 집행할까요?
             </h2>
             <p id="strategic-project-confirm-description">
-              대형 프로젝트 슬롯은 임기 중 한 번뿐입니다. 표시된 위험은
-              지금의 환경·신뢰·최근 발매와 금제 기록으로 확정됩니다.
+              대형 프로젝트 슬롯은 임기 중 한 번뿐입니다. 집행 후 공개된
+              목표를 마감일까지 충족한 날짜 수로 결과를 판정합니다.
             </p>
           </header>
         </div>
 
         <div
-          aria-label="대형 프로젝트 위험 상세"
+          aria-label="대형 프로젝트 도전과제 상세"
           className="pack-odds-confirm-body"
           role="region"
           tabIndex={-1}
         >
           <dl className="pack-odds-confirm-facts">
-            <div className="critical">
-              <dt>현재 실패 위험</dt>
-              <dd>{Math.round(profile.risk * 100)}%</dd>
+            <div>
+              <dt>판정 지표</dt>
+              <dd>
+                {BUSINESS_CHALLENGE_METRIC_LABEL[challenge.metric]} ≥ {challenge.threshold}점
+              </dd>
             </div>
             <div>
               <dt>집행 / 성공 회수</dt>
               <dd>₩{formatRevenue(definition.cost)} / ₩{formatRevenue(definition.successReturn ?? 0)}</dd>
             </div>
             <div>
-              <dt>결과 발표</dt>
-              <dd>DAY {game.day + (definition.resolutionDelay ?? 1)}</dd>
+              <dt>유지 조건</dt>
+              <dd>{challenge.requiredQualifyingDays} / {challenge.deadlineOffset}일</dd>
+            </div>
+            <div>
+              <dt>결과 확정</dt>
+              <dd>DAY {game.day + challenge.deadlineOffset}</dd>
             </div>
           </dl>
 
           <div className="pack-odds-confirm-warning">
-            <strong>최대 위험 요인 · {BUSINESS_RISK_FACTOR_LABEL[profile.context.primaryRisk]}</strong>
+            <strong>확률 추첨 없이 공개 지표로 판정</strong>
             <span>
-              실패하면 투자금을 회수하지 못하며 유저와 구매 신뢰가 함께
-              하락합니다. 집행 뒤 결과는 되돌릴 수 없습니다.
+              달성 현황은 0 / {challenge.requiredQualifyingDays}일에서 시작하며,
+              매일의 지표가 기준 이상인지 기록합니다.
             </span>
           </div>
         </div>
@@ -3950,7 +3954,7 @@ function StrategicProjectConfirmFloat({
             onClick={onConfirm}
             type="button"
           >
-            위험 감수 · 집행
+            조건 확인 · 집행
           </button>
         </div>
       </div>
@@ -3959,31 +3963,27 @@ function StrategicProjectConfirmFloat({
 }
 
 type MetaWorkspaceProps = {
-  view: "themes" | "restrictions";
   game: GameState;
   rankedThemes: ThemeContent[];
   placementReport: RecentPlacementReport;
-  previousPlacementReport: RecentPlacementReport;
-  latestCommunity: CommunityEvent[];
   selectedTheme: ThemeContent;
   selectedRuntime: GameState["themes"][string];
-  selectedRank: number;
-  selectedTier: MetaTier;
-  selectedRequests: GameState["supportRequests"];
   nextBanDay: number;
   banDraft: Record<string, RestrictionLimit>;
   restrictionChanges: [string, RestrictionLimit][];
-  restrictionPolicy: RestrictionPolicyProfile;
   highlightedPartId: string | null;
   mobileDetail: boolean;
-  guidedThemeTarget?: ThemeId | null;
-  guidedPartTarget?: GuidedDossierTarget | null;
+  guidedCatalogTarget?: "themes" | "generic" | null;
   guidedRestrictionTarget?: GuidedRestrictionTarget | null;
+  supportDisabled?: boolean;
   detailHeadingRef: React.RefObject<HTMLHeadingElement | null>;
   onSelectTheme: (themeId: ThemeId, partId?: string) => void;
   onOpenSupport: (themeId: ThemeId) => void;
-  onGuidedPartConfirm?: () => void;
-  onGuidedThemeConfirm?: () => void;
+  onRequestThemeRelease: (
+    kind: "indirect-support" | "environment-target" | "reprint",
+    themeId: ThemeId,
+  ) => void;
+  onGuidedCatalogConfirm?: () => void;
   onBackToThemes: () => void;
   onDraftChange: (partId: string, limit: RestrictionLimit) => void;
   onResetDraft: () => void;
@@ -3991,550 +3991,557 @@ type MetaWorkspaceProps = {
 };
 
 function MetaWorkspace({
-  view,
   game,
   rankedThemes,
   placementReport,
-  previousPlacementReport,
-  latestCommunity,
   selectedTheme,
   selectedRuntime,
-  selectedRank,
-  selectedTier,
-  selectedRequests,
   nextBanDay,
   banDraft,
   restrictionChanges,
-  restrictionPolicy,
   highlightedPartId,
   mobileDetail,
-  guidedThemeTarget = null,
-  guidedPartTarget = null,
+  guidedCatalogTarget = null,
   guidedRestrictionTarget,
+  supportDisabled = false,
   detailHeadingRef,
   onSelectTheme,
   onOpenSupport,
-  onGuidedPartConfirm,
-  onGuidedThemeConfirm,
+  onRequestThemeRelease,
+  onGuidedCatalogConfirm,
   onBackToThemes,
   onDraftChange,
   onResetDraft,
   onSubmitRestriction,
 }: MetaWorkspaceProps) {
+  const [catalogMode, setCatalogMode] = useState<"themes" | "generic">("themes");
   const releasedPartIds = new Set(selectedRuntime.releasedPartIds);
   const releasedParts = selectedTheme.parts.filter((part) =>
     releasedPartIds.has(part.id),
   );
-  const committedSupportCount = getCommittedSupportCount(
+  const releasedGenericCards = getReleasedGenericCardReferences(game).filter(
+    (entry) =>
+      Object.prototype.hasOwnProperty.call(game.genericLimits, entry.card.id),
+  );
+  const capacity = getRestrictionChangeCapacity(
     game,
-    selectedTheme.id,
+    Object.fromEntries(restrictionChanges) as Record<string, RestrictionLimit>,
   );
-  const supportProposalAvailable = canProposeSupport(game, selectedTheme.id);
-  const selectedCommunity = latestCommunity.filter(
-    (event) => event.themeId === selectedTheme.id,
-  );
-  const visibleCommunity = (
-    selectedCommunity.length > 0 ? selectedCommunity : latestCommunity
-  ).slice(0, 3);
+  const editing = game.phase === "ban-edit";
   const selectedPlacement =
     placementReport.themes[selectedTheme.id] ?? EMPTY_PLACEMENT_METRICS;
-  const selectedPreviousPlacement =
-    previousPlacementReport.themes[selectedTheme.id] ??
-    EMPTY_PLACEMENT_METRICS;
-  const selectedPlacementDelta =
-    selectedPlacement.placementShare -
-    selectedPreviousPlacement.placementShare;
-  const selectedSampleComplete = hasCompletePlacementSample(
-    selectedPlacement.observedDays,
+  const committedSupportCount = getCommittedSupportCount(game, selectedTheme.id);
+  const supportProposalAvailable = canProposeSupport(game, selectedTheme.id);
+  const indirectRequestAvailable =
+    getIndirectSupportGenericPool(game, selectedTheme.id).length > 0;
+  const targetRequestAvailable =
+    getEnvironmentTargetGenericPool(game, selectedTheme.id).length > 0;
+  const reprintRequestAvailable = getReprintCandidates(game).some(
+    (candidate) => candidate.themeId === selectedTheme.id,
   );
 
-  return (
-    <section className={`meta-workspace ${view}`}>
-      <div className={`meta-layout ${mobileDetail ? "show-detail" : "show-list"}`}>
-        <aside className="theme-panel" aria-label="테마 목록">
-          <div className="panel-heading">
-            <div>
-              <span className="eyebrow">META INDEX</span>
-              <h2>테마 리스트</h2>
-              <p>채용률 순 · {rankedThemes.length}개 출시 테마</p>
-            </div>
-            <span className="data-stamp">DAY {game.day}</span>
-          </div>
-          <div className="theme-list" role="list">
-            {rankedThemes.map((theme) => {
-              const runtime = game.themes[theme.id];
-              const placement =
-                placementReport.themes[theme.id] ?? EMPTY_PLACEMENT_METRICS;
-              const tierResult = getPlacementTier(
-                placement.placementShare,
-                placementReport.endDay,
-                getThemeDebutDay(game.releaseHistory, theme.id),
-              );
-              const sampleComplete = hasCompletePlacementSample(
-                placement.observedDays,
-              );
-              const scheduled = game.supportRequests.find(
-                (request) =>
-                  request.themeId === theme.id &&
-                  (request.status === "queued" || request.status === "offered"),
-              );
+  function wouldExceedCap(partId: string, limit: RestrictionLimit) {
+    const projected = getRestrictionChangeCapacity(game, {
+      ...Object.fromEntries(restrictionChanges),
+      [partId]: limit,
+    } as Record<string, RestrictionLimit>);
+    return !projected.withinLimit;
+  }
+
+  function renderLimitControl(
+    cardId: string,
+    cardName: string,
+    official: RestrictionLimit,
+  ) {
+    const draft = banDraft[cardId] ?? official;
+    return (
+      <>
+        {editing ? (
+          <div
+            aria-label={`${cardName} 허용 매수`}
+            className="copy-control"
+            data-tutorial-control="restriction-limits"
+            role="group"
+          >
+            {([0, 1, 2, 3] as RestrictionLimit[]).map((limit) => {
+              const guidedMatch =
+                guidedRestrictionTarget?.kind === "limit" &&
+                guidedRestrictionTarget.partId === cardId &&
+                guidedRestrictionTarget.limit === limit;
+              const guidedDisabled =
+                Boolean(guidedRestrictionTarget) && !guidedMatch;
+              const capDisabled =
+                draft !== limit && wouldExceedCap(cardId, limit);
               return (
-                <div
-                  className={theme.id === selectedTheme.id ? "theme-row selected" : "theme-row"}
-                  key={theme.id}
-                  role="listitem"
-                  style={{ "--theme-accent": theme.color } as React.CSSProperties}
+                <button
+                  aria-pressed={draft === limit}
+                  className={draft === limit ? "active" : ""}
+                  data-tutorial-term={
+                    limit === 0
+                      ? "forbidden"
+                      : limit === 1
+                        ? "limited"
+                        : limit === 2
+                          ? "semi-limited"
+                          : "unlimited"
+                  }
+                  data-tutorial-target={guidedMatch ? "active" : undefined}
+                  disabled={guidedDisabled || capDisabled}
+                  key={limit}
+                  onClick={() => onDraftChange(cardId, limit)}
+                  title={
+                    capDisabled
+                      ? "현재 카드풀에서 더 이상 금제할 수 없습니다."
+                      : `${LIMIT_LABELS[limit]} ${limit}장`
+                  }
+                  type="button"
                 >
-                  <button
-                    aria-current={theme.id === selectedTheme.id ? "true" : undefined}
-                    className="theme-select"
-                    data-tutorial-target={
-                      guidedThemeTarget === theme.id
-                        ? "active"
-                        : undefined
-                    }
-                    disabled={Boolean(guidedThemeTarget && theme.id !== guidedThemeTarget)}
-                    onClick={() => {
-                      onSelectTheme(theme.id);
-                      if (guidedThemeTarget === theme.id) {
-                        onGuidedThemeConfirm?.();
-                      }
-                    }}
-                    type="button"
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="theme-emblem-frame"
-                    >
-                      <ThemeEmblem
-                        decorative
-                        detail="compact"
-                        size="100%"
-                        themeId={theme.id}
-                      />
-                    </span>
-                    <span className="theme-row-copy">
-                      <strong>{theme.name}</strong>
-                      <small>{theme.playstyle}</small>
-                      <span className="theme-statline">
-                        채용률 {formatPercent(runtime.share)}
-                        <i aria-hidden="true" />
-                        승률 {formatPercent(runtime.winRate)}
-                      </span>
-                      <span className="theme-statline placement">
-                        탑컷 {formatPercent(placement.placementShare)}
-                        <i aria-hidden="true" />
-                        본선 {formatPercent(placement.observedConversion)}
-                      </span>
-                    </span>
-                    <span
-                      className={`tier-label ${
-                        sampleComplete ? getTierTone(tierResult.tier) : "quiet"
-                      }`}
-                    >
-                      {sampleComplete
-                        ? tierResult.tier
-                        : `집계 ${placement.observedDays}/${PLACEMENT_WINDOW_DAYS}`}
-                    </span>
-                  </button>
-                  {scheduled ? (
-                    <span className="development-dot" title={`DAY ${scheduled.eligibleReleaseDay} 시안 보장`}>
-                      시안 대기
-                    </span>
-                  ) : null}
-                </div>
+                  {limit}
+                </button>
               );
             })}
           </div>
-        </aside>
+        ) : (
+          <span className="locked-copy">—</span>
+        )}
+        {draft !== official ? (
+          <small className="change-note">
+            {official} → {draft}
+          </small>
+        ) : null}
+      </>
+    );
+  }
 
-        <section className="theme-detail" aria-labelledby="theme-detail-title">
-          <button className="mobile-back" onClick={onBackToThemes} type="button">
-            <span aria-hidden="true">←</span> 테마 목록
-          </button>
-          <div
-            className="detail-hero"
-            style={{ "--theme-accent": selectedTheme.color } as React.CSSProperties}
+  return (
+    <section className="meta-workspace cards">
+      <header className="subpage-heading cards-heading">
+        <div>
+          <span className="eyebrow">CARD REGISTRY</span>
+          <h1>카드</h1>
+          <p>테마 카드와 범용 카드의 현행 제한과 시장 반응을 한곳에서 봅니다.</p>
+        </div>
+        <div
+          aria-label="카드 목록 종류"
+          className="card-catalog-switch"
+          role="group"
+        >
+          <button
+            aria-pressed={catalogMode === "themes"}
+            className={catalogMode === "themes" ? "active" : ""}
+            data-tutorial-control="card-catalog-themes"
+            onClick={() => {
+              setCatalogMode("themes");
+              if (guidedCatalogTarget === "themes") onGuidedCatalogConfirm?.();
+            }}
+            type="button"
           >
-            <div className="detail-title-block">
-              <div className="theme-identity">
-                <span
-                  className="theme-emblem-hero"
-                  style={{ "--theme-accent": selectedTheme.color } as React.CSSProperties}
-                >
-                  <ThemeEmblem
-                    decorative={false}
-                    detail="full"
-                    label={`${selectedTheme.name} 테마 상징`}
-                    size="100%"
-                    themeId={selectedTheme.id}
-                  />
-                </span>
-                <div>
-                  <span className="eyebrow theme-registry-kicker">
-                    THEME DOSSIER
-                    <b>
-                      PICK #{String(selectedRank + 1).padStart(3, "0")}
-                    </b>
-                  </span>
-                  <h2 id="theme-detail-title" ref={detailHeadingRef} tabIndex={-1}>
-                    {selectedTheme.name}
-                  </h2>
-                  <p>{selectedTheme.playstyle}</p>
-                </div>
-              </div>
-              <button
-                className="secondary-action"
-                disabled={!supportProposalAvailable}
-                onClick={() => onOpenSupport(selectedTheme.id)}
-                title={
-                  committedSupportCount >= 3
-                    ? selectedRuntime.supportCount >= 3
-                      ? "이 테마는 세 차례 지원을 모두 받았습니다."
-                      : "세 번째 지원이 확정되어 적용을 기다리고 있습니다."
-                    : !supportProposalAvailable
-                      ? "지원 일정이나 제안 대기 시간을 확인해주세요."
-                      : undefined
-                }
-                type="button"
-              >
-                <ReleaseIcon size={16} />
-                {selectedRuntime.supportCount >= 3
-                  ? "지원 완료"
-                  : committedSupportCount >= 3
-                    ? "지원 예정 완료"
-                    : "지원 제안"}
-              </button>
-            </div>
+            테마 리스트
+          </button>
+          <button
+            aria-pressed={catalogMode === "generic"}
+            className={catalogMode === "generic" ? "active" : ""}
+            data-tutorial-control="card-catalog-generic"
+            disabled={Boolean(guidedRestrictionTarget)}
+            onClick={() => {
+              setCatalogMode("generic");
+              if (guidedCatalogTarget === "generic") onGuidedCatalogConfirm?.();
+            }}
+            type="button"
+          >
+            범용 리스트
+          </button>
+        </div>
+      </header>
 
-            <div className="theme-metrics">
+      {catalogMode === "themes" ? (
+        <div className={`meta-layout ${mobileDetail ? "show-detail" : "show-list"}`}>
+          <aside className="theme-panel" aria-label="테마 목록">
+            <div className="panel-heading">
               <div>
-                <span>
-                  {selectedSampleComplete ? "현재 티어" : "집계 현황"}
-                </span>
-                <strong
-                  className={
-                    selectedSampleComplete
-                      ? getTierTone(selectedTier)
-                      : "quiet"
-                  }
-                >
-                  {selectedSampleComplete
-                    ? selectedTier
-                    : `집계 ${selectedPlacement.observedDays}/${PLACEMENT_WINDOW_DAYS}`}
-                </strong>
-                <small>
-                  {!selectedSampleComplete
-                    ? "표본을 쌓는 중"
-                    : selectedTier === "Tier Out"
-                      ? "탑컷 집계 제외"
-                      : "최근 14일 탑컷 기준"}
-                </small>
+                <span className="eyebrow">THEME INDEX</span>
+                <h2>테마 리스트</h2>
+                <p>{rankedThemes.length}개 출시 테마</p>
               </div>
-              <div>
-                <span>탑컷 점유율</span>
-                <strong>{formatPercent(selectedPlacement.placementShare)}</strong>
-                <small
-                  className={
-                    selectedPlacementDelta >= 0
-                      ? "positive"
-                      : "negative"
-                  }
-                >
-                  {selectedPlacementDelta >= 0 ? "+" : ""}
-                  {formatPercent(selectedPlacementDelta, 2)}
-                  p / 7일
-                </small>
-              </div>
-              <div>
-                <span>본선 진출률</span>
-                <strong>{formatPercent(selectedPlacement.observedConversion)}</strong>
-                <small>탑컷 진출 / 추정 참가자</small>
-              </div>
-              <div>
-                <span>채용률</span>
-                <strong>{formatPercent(selectedRuntime.share)}</strong>
-                <small>채용 순위 #{selectedRank + 1}</small>
-              </div>
-              <div>
-                <span>승률</span>
-                <strong>{formatPercent(selectedRuntime.winRate)}</strong>
-                <small>환경 가중 평균</small>
-              </div>
+              <span className="data-stamp">DAY {game.day}</span>
             </div>
-
-            <div className="detail-facts">
-              <span className="card-pool-fact">
-                현재 카드풀 <strong>{releasedParts.length} / 14장</strong>
-              </span>
-              <span className="card-pool-fact">
-                지원 <strong>{selectedRuntime.supportCount} / 3회</strong>
-              </span>
-              <span>미학 · {selectedTheme.aesthetic}</span>
-              <span>난도 · {selectedTheme.difficulty}</span>
-              <span>피로도 · {Math.round(selectedRuntime.fatigue)}</span>
-              <span>불쾌도 · {Math.round(selectedRuntime.unpleasantness)}</span>
-              <span>금제 요구 · {Math.round(getBanDemand(selectedRuntime))}</span>
-              {selectedRequests.at(-1) ? (
-                <span>
-                  지원 · {supportStatusLabel(selectedRequests.at(-1)!.status)} DAY{" "}
-                  {selectedRequests.at(-1)!.eligibleReleaseDay}
-                </span>
-              ) : null}
-            </div>
-          </div>
-
-          {view === "themes" ? (
-            <div className="theme-intel-grid">
-              <article>
-                <span className="eyebrow">IDENTITY</span>
-                <h3>테마 성향</h3>
-                <dl>
-                  <div><dt>미학</dt><dd>{selectedTheme.aesthetic}</dd></div>
-                  <div><dt>난도</dt><dd>{selectedTheme.difficulty}</dd></div>
-                  <div><dt>환경 파워</dt><dd>{Math.round(selectedRuntime.power)}</dd></div>
-                  <div><dt>피로도</dt><dd>{Math.round(selectedRuntime.fatigue)}</dd></div>
-                </dl>
-              </article>
-              <article className="theme-parts-preview">
-                <span className="eyebrow">CORE PARTS</span>
-                <h3>핵심 파츠 구성</h3>
-                <div>
-                  {releasedParts.map((part) => (
+            <div className="theme-list" role="list">
+              {rankedThemes.map((theme) => {
+                const runtime = game.themes[theme.id];
+                const placement =
+                  placementReport.themes[theme.id] ?? EMPTY_PLACEMENT_METRICS;
+                const tier = getPlacementTier(
+                  placement.placementShare,
+                  placementReport.endDay,
+                  getThemeDebutDay(game.releaseHistory, theme.id),
+                );
+                return (
+                  <div
+                    className={
+                      theme.id === selectedTheme.id
+                        ? "theme-row selected"
+                        : "theme-row"
+                    }
+                    key={theme.id}
+                    role="listitem"
+                    style={{ "--theme-accent": theme.color } as React.CSSProperties}
+                  >
                     <button
-                      data-tutorial-target={
-                        guidedPartTarget &&
-                        selectedTheme.id === guidedPartTarget.themeId &&
-                        part.id === guidedPartTarget.partId
-                          ? "active"
-                          : undefined
+                      aria-current={
+                        theme.id === selectedTheme.id ? "true" : undefined
                       }
-                      disabled={
-                        Boolean(
-                          guidedPartTarget &&
-                          !(
-                            selectedTheme.id === guidedPartTarget.themeId &&
-                            part.id === guidedPartTarget.partId
-                          ),
-                        )
-                      }
-                      key={part.id}
+                      className="theme-select"
                       onClick={() => {
-                        onSelectTheme(selectedTheme.id, part.id);
-                        if (
-                          guidedPartTarget &&
-                          selectedTheme.id === guidedPartTarget.themeId &&
-                          part.id === guidedPartTarget.partId
-                        ) {
-                          onGuidedPartConfirm?.();
-                        }
+                        onSelectTheme(theme.id);
                       }}
                       type="button"
                     >
-                      <strong>{part.name}</strong>
-                      <small>{ROLE_LABELS[part.role]}</small>
-                    </button>
-                  ))}
-                </div>
-              </article>
-              <article className="theme-signals">
-                <span className="eyebrow">LATEST SIGNALS</span>
-                <h3>최근 반응</h3>
-                <div>
-                  {visibleCommunity.map((event) => (
-                    <button
-                      key={event.id}
-                      onClick={() => onSelectTheme(event.themeId, event.partId)}
-                      type="button"
-                    >
-                      <span>DAY {event.day}</span>
-                      <strong>{formatCommunityEvent(event, game)}</strong>
-                    </button>
-                  ))}
-                </div>
-              </article>
-            </div>
-          ) : (
-          <div className="parts-section">
-            <div className="parts-heading">
-              <div>
-                <h3>핵심 파츠</h3>
-                <p>
-                  채용률은 해당 테마 덱 중 사용 비율, 평균 매수는 채용 덱 기준입니다.
-                </p>
-              </div>
-              {game.phase === "ban-edit" ? (
-                <span className="editing-chip">
-                  <GavelIcon size={14} />
-                  금제안 편집 중
-                </span>
-              ) : game.day >= LAST_DECISION_DAY ? (
-                <span className="readonly-chip">최종 금제 반영 · 결산 중</span>
-              ) : (
-                <span className="readonly-chip">DAY {nextBanDay} 조정 가능</span>
-              )}
-            </div>
-
-            <div className="parts-table-wrap">
-              <table className="parts-table">
-                <caption className="sr-only">{selectedTheme.name} 핵심 파츠와 금제 현황</caption>
-                <thead>
-                  <tr>
-                    <th scope="col">핵심 파츠</th>
-                    <th scope="col">채용률</th>
-                    <th scope="col">평균 매수</th>
-                    <th scope="col">현행</th>
-                    <th scope="col">조정</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {releasedParts.map((part) => {
-                    const stats = selectedRuntime.partStats[part.id];
-                    const official = selectedRuntime.legalLimits[part.id];
-                    const draft = banDraft[part.id] ?? official;
-                    const restrictionTenure = getRestrictionTenureLabel(
-                      game,
-                      selectedTheme.id,
-                      part.id,
-                      official,
-                    );
-                    return (
-                      <tr
-                        className={
-                          highlightedPartId === part.id
-                            ? "part-highlight"
-                            : draft !== official
-                              ? "part-changed"
-                              : ""
-                        }
-                        id={`part-${part.id}`}
-                        key={part.id}
+                      <span aria-hidden="true" className="theme-emblem-frame">
+                        <ThemeEmblem
+                          decorative
+                          detail="compact"
+                          size="100%"
+                          themeId={theme.id}
+                        />
+                      </span>
+                      <span className="theme-row-copy">
+                        <strong>{theme.name}</strong>
+                        <small>
+                          유저 {formatPercent(runtime.share)} · 탑컷{" "}
+                          {formatPercent(placement.placementShare)}
+                        </small>
+                      </span>
+                      <span
+                        className={`tier-label ${getTierTone(tier.tier)}`}
                       >
-                        <th scope="row">
-                          <strong>{part.name}</strong>
-                          <span>{ROLE_LABELS[part.role]}</span>
-                          <small>{part.tags.slice(0, 2).join(" · ")}</small>
-                        </th>
-                        <td data-label="채용률">{formatPercent(stats.usageRate, 0)}</td>
-                        <td data-label="평균 매수">{stats.averageCopies.toFixed(1)}장</td>
-                        <td data-label="현행">
-                          <span className="official-limit">
-                            {official}장
-                            <small>
-                              {LIMIT_LABELS[official]}
-                              {restrictionTenure ? (
-                                <span className="restriction-tenure">
-                                  · {restrictionTenure}
-                                </span>
-                              ) : null}
-                            </small>
-                          </span>
-                        </td>
-                        <td data-label="조정">
-                          {game.phase === "ban-edit" ? (
-                            <div
-                              aria-label={`${part.name} 허용 매수`}
-                              className="copy-control"
-                              role="group"
-                            >
-                              {([0, 1, 2, 3] as RestrictionLimit[]).map((limit) => (
-                                <button
-                                  aria-pressed={draft === limit}
-                                  className={draft === limit ? "active" : ""}
-                                  data-tutorial-target={
-                                    guidedRestrictionTarget?.kind === "limit" &&
-                                    guidedRestrictionTarget.partId === part.id &&
-                                    guidedRestrictionTarget.limit === limit
-                                      ? "active"
-                                      : undefined
-                                  }
-                                  disabled={
-                                    Boolean(guidedRestrictionTarget) &&
-                                    !(
-                                      guidedRestrictionTarget?.kind === "limit" &&
-                                      guidedRestrictionTarget.partId === part.id &&
-                                      guidedRestrictionTarget.limit === limit
-                                    )
-                                  }
-                                  key={limit}
-                                  onClick={() => onDraftChange(part.id, limit)}
-                                  title={`${LIMIT_LABELS[limit]} ${limit}장`}
-                                  type="button"
-                                >
-                                  {limit}
-                                </button>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="locked-copy">—</span>
-                          )}
-                          {draft !== official ? (
-                            <small className="change-note">
-                              {official} → {draft}
-                            </small>
-                          ) : null}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                        {tier.tier}
+                      </span>
+                    </button>
+                  </div>
+                );
+              })}
             </div>
-          </div>
-          )}
+          </aside>
 
-          {view === "restrictions" ? (
-          <div className={game.phase === "ban-edit" ? "decision-footer active" : "decision-footer"}>
-            <div>
-              <strong>
-                {game.phase === "ban-edit"
-                  ? restrictionChanges.length > 0
-                    ? `실효 조정 ${restrictionPolicy.meaningfulCutCount}종 · ${restrictionPolicy.affectedThemeCount}개 테마 영향`
-                    : "현 환경 유지안"
-                  : game.day >= LAST_DECISION_DAY
-                    ? `DAY ${CAMPAIGN_END_DAY} 최종 결산 대기`
-                  : `다음 금제위원회까지 D-${Math.max(0, nextBanDay - game.day)}`}
-              </strong>
-              <p>
-                {game.phase === "ban-edit"
-                  ? `상위권 ${restrictionPolicy.upperMeaningfulCuts}종 · Tier 2 ${restrictionPolicy.tier2MeaningfulCuts}종 · 하위권 ${restrictionPolicy.lowerMeaningfulCuts}종 · 추정 충격 ${Math.round(restrictionPolicy.totalImpact)}`
-                  : game.day >= LAST_DECISION_DAY
-                    ? "최종 금제 이후에는 새 결정을 받지 않고 환경과 시장의 반응만 관측합니다."
-                  : "금제는 제출되는 날에만 적용됩니다. 지금 보이는 현행 수치는 공식 환경입니다."}
-              </p>
-            </div>
-            {game.phase === "ban-edit" ? (
-              <div className="decision-actions">
-                <button
-                  className="text-action"
-                  disabled={Boolean(guidedRestrictionTarget)}
-                  onClick={onResetDraft}
-                  type="button"
-                >
-                  초기화
-                </button>
-                <button
-                  className="primary-action"
-                  data-sound="restriction"
-                  data-tutorial-target={
-                    guidedRestrictionTarget?.kind === "submit"
-                      ? "active"
-                      : undefined
-                  }
-                  disabled={
-                    Boolean(guidedRestrictionTarget) &&
-                    guidedRestrictionTarget?.kind !== "submit"
-                  }
-                  onClick={onSubmitRestriction}
-                  type="button"
-                >
-                  {restrictionChanges.length > 0 ? "금제안 제출" : "변경 없음으로 제출"}
-                </button>
+          <section className="theme-detail" aria-labelledby="theme-detail-title">
+            <button className="mobile-back" onClick={onBackToThemes} type="button">
+              <span aria-hidden="true">←</span> 테마 목록
+            </button>
+            <div
+              className="detail-hero cards-detail-hero"
+              style={{ "--theme-accent": selectedTheme.color } as React.CSSProperties}
+            >
+              <div className="detail-title-block">
+                <div className="theme-identity">
+                  <span aria-hidden="true" className="theme-emblem-hero">
+                    <ThemeEmblem
+                      decorative
+                      detail="full"
+                      size="100%"
+                      themeId={selectedTheme.id}
+                    />
+                  </span>
+                  <div>
+                    <span className="eyebrow">THEME CARDS</span>
+                    <h2 id="theme-detail-title" ref={detailHeadingRef} tabIndex={-1}>
+                      {selectedTheme.name}
+                    </h2>
+                    <p>{selectedTheme.playstyle}</p>
+                    <PlayKeywordChips game={game} theme={selectedTheme} />
+                  </div>
+                </div>
+                <div className="card-release-request-actions" aria-label="다음 발매 요청">
+                  <button
+                    data-tutorial-control="release-request-support"
+                    disabled={supportDisabled || !supportProposalAvailable}
+                    onClick={() => onOpenSupport(selectedTheme.id)}
+                    title={
+                      supportDisabled
+                        ? "튜토리얼에서는 요청을 기록하지 않습니다."
+                        : committedSupportCount >= 3
+                          ? "세 차례 지원이 모두 확정되었습니다."
+                          : "기존 테마의 보강 방향을 요청합니다."
+                    }
+                    type="button"
+                  >
+                    지원
+                  </button>
+                  <button
+                    data-tutorial-control="release-request-indirect"
+                    disabled={supportDisabled || !indirectRequestAvailable}
+                    onClick={() => onRequestThemeRelease("indirect-support", selectedTheme.id)}
+                    title="키워드가 맞는 범용 카드 후보를 요청합니다."
+                    type="button"
+                  >
+                    간접
+                  </button>
+                  <button
+                    data-tutorial-control="release-request-target"
+                    disabled={supportDisabled || !targetRequestAvailable}
+                    onClick={() => onRequestThemeRelease("environment-target", selectedTheme.id)}
+                    title="선택한 테마를 견제할 범용 카드 후보를 요청합니다."
+                    type="button"
+                  >
+                    저격
+                  </button>
+                  <button
+                    data-tutorial-control="release-request-reprint"
+                    disabled={supportDisabled || !reprintRequestAvailable}
+                    onClick={() => onRequestThemeRelease("reprint", selectedTheme.id)}
+                    title="선택한 테마의 출시 카드 재판을 요청합니다."
+                    type="button"
+                  >
+                    재판
+                  </button>
+                </div>
               </div>
-            ) : null}
+              <div
+                className="theme-metrics compact"
+                data-tutorial-control="theme-metrics"
+              >
+                <div data-tutorial-term="user-share">
+                  <span>유저 비율</span>
+                  <strong>{formatPercent(selectedRuntime.share)}</strong>
+                </div>
+                <div data-tutorial-term="top-cut-share">
+                  <span>탑컷 비율</span>
+                  <strong>{formatPercent(selectedPlacement.placementShare)}</strong>
+                </div>
+                <div data-tutorial-term="win-rate">
+                  <span>승률</span>
+                  <strong>{formatPercent(selectedRuntime.winRate)}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="parts-section">
+              <div className="parts-heading">
+                <div>
+                  <span className="eyebrow">THEME CARD LIST</span>
+                  <h3>테마 카드 {releasedParts.length}장</h3>
+                  <p>가격은 현재 시세와 7일 등락만 표시합니다.</p>
+                </div>
+                {editing ? (
+                  <span className="editing-chip">
+                    <GavelIcon size={14} /> 금제안 편집 중
+                  </span>
+                ) : (
+                  <span className="readonly-chip">
+                    DAY {nextBanDay} 조정 가능
+                  </span>
+                )}
+              </div>
+              <div
+                className="parts-table-wrap"
+                data-tutorial-control="theme-card-table"
+              >
+                <table className="parts-table card-registry-table">
+                  <caption className="sr-only">
+                    {selectedTheme.name} 카드와 현행 제한
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">카드 · 출시 · 채용</th>
+                      <th data-tutorial-term="card-market-price" scope="col">시세</th>
+                      <th scope="col">현행</th>
+                      <th scope="col">조정</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {releasedParts.map((part) => {
+                      const stats = selectedRuntime.partStats[part.id];
+                      const official = selectedRuntime.legalLimits[part.id];
+                      const draft = banDraft[part.id] ?? official;
+                      const quote = getThemeCardMarketQuote(
+                        game,
+                        selectedTheme.id,
+                        part.id,
+                        7,
+                      );
+                      return (
+                        <tr
+                          className={
+                            highlightedPartId === part.id
+                              ? "part-highlight"
+                              : draft !== official
+                                ? "part-changed"
+                                : ""
+                          }
+                          id={`part-${part.id}`}
+                          key={part.id}
+                        >
+                          <th scope="row">
+                            <span className="card-name-cell">
+                              <strong>{part.name}</strong>
+                              <small>{ROLE_LABELS[part.role]}</small>
+                              <span className="card-row-meta">
+                                <span>{getPartReleaseLabel(game, selectedTheme, part.id)}</span>
+                                <span data-tutorial-term="adoption-rate">
+                                  채용 {formatPercent(stats.usageRate, 0)} · {stats.averageCopies.toFixed(1)}장
+                                </span>
+                              </span>
+                            </span>
+                          </th>
+                          <td data-label="시세">
+                            {quote ? <CardMarketQuote compact quote={quote} /> : "—"}
+                          </td>
+                          <td data-label="현행">
+                            <span className="official-limit">
+                              {official}장
+                              <small>{LIMIT_LABELS[official]}</small>
+                            </span>
+                          </td>
+                          <td data-label="조정">
+                            {renderLimitControl(part.id, part.name, official)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : (
+        <section className="generic-card-catalog" aria-labelledby="generic-card-title">
+          <div className="parts-heading">
+            <div>
+              <span className="eyebrow">GENERIC CARD LIST</span>
+              <h2 id="generic-card-title">범용 리스트</h2>
+              <p>출시된 범용 카드 {releasedGenericCards.length}장</p>
+            </div>
+            {editing ? (
+              <span className="editing-chip">
+                <GavelIcon size={14} /> 금제안 편집 중
+              </span>
+            ) : (
+              <span className="readonly-chip">현행 제한 열람</span>
+            )}
           </div>
-          ) : null}
+          <div className="parts-table-wrap">
+            <table className="parts-table card-registry-table generic">
+              <caption className="sr-only">출시 범용 카드와 현행 제한</caption>
+              <thead>
+                <tr>
+                  <th scope="col">카드 · 출시 · 채용 테마</th>
+                  <th data-tutorial-term="card-market-price" scope="col">시세</th>
+                  <th scope="col">현행</th>
+                  <th scope="col">조정</th>
+                </tr>
+              </thead>
+              <tbody>
+                {releasedGenericCards.map((entry) => {
+                  const official = entry.legalLimit;
+                  const draft = banDraft[entry.card.id] ?? official;
+                  const quote = getGenericCardMarketQuote(
+                    game,
+                    entry.card,
+                    entry.releaseDay,
+                    entry.meta,
+                    7,
+                  );
+                  return (
+                    <tr
+                      className={draft !== official ? "part-changed" : ""}
+                      id={`generic-card-${entry.card.id}`}
+                      key={entry.card.id}
+                    >
+                      <th scope="row">
+                        <span className="generic-restriction-name">
+                          <GenericCardMark compact />
+                          <span>
+                            <strong>{entry.card.name}</strong>
+                            <small>
+                              {getPlayKeyword(entry.card.keyword).label}
+                            </small>
+                            <span className="card-row-meta">
+                              <span>DAY {entry.releaseDay}</span>
+                              <span data-tutorial-term="adoption-rate">
+                                <GenericAdopterNames
+                                  game={game}
+                                  limit={3}
+                                  meta={entry.meta}
+                                />
+                              </span>
+                            </span>
+                          </span>
+                        </span>
+                      </th>
+                      <td data-label="시세">
+                        <CardMarketQuote compact quote={quote} />
+                      </td>
+                      <td data-label="현행">
+                        <span className="official-limit">
+                          {official}장
+                          <small>{LIMIT_LABELS[official]}</small>
+                        </span>
+                      </td>
+                      <td data-label="조정">
+                        {renderLimitControl(
+                          entry.card.id,
+                          entry.card.name,
+                          official,
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </section>
+      )}
+
+      <div className={editing ? "decision-footer active" : "decision-footer"}>
+        <div>
+          <strong>
+            {editing
+              ? "금제안 편집 중"
+              : game.day >= LAST_DECISION_DAY
+                ? "최종 금제 반영 · 결산 중"
+                : `다음 금제위원회까지 D-${Math.max(0, nextBanDay - game.day)}`}
+          </strong>
+          <p>
+            {editing
+              ? "카드별 현행 제한을 확인하고 조정안을 제출하세요."
+              : "현행 제한은 열람할 수 있고 금제위원회가 열린 날에만 편집할 수 있습니다."}
+          </p>
+        </div>
+        {editing ? (
+          <div className="decision-actions" data-tutorial-control="restriction-actions">
+            <button
+              className="text-action"
+              data-tutorial-term="restriction-reset"
+              disabled={Boolean(guidedRestrictionTarget)}
+              onClick={onResetDraft}
+              type="button"
+            >
+              초기화
+            </button>
+            <button
+              className="primary-action"
+              data-sound="restriction"
+              data-tutorial-term="restriction-submit"
+              data-tutorial-target={
+                guidedRestrictionTarget?.kind === "submit"
+                  ? "active"
+                  : undefined
+              }
+              disabled={
+                !capacity.withinLimit ||
+                (Boolean(guidedRestrictionTarget) &&
+                  guidedRestrictionTarget?.kind !== "submit")
+              }
+              onClick={onSubmitRestriction}
+              type="button"
+            >
+              {restrictionChanges.length > 0
+                ? "금제안 제출"
+                : "변경 없음으로 제출"}
+            </button>
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -4543,6 +4550,8 @@ function MetaWorkspace({
 function DistributionView({
   game,
   guidedInspection = false,
+  guidedModeTarget = null,
+  guidedPlacementInspection = false,
   total,
   nextReleaseDay,
   nextBanDay,
@@ -4550,9 +4559,12 @@ function DistributionView({
   placementReport,
   previousPlacementReport,
   onSelectTheme,
+  onGuidedModeConfirm,
 }: {
   game: GameState;
   guidedInspection?: boolean;
+  guidedModeTarget?: DistributionMode | null;
+  guidedPlacementInspection?: boolean;
   total: number;
   nextReleaseDay: number;
   nextBanDay: number;
@@ -4560,92 +4572,75 @@ function DistributionView({
   placementReport: RecentPlacementReport;
   previousPlacementReport: RecentPlacementReport;
   onSelectTheme: (themeId: ThemeId) => void;
+  onGuidedModeConfirm?: () => void;
 }) {
+  const [distributionMode, setDistributionMode] =
+    useState<DistributionMode>("top-cut");
   const [hoveredEntryId, setHoveredEntryId] = useState<string | null>(null);
   const [focusedEntryId, setFocusedEntryId] = useState<string | null>(null);
-  const placementThemes = [...rankedThemes]
-    .filter(
-      (theme) =>
-        (placementReport.themes[theme.id]?.placements ?? 0) > 0,
-    )
-    .sort((left, right) => {
-      const placementDelta =
-        (placementReport.themes[right.id]?.placementShare ?? 0) -
-        (placementReport.themes[left.id]?.placementShare ?? 0);
-      return (
-        placementDelta ||
-        game.themes[right.id].share - game.themes[left.id].share ||
-        left.id.localeCompare(right.id)
-      );
-    });
-  const tieredThemes = placementThemes.map((theme, rank) => {
-    const placement =
-      placementReport.themes[theme.id] ?? EMPTY_PLACEMENT_METRICS;
-    return {
-      completeSample: hasCompletePlacementSample(placement.observedDays),
-      rank,
-      theme,
-      placement,
-      tier: getPlacementTier(placement.placementShare).tier,
-    };
-  });
-  const collectingThemes = tieredThemes.filter(
-    ({ completeSample }) => !completeSample,
+  const latestPlacementDay = game.history.at(-1);
+  const dailyPlacementRows = useMemo(() => {
+    if (!latestPlacementDay) return [];
+    const placements = getDailyTopCutPlacements(latestPlacementDay, game.seed);
+    return (Object.entries(placements) as [ThemeId, number][])
+      .filter(([, count]) => count > 0)
+      .sort(([leftId, leftCount], [rightId, rightCount]) =>
+        rightCount - leftCount || leftId.localeCompare(rightId),
+      )
+      .map(([themeId, count], rank) => ({
+        count,
+        rank: rank + 1,
+        theme: THEME_BY_ID[themeId],
+      }));
+  }, [game.seed, latestPlacementDay]);
+  const chartEntries = useMemo(
+    () =>
+      buildDistributionEntries(game, placementReport, distributionMode).map(
+        (entry) => ({
+          ...entry,
+          theme: entry.themeId ? THEME_BY_ID[entry.themeId] : null,
+        }),
+      ),
+    [distributionMode, game, placementReport],
   );
-  const individuallyListedThemes = tieredThemes.filter(
-    ({ completeSample, tier }) =>
-      !completeSample || isNamedMetaTier(tier),
+  const previousEntries = useMemo(
+    () =>
+      buildDistributionEntries(
+        game,
+        previousPlacementReport,
+        distributionMode,
+      ),
+    [distributionMode, game, previousPlacementReport],
   );
-  const tierThreeThemes = tieredThemes.filter(
-    ({ completeSample, tier }) => completeSample && tier === "Tier 3",
+  const tierThreeEntry = chartEntries.find(
+    (entry) => entry.id === "tier-three-other",
   );
-  const otherShare = tierThreeThemes.reduce(
-    (sum, { placement }) => sum + placement.placementShare,
-    0,
+  const tierThreeThemes = (tierThreeEntry?.memberThemeIds ?? []).map(
+    (themeId) => ({
+      theme: THEME_BY_ID[themeId],
+      placement:
+        placementReport.themes[themeId] ?? EMPTY_PLACEMENT_METRICS,
+    }),
   );
-  const otherPreviousShare = Object.values(
-    previousPlacementReport.themes,
-  ).reduce(
-    (sum, placement) =>
-      hasCompletePlacementSample(placement.observedDays) &&
-      getPlacementTier(placement.placementShare).tier === "Tier 3"
-        ? sum + placement.placementShare
-        : sum,
-    0,
-  );
-  const chartEntries = [
-    ...individuallyListedThemes.map(
-      ({ completeSample, theme, tier, placement }) => ({
-        id: theme.id,
-        label: theme.name,
-        color: theme.color,
-        share: placement.placementShare,
-        theme,
-        tier,
-        completeSample,
-        observedDays: placement.observedDays,
-      }),
-    ),
-    ...(tierThreeThemes.length > 0
-      ? [
-          {
-            id: "tier-three-other",
-            label: "기타",
-            color: "#94a3b8",
-            share: otherShare,
-            theme: null,
-            tier: "Tier 3" as const,
-            completeSample: true,
-            observedDays: PLACEMENT_WINDOW_DAYS,
+  const individuallyListedThemes = chartEntries.flatMap((entry, rank) =>
+    entry.theme
+      ? [{
+          completeSample: entry.completeSample,
+          rank,
+          theme: entry.theme,
+          placement: {
+            ...(placementReport.themes[entry.theme.id] ??
+              EMPTY_PLACEMENT_METRICS),
+            placementShare: entry.share,
           },
-        ]
-      : []),
-  ];
-  const shareTotal =
-    chartEntries.reduce(
-      (sum, entry) => sum + entry.share,
-      0,
-    ) || 1;
+          tier: entry.tier,
+        }]
+      : [],
+  );
+  const otherShare = tierThreeEntry?.share ?? 0;
+  const otherPreviousShare =
+    previousEntries.find((entry) => entry.id === "tier-three-other")?.share ??
+    0;
   const distributionSlices = chartEntries.reduce<{
     accumulated: number;
     slices: {
@@ -4658,7 +4653,7 @@ function DistributionView({
       const size =
         index === chartEntries.length - 1
           ? Math.max(0, 100 - distribution.accumulated)
-          : (entry.share / shareTotal) * 100;
+          : entry.share * 100;
       return {
         accumulated: distribution.accumulated + size,
         slices: [
@@ -4685,22 +4680,11 @@ function DistributionView({
   const inspectedEntry =
     chartEntries.find((entry) => entry.id === inspectedEntryId) ??
     chartEntries[0];
-  const inspectedTheme = inspectedEntry?.theme ?? null;
-  const inspectedRuntime = inspectedTheme
-    ? game.themes[inspectedTheme.id]
-    : null;
   const isInspectingEntry = inspectedEntryId === inspectedEntry?.id;
-  const topThreeShare = placementThemes
+  const topThreeShare = chartEntries
+    .filter((entry) => entry.theme)
     .slice(0, 3)
-    .reduce(
-      (sum, theme) =>
-        sum +
-        (placementReport.themes[theme.id]?.placementShare ?? 0),
-      0,
-    );
-  const inspectedFatigue = inspectedRuntime
-    ? getFatigueSignal(inspectedRuntime)
-    : null;
+    .reduce((sum, entry) => sum + entry.share, 0);
   const highestFatigueTheme = rankedThemes.reduce<ThemeContent | null>(
     (highest, theme) => {
       if (!highest) return theme;
@@ -4731,12 +4715,27 @@ function DistributionView({
     >
       <header className="subpage-heading distribution-heading">
         <div>
-          <span className="eyebrow">TOP CUT DISTRIBUTION</span>
-          <h1>메타 탑컷 분포</h1>
-          <p>최근 14일 주요 대회의 탑컷 점유율과 순환 신호를 확인합니다.</p>
+          <span className="eyebrow">
+            {distributionMode === "top-cut"
+              ? "META DISTRIBUTION"
+              : "PLAYER COMPOSITION"}
+          </span>
+          <h1
+            data-tutorial-term={
+              distributionMode === "top-cut" ? "top-cut-share" : "user-share"
+            }
+          >
+            {distributionMode === "top-cut" ? "탑컷 비율" : "유저 비율"}
+          </h1>
+          <p>
+            {distributionMode === "top-cut"
+              ? "최근 14일 주요 대회의 탑컷 점유율입니다."
+              : "메타층·캐주얼층·콜렉터층·리셀층의 현재 구성비입니다."}
+          </p>
         </div>
         <div className="distribution-heading-actions">
-          {highestFatigueTheme &&
+          {distributionMode === "top-cut" &&
+          highestFatigueTheme &&
           highestFatigueRuntime &&
           highestFatigueSignal &&
           highestFatigueRuntime.fatigue >= 55 ? (
@@ -4776,14 +4775,78 @@ function DistributionView({
         </div>
       </header>
 
+      <div className="distribution-mode-switch" role="group" aria-label="분포 기준">
+        <button
+          aria-pressed={distributionMode === "top-cut"}
+          className={distributionMode === "top-cut" ? "active" : ""}
+          data-tutorial-control="distribution-top-cut"
+          data-tutorial-term="top-cut-share"
+          onClick={() => {
+            setDistributionMode("top-cut");
+            setHoveredEntryId(null);
+            setFocusedEntryId(null);
+            if (guidedModeTarget === "top-cut") onGuidedModeConfirm?.();
+          }}
+          type="button"
+        >
+          탑컷 비율
+        </button>
+        <button
+          aria-pressed={distributionMode === "users"}
+          className={distributionMode === "users" ? "active" : ""}
+          data-tutorial-control="distribution-users"
+          data-tutorial-term="user-share"
+          onClick={() => {
+            setDistributionMode("users");
+            setHoveredEntryId(null);
+            setFocusedEntryId(null);
+            if (guidedModeTarget === "users") onGuidedModeConfirm?.();
+          }}
+          type="button"
+        >
+          유저 비율
+        </button>
+      </div>
+
+      <section
+        aria-label={`DAY ${latestPlacementDay?.day ?? game.day} 대회 입상표`}
+        className="daily-placement-board"
+        data-tutorial-term="placement"
+        data-tutorial-target={guidedPlacementInspection ? "active" : undefined}
+        role={guidedPlacementInspection ? "button" : undefined}
+        tabIndex={guidedPlacementInspection ? 0 : undefined}
+      >
+        <header>
+          <div>
+            <span className="eyebrow">PLACEMENT RESULTS</span>
+            <strong>오늘의 입상표</strong>
+          </div>
+          <span>DAY {latestPlacementDay?.day ?? game.day} · TOP {dailyPlacementRows.reduce((sum, row) => sum + row.count, 0)}</span>
+        </header>
+        <div className="daily-placement-list" role="list">
+          {dailyPlacementRows.map((row) => (
+            <div key={row.theme.id} role="listitem">
+              <b>{row.rank}</b>
+              <i aria-hidden="true" style={{ background: row.theme.color }} />
+              <strong>{row.theme.shortName}</strong>
+              <span>{row.count}석</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
       <div className="distribution-layout">
-        <article className="distribution-chart-card">
+        <article className="distribution-chart-card" data-tutorial-control="distribution-donut">
           <div
             className={`distribution-donut${isInspectingEntry ? " is-inspecting" : ""}`}
             onPointerLeave={() => setHoveredEntryId(null)}
           >
             <svg
-              aria-label={`집계가 끝난 0티어부터 2티어까지와 집계 중인 ${collectingThemes.length}개 테마는 개별 표시하고, 집계가 끝난 3티어는 기타로 합산한 최근 14일 탑컷 분포입니다. 모든 탑컷 점유율의 합은 100퍼센트입니다.`}
+              aria-label={
+                distributionMode === "top-cut"
+                  ? "탑컷 비율 분포입니다. 비율이 큰 테마부터 12시 방향에서 시계 방향으로 배치하며 기타는 마지막입니다."
+                  : "플레이어 계층 구성비입니다. 인원이 많은 계층부터 12시 방향에서 시계 방향으로 배치합니다."
+              }
               className="distribution-donut-svg"
               role="group"
               viewBox="0 0 100 100"
@@ -4795,17 +4858,19 @@ function DistributionView({
                 cy="50"
                 fill="none"
                 r="38"
-                strokeWidth="24"
+                strokeWidth="12"
               />
               {distributionSlices.map(({ entry, offset, size }) => {
                 const isActive =
                   isInspectingEntry && inspectedEntry?.id === entry.id;
                 const shareLabel = formatPercent(entry.share);
-                const ariaLabel = entry.theme
-                  ? entry.completeSample
-                    ? `${entry.label}, 탑컷 점유율 ${shareLabel}. 상세 정보 열기`
-                    : `${entry.label}, 집계 ${entry.observedDays}/${PLACEMENT_WINDOW_DAYS}, 탑컷 점유율 ${shareLabel}. 상세 정보 열기`
-                  : `기타, 3티어 ${tierThreeThemes.length}개 테마 합산 탑컷 점유율 ${shareLabel}`;
+                const ariaLabel = entry.kind === "player-segment"
+                  ? `${entry.label}, ${formatUsers(entry.count)}명, 구성비 ${shareLabel}`
+                  : entry.theme
+                    ? entry.completeSample
+                    ? `${entry.label}, ${distributionMode === "top-cut" ? "탑컷" : "유저"} 비율 ${shareLabel}. 상세 정보 열기`
+                    : `${entry.label}, 집계 ${entry.observedDays}/${PLACEMENT_WINDOW_DAYS}, ${distributionMode === "top-cut" ? "탑컷" : "유저"} 비율 ${shareLabel}. 상세 정보 열기`
+                  : `기타, 3티어 ${tierThreeThemes.length}개 테마 합산 ${distributionMode === "top-cut" ? "탑컷" : "유저"} 비율 ${shareLabel}`;
 
                 return (
                   <g
@@ -4847,7 +4912,7 @@ function DistributionView({
                       r="38"
                       stroke={entry.color}
                       strokeLinecap="butt"
-                      strokeWidth="24"
+                      strokeWidth="12"
                       style={
                         {
                           "--slice-color": entry.color,
@@ -4868,53 +4933,79 @@ function DistributionView({
                 className="distribution-donut-core-content"
                 key={`${inspectedEntry?.id ?? "empty"}-${inspectedEntry ? (inspectedEntry.share * 100).toFixed(1) : "0"}`}
               >
-                <span>{isInspectingEntry ? "현재 탑컷 비중" : "탑컷 1위"}</span>
                 <strong>{inspectedEntry?.label ?? "-"}</strong>
                 <em>{inspectedEntry ? formatPercent(inspectedEntry.share) : "-"}</em>
-                {inspectedEntry && !inspectedEntry.completeSample ? (
-                  <small>
-                    집계 {inspectedEntry.observedDays}/{PLACEMENT_WINDOW_DAYS}
-                  </small>
-                ) : inspectedRuntime && inspectedFatigue ? (
-                  <small className={`donut-fatigue-copy ${inspectedFatigue.level}`}>
-                    피로도 {Math.round(inspectedRuntime.fatigue)} · 1위 유지{" "}
-                    {inspectedRuntime.topStreakDays}일
-                  </small>
-                ) : inspectedEntry?.tier === "Tier 3" ? (
-                  <small>{tierThreeThemes.length}개 테마 합산</small>
-                ) : null}
               </div>
             </div>
           </div>
+          {distributionMode === "top-cut" ? (
           <div className="distribution-kpis">
-            <div>
+            <div data-tutorial-term="active-users">
               <span>활성 유저</span>
               <strong>{formatUsers(total)}</strong>
-              <small>경쟁층 {formatUsers(game.users.tier)}명</small>
             </div>
-            <div>
+            <div data-tutorial-term="environment-health">
               <span>생태계 건강</span>
               <strong
                 title={`경기 품질 ${Math.round(healthBreakdown.gameplayQuality)} · 탑컷 다양성 ${Math.round(healthBreakdown.placementDiversity)} · 상위권 순환 ${Math.round(healthBreakdown.topCohortTurnover)} · 세대 공존 ${Math.round(healthBreakdown.generationalBalance)} · 생태계 연속성 ${Math.round(healthBreakdown.ecosystemContinuity)}`}
               >
                 {health}
               </strong>
-              <small>탑컷 다양성 · 순환 · 세대 공존</small>
+              <small>다양성 · 순환</small>
             </div>
             <div>
-              <span>TOP 3 집중</span>
+              <span>상위 3개 집중</span>
               <strong>{formatPercent(topThreeShare)}</strong>
-              <small>최근 14일 탑컷 기준</small>
+              <small>{distributionMode === "top-cut" ? "최근 14일 탑컷 기준" : "활성 유저 기준"}</small>
             </div>
-            <div>
+            <div data-tutorial-term="purchase-trust">
               <span>구매 신뢰</span>
               <strong>{Math.round(game.purchaseTrust)}</strong>
               <small>100점 기준</small>
             </div>
           </div>
+          ) : null}
         </article>
 
-        <ol className="distribution-legend" aria-label="집계 중인 테마와 0티어부터 2티어까지의 탑컷 점유율, 3티어 합계">
+        <ol
+          className="distribution-legend"
+          data-tutorial-control="distribution-legend"
+          aria-label={
+            distributionMode === "top-cut"
+              ? "탑컷 비율 순위. 기타는 마지막입니다."
+              : "플레이어 계층별 인원과 구성비. 큰 비율 순입니다."
+          }
+        >
+          {distributionMode === "users"
+            ? chartEntries.map((entry, rank) => (
+                <li
+                  className="player-segment-entry"
+                  data-tutorial-term={
+                    entry.segmentId ? `${entry.segmentId}-segment` : undefined
+                  }
+                  key={entry.id}
+                >
+                  <div>
+                    <span className="legend-rank">{rank + 1}</span>
+                    <span
+                      aria-hidden="true"
+                      className="legend-color"
+                      style={{ backgroundColor: entry.color }}
+                    />
+                    <span className="legend-theme">
+                      <strong>{entry.label}</strong>
+                      <small>{formatUsers(entry.count)}명</small>
+                    </span>
+                    <span className="legend-share">
+                      <strong>{formatPercent(entry.share)}</strong>
+                      <small>구성비</small>
+                    </span>
+                  </div>
+                </li>
+              ))
+            : null}
+          {distributionMode === "top-cut" ? (
+          <>
           {individuallyListedThemes.map(({
             completeSample,
             theme,
@@ -4923,12 +5014,10 @@ function DistributionView({
             placement,
           }) => {
             const runtime = game.themes[theme.id];
-            const previousPlacement =
-              previousPlacementReport.themes[theme.id] ??
-              EMPTY_PLACEMENT_METRICS;
-            const delta =
-              placement.placementShare -
-              previousPlacement.placementShare;
+            const previousShare = previousEntries.find(
+              (entry) => entry.themeId === theme.id,
+            )?.share ?? 0;
+            const delta = placement.placementShare - previousShare;
             const fatigue = getFatigueSignal(runtime);
             return (
               <li className={`fatigue-${fatigue.level}`} key={theme.id}>
@@ -4949,7 +5038,9 @@ function DistributionView({
                     <strong>{theme.name}</strong>
                     <small>
                       {completeSample
-                        ? `${tier} · 피로 ${Math.round(runtime.fatigue)}`
+                        ? distributionMode === "top-cut"
+                          ? `${tier} · 피로 ${Math.round(runtime.fatigue)}`
+                          : `활성 유저 기준 · 피로 ${Math.round(runtime.fatigue)}`
                         : `집계 ${placement.observedDays}/${PLACEMENT_WINDOW_DAYS}`}
                     </small>
                     {fatigue.level !== "none" ? (
@@ -4960,10 +5051,14 @@ function DistributionView({
                   </span>
                   <span className="legend-share">
                     <strong>{formatPercent(placement.placementShare)}</strong>
-                    <small className={delta >= 0 ? "positive" : "negative"}>
-                      {delta >= 0 ? "+" : ""}
-                      {formatPercent(delta, 2)}p
-                    </small>
+                    {distributionMode === "top-cut" ? (
+                      <small className={delta >= 0 ? "positive" : "negative"}>
+                        {delta >= 0 ? "+" : ""}
+                        {formatPercent(delta, 2)}p
+                      </small>
+                    ) : (
+                      <small>현재 활성 유저</small>
+                    )}
                   </span>
                   <ChevronIcon size={15} />
                 </button>
@@ -4985,20 +5080,26 @@ function DistributionView({
                 </span>
                 <span className="legend-share">
                   <strong>{formatPercent(otherShare)}</strong>
-                  <small
-                    className={
-                      otherShare - otherPreviousShare >= 0
-                        ? "positive"
-                        : "negative"
-                    }
-                  >
-                    {otherShare - otherPreviousShare >= 0 ? "+" : ""}
-                    {formatPercent(otherShare - otherPreviousShare, 2)}p
-                  </small>
+                  {distributionMode === "top-cut" ? (
+                    <small
+                      className={
+                        otherShare - otherPreviousShare >= 0
+                          ? "positive"
+                          : "negative"
+                      }
+                    >
+                      {otherShare - otherPreviousShare >= 0 ? "+" : ""}
+                      {formatPercent(otherShare - otherPreviousShare, 2)}p
+                    </small>
+                  ) : (
+                    <small>현재 활성 유저</small>
+                  )}
                 </span>
                 <span aria-hidden="true" />
               </div>
             </li>
+          ) : null}
+          </>
           ) : null}
         </ol>
       </div>
@@ -5025,234 +5126,71 @@ function DistributionView({
   );
 }
 
-function OverviewCard({ className = "", icon, label, value, note }: { className?: string; icon: React.ReactNode; label: string; value: string; note: string }) {
-  return <article className={`overview-card ${className}`.trim()}><div className="overview-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{note}</small></article>;
+function OverviewCard({ className = "", dataTutorialTerm, icon, label, value, note }: { className?: string; dataTutorialTerm?: string; icon: React.ReactNode; label: string; value: string; note: string }) {
+  return <article className={`overview-card ${className}`.trim()} data-tutorial-term={dataTutorialTerm}><div className="overview-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{note}</small></article>;
 }
 
 function ReleasesView({
   game,
+  guidedSelectionActive,
+  onReleaseDraftChange,
+  onSubmitRelease,
   releaseDraft,
-  guidedTarget,
-  onToggle,
-  onAdjustmentChange,
-  onSubmit,
+  selectionDisabled,
 }: {
   game: GameState;
-  releaseDraft: Record<string, PowerAdjustment>;
-  guidedTarget?: GuidedReleaseTarget | null;
-  onToggle: (optionId: string) => void;
-  onAdjustmentChange: (
-    optionId: string,
-    adjustment: PowerAdjustment,
-  ) => void;
-  onSubmit: () => void;
+  guidedSelectionActive: boolean;
+  onReleaseDraftChange: (optionIds: string[]) => void;
+  onSubmitRelease: (selections: ReleaseSelection[]) => void;
+  releaseDraft: readonly string[];
+  selectionDisabled: boolean;
 }) {
-  const slate = game.releaseSlate;
-  const selectedCount = Object.keys(releaseDraft).length;
-
-  if (game.phase === "release-edit" && slate) {
-    return (
-      <section className="subpage release-review-page">
-        <div className="subpage-heading">
-          <div>
-            <span className="eyebrow">DAY {slate.day} · RELEASE REVIEW</span>
-            <h1>6개 시안 중 3개를 고르세요</h1>
-            <p>신테마 3안과 기존 테마 지원 3안입니다. 선택한 안마다 파워를 7단계로 조정할 수 있습니다.</p>
-          </div>
-          <div className="cadence-card release-count-card">
-            <ReleaseIcon />
-            <span>선택 현황</span>
-            <strong>{selectedCount} / 3</strong>
-          </div>
-        </div>
-
-        <div className="release-slate-grid">
-          {slate.options.map((option) => {
-            const content = THEME_BY_ID[option.themeId];
-            const selected = Object.prototype.hasOwnProperty.call(
-              releaseDraft,
-              option.id,
-            );
-            const adjustment = releaseDraft[option.id] ?? 0;
-            const predictedTier = getExpectedTier(
-              option.expectedPower + adjustment * 2.2,
-            );
-            const directionLabel = option.direction
-              ? SUPPORT_DIRECTIONS.find(
-                  (candidate) => candidate.value === option.direction,
-                )?.label
-              : null;
-
-            return (
-              <article
-                className={selected ? "release-option selected" : "release-option"}
-                key={option.id}
-                style={{ "--theme-color": content.color } as React.CSSProperties}
-              >
-                <button
-                  aria-pressed={selected}
-                  className="release-option-select"
-                  data-tutorial-target={
-                    guidedTarget?.kind === "option" &&
-                    guidedTarget.optionId === option.id
-                      ? "active"
-                      : undefined
-                  }
-                  disabled={
-                    Boolean(guidedTarget) &&
-                    !(
-                      guidedTarget?.kind === "option" &&
-                      guidedTarget.optionId === option.id
-                    )
-                  }
-                  onClick={() => onToggle(option.id)}
-                  type="button"
-                >
-                  <span aria-hidden="true" className="release-option-watermark">
-                    <ThemeEmblem
-                      decorative
-                      detail="full"
-                      size="100%"
-                      themeId={content.id}
-                    />
-                  </span>
-                  <span className="release-kind">
-                    {option.kind === "new-theme" ? "신테마" : "기존 지원"}
-                    {option.requested ? <em>직접 제안</em> : null}
-                  </span>
-                  <strong>{content.name}</strong>
-                  <small>
-                    {option.kind === "new-theme"
-                      ? content.playstyle
-                      : `${directionLabel ?? "지원"} 보강`}
-                  </small>
-                  <span className="expected-tier">
-                    예상 <b>{predictedTier}</b>
-                  </span>
-                  <span className="selection-state">
-                    {selected ? "선택됨" : "시안 선택"}
-                  </span>
-                </button>
-
-                {selected ? (
-                  <fieldset className="power-adjustment">
-                    <legend>
-                      파워 · {POWER_ADJUSTMENT_LABELS[adjustment]}
-                    </legend>
-                    <div role="group" aria-label={`${content.name} 파워 조정`}>
-                      {POWER_ADJUSTMENTS.map((value) => (
-                        <button
-                          aria-pressed={adjustment === value}
-                          className={adjustment === value ? "active" : ""}
-                          data-tutorial-target={
-                            guidedTarget?.kind === "adjustment" &&
-                            guidedTarget.optionId === option.id &&
-                            guidedTarget.adjustment === value
-                              ? "active"
-                              : undefined
-                          }
-                          disabled={
-                            Boolean(guidedTarget) &&
-                            !(
-                              guidedTarget?.kind === "adjustment" &&
-                              guidedTarget.optionId === option.id &&
-                              guidedTarget.adjustment === value
-                            )
-                          }
-                          key={value}
-                          onClick={() => onAdjustmentChange(option.id, value)}
-                          title={POWER_ADJUSTMENT_LABELS[value]}
-                          type="button"
-                        >
-                          {value > 0 ? `+${value}` : value}
-                        </button>
-                      ))}
-                    </div>
-                  </fieldset>
-                ) : null}
-              </article>
-            );
-          })}
-        </div>
-
-        <div className="release-submit-bar">
-          <div>
-            <strong>{selectedCount === 3 ? "발매 준비 완료" : `${3 - selectedCount}개를 더 선택하세요`}</strong>
-            <span>출시 후 선택은 되돌릴 수 없으며 반응 관측은 다음 날 시작됩니다.</span>
-          </div>
-          <button
-            className="primary-action"
-            data-sound="release"
-            data-tutorial-target={
-              guidedTarget?.kind === "submit" ? "active" : undefined
-            }
-            disabled={
-              selectedCount !== 3 ||
-              (Boolean(guidedTarget) && guidedTarget?.kind !== "submit")
-            }
-            onClick={onSubmit}
-            type="button"
-          >
-            3종 발매 확정
-          </button>
-        </div>
-      </section>
-    );
-  }
-
-  const recentBatches = [...game.releaseHistory].slice(-3).reverse();
-  const cooldown =
-    game.lastSupportProposalDay === null
-      ? 0
-      : Math.max(0, 30 - (game.day - game.lastSupportProposalDay));
+  const releaseBatches = [...game.releaseHistory]
+    .filter((batch) => !isInitialGenericReleaseBatch(batch))
+    .reverse();
   return (
-    <section className="subpage release-planning-page">
-      <div className="subpage-heading">
-        <div><span className="eyebrow">RELEASE PIPELINE</span><h1>발매 제안</h1><p>30일마다 신테마 3안과 기존 테마 지원 3안이 도착하며, 그중 3개를 출시합니다.</p></div>
-        <div className="cadence-card">
-          <ReleaseIcon />
-          <span>{game.day >= LAST_RELEASE_DAY ? "발매 일정" : "다음 시안"}</span>
-          <strong>
-            {game.day >= LAST_RELEASE_DAY
-              ? `DAY ${LAST_RELEASE_DAY} 종료`
-              : `DAY ${getNextReleaseDay(game.day)}`}
-          </strong>
+    <section
+      className="subpage release-history-page"
+      data-tutorial-control="release-archive"
+    >
+      <header className="subpage-heading">
+        <div>
+          <span className="eyebrow">RELEASE ARCHIVE</span>
+          <h1>발매</h1>
+          <p>출시일, 카드팩, 신테마 상징을 중심으로 발매 기록을 확인합니다.</p>
         </div>
-      </div>
-
-      <div className="release-rules-grid">
-        <article><span>SUPPORT CARD POOL</span><strong>5 → 8 → 11 → 14장</strong><p>초기 5장, 지원마다 준비된 카드 3장 추가</p></article>
-        <article><span>MONTHLY SLATE</span><strong>신규 3 + 지원 3</strong><p>6개 중 원하는 조합으로 3개 선택</p></article>
-        <article><span>POWER CONTROL</span><strong>-3 ··· +3</strong><p>각 선택안을 7단계로 최종 조정</p></article>
-        <article><span>SUPPORT REQUEST</span><strong>{game.day >= LAST_RELEASE_DAY ? "마감" : cooldown > 0 ? `D-${cooldown}` : "제안 가능"}</strong><p>30일에 한 번, 다음 지원 시안 한 자리 보장</p></article>
-      </div>
-
-      <section className="recent-releases">
-        <div className="section-heading"><div><span className="eyebrow">RECENT</span><h2>최근 발매</h2></div></div>
-        {recentBatches.length > 0 ? (
-          <div className="recent-release-list">
-            {recentBatches.map((batch) => (
-              <article key={batch.day}>
-                <strong>DAY {batch.day}</strong>
-                <div>
-                  {batch.products.map((product) => (
-                    <span key={product.optionId}>
-                      {THEME_BY_ID[product.themeId].shortName}
-                      <small>{product.kind === "new-theme" ? "신규" : "지원"} · {product.powerAdjustment > 0 ? "+" : ""}{product.powerAdjustment}</small>
-                    </span>
-                  ))}
-                </div>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-state">
-            {game.day >= LAST_RELEASE_DAY
-              ? "이번 임기의 정기 발매 일정이 종료되었습니다."
-              : `첫 발매 시안은 DAY ${getNextReleaseDay(game.day)}에 도착합니다.`}
-          </div>
-        )}
-      </section>
+        <div className="release-history-count" aria-label="발매 기록 수">
+          <ReleaseIcon size={18} />
+          <span>발매 기록</span>
+          <strong>{releaseBatches.length}회</strong>
+        </div>
+      </header>
+      {game.phase === "release-edit" && game.releaseSlate ? (
+        <ReleaseDecisionPanel
+          disabled={selectionDisabled}
+          fixedSelections={
+            guidedSelectionActive
+              ? getPrologueReleasePlan(game).selections
+              : undefined
+          }
+          game={game}
+          guidedTarget={guidedSelectionActive}
+          onChange={onReleaseDraftChange}
+          onSubmit={onSubmitRelease}
+          selectedOptionIds={releaseDraft}
+        />
+      ) : null}
+      {releaseBatches.length > 0 ? (
+        <div className="release-pack-list">
+          {releaseBatches.map((batch) => (
+            <ReleasePackCard batch={batch} key={batch.day} />
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state">
+          아직 발매 기록이 없습니다.
+        </div>
+      )}
     </section>
   );
 }
@@ -5277,13 +5215,17 @@ function getPostReactionTone(
 function CommunityView({
   game,
   guidedInspection = false,
+  guidedPostTarget = false,
   flashDay,
+  onGuidedPostOpen,
   onFlashComplete,
   onSelectTheme,
 }: {
   game: GameState;
   guidedInspection?: boolean;
+  guidedPostTarget?: boolean;
   flashDay: number | null;
+  onGuidedPostOpen?: () => void;
   onFlashComplete: () => void;
   onSelectTheme: (themeId: ThemeId, partId?: string) => void;
 }) {
@@ -5292,9 +5234,13 @@ function CommunityView({
     ? game.day
     : Math.max(1, Math.min(game.day, selectedDay));
   const posts = getDailyCommunityPosts(game, safeDay);
+  const engagedPosts = rankCommunityPostsByLikes(game, posts);
   const profile = getReleaseReactionProfile(game, safeDay);
   const heat = getCommunityHeat(game, safeDay);
-  const releaseDecisionToday = game.releaseHistory.some((batch) => batch.day === safeDay);
+  const releaseDecisionToday = game.releaseHistory.some(
+    (batch) =>
+      batch.day === safeDay && !isInitialGenericReleaseBatch(batch),
+  );
   const restrictionDecisionToday =
     isBanDay(safeDay) &&
     (safeDay < game.day || game.phase !== "ban-edit");
@@ -5365,7 +5311,11 @@ function CommunityView({
           <h1>커뮤니티</h1>
           <p>매일 20개의 글이 올라옵니다. 발매 직후에는 반응이 한꺼번에 폭발합니다.</p>
         </div>
-        <div className="community-day-controls" aria-label="게시글 날짜">
+        <div
+          className="community-day-controls"
+          data-tutorial-control="community-day"
+          aria-label="게시글 날짜"
+        >
           <button disabled={safeDay <= 1} onClick={() => setSelectedDay(safeDay - 1)} type="button">← 이전 날</button>
           <strong>DAY {safeDay}</strong>
           <button disabled={safeDay >= game.day} onClick={() => setSelectedDay(safeDay + 1 >= game.day ? null : safeDay + 1)} type="button">다음 날 →</button>
@@ -5442,7 +5392,7 @@ function CommunityView({
       ) : null}
 
       <div className={`feed-list daily-feed${shouldFlash ? " is-staggered" : ""}`}>
-        {posts.map((event, index) => {
+        {engagedPosts.map(({ event, likes, isPopular }, index) => {
           const body = event.body || formatCommunityEvent(event, game);
           const reactionTone = getPostReactionTone(event, body, visibleProfile);
           const isRestrictionWave =
@@ -5454,10 +5404,16 @@ function CommunityView({
           return (
             <button
               aria-disabled={guidedInspection || undefined}
-              className={`feed-post reaction-${reactionTone}${isRestrictionWave ? " restriction-wave" : ""}`}
+              className={`feed-post reaction-${reactionTone}${isRestrictionWave ? " restriction-wave" : ""}${isPopular ? " is-popular" : ""}`}
+              data-tutorial-control={
+                guidedPostTarget && index === 0 ? "community-post" : undefined
+              }
               key={event.id}
               onClick={() => {
-                if (!guidedInspection) onSelectTheme(event.themeId, event.partId);
+                if (!guidedInspection) {
+                  onSelectTheme(event.themeId, event.partId);
+                  if (guidedPostTarget && index === 0) onGuidedPostOpen?.();
+                }
               }}
               style={{ "--post-index": index } as React.CSSProperties}
               type="button"
@@ -5468,7 +5424,13 @@ function CommunityView({
                 <p>{theme.name}{part ? ` · ${part.name}` : ""}</p>
               </div>
               <time>DAY {event.day}</time>
-              <ChevronIcon />
+              <span
+                aria-label={`좋아요 ${likes.toLocaleString("ko-KR")}개`}
+                className="feed-likes"
+              >
+                ♥ {likes.toLocaleString("ko-KR")}
+                {isPopular ? <em>인기</em> : null}
+              </span>
             </button>
           );
         })}
@@ -5559,7 +5521,10 @@ function getFinanceChartData(game: GameState): FinanceChartDatum[] {
           ? Math.max(0, 20 - communityPositive - communityNegative)
           : null,
       communityNegative,
-      release: game.releaseHistory.some((batch) => batch.day === entry.day),
+      release: game.releaseHistory.some(
+        (batch) =>
+          batch.day === entry.day && !isInitialGenericReleaseBatch(batch),
+      ),
       ban: isBanDay(entry.day),
       releaseAge: getReleaseAge(game, entry.day),
     };
@@ -5574,7 +5539,33 @@ function communitySentimentLabel(index: number): string {
   return "매우 부정";
 }
 
-function FinanceMarketChart({ game }: { game: GameState }) {
+function getFinanceChartDomain(
+  values: number[],
+  minimumSpan: number,
+): { min: number; max: number } {
+  const finiteValues = values.filter(Number.isFinite);
+  if (finiteValues.length === 0) return { min: 0, max: minimumSpan };
+
+  const rawMin = Math.min(...finiteValues);
+  const rawMax = Math.max(...finiteValues);
+  const paddedSpan = Math.max((rawMax - rawMin) * 1.24, minimumSpan);
+  const center = (rawMin + rawMax) / 2;
+  let min = center - paddedSpan / 2;
+  let max = center + paddedSpan / 2;
+  if (min < 0) {
+    max -= min;
+    min = 0;
+  }
+  return { min, max };
+}
+
+function FinanceMarketChart({
+  game,
+  guidedInspection = false,
+}: {
+  game: GameState;
+  guidedInspection?: boolean;
+}) {
   const [hoveredDay, setHoveredDay] = useState<number | null>(null);
   const data = useMemo(() => getFinanceChartData(game), [game]);
   const width = 1200;
@@ -5584,18 +5575,64 @@ function FinanceMarketChart({ game }: { game: GameState }) {
   const top = 38;
   const plotBottom = 266;
   const plotWidth = width - left - right;
-  const maxAmount = Math.max(
-    0.1,
-    ...data.flatMap((point) => [point.revenue, point.cash ?? 0]),
-  ) * 1.08;
+  const revenueValues = data.map((point) => point.revenue);
+  const cashValues = data
+    .map((point) => point.cash)
+    .filter((value): value is number => value !== null);
+  const scoreValues = data.flatMap((point) =>
+    [
+      point.environmentHealth,
+      point.purchaseTrust,
+      point.communitySentiment,
+    ].filter((value): value is number => value !== null),
+  );
+  const highestRevenue = Math.max(0, ...revenueValues);
+  const highestCash = Math.max(0, ...cashValues);
+  const revenueDomain = getFinanceChartDomain(
+    revenueValues,
+    Math.max(0.015, highestRevenue * 0.24),
+  );
+  const cashDomain = getFinanceChartDomain(
+    cashValues,
+    Math.max(0.2, highestCash * 0.08),
+  );
+  const rawScoreDomain = getFinanceChartDomain([...scoreValues, 50], 20);
+  let scoreMin = Math.max(0, Math.floor(rawScoreDomain.min / 5) * 5);
+  let scoreMax = Math.min(100, Math.ceil(rawScoreDomain.max / 5) * 5);
+  if (scoreMax - scoreMin < 20) {
+    const missingSpan = 20 - (scoreMax - scoreMin);
+    scoreMin = Math.max(0, scoreMin - Math.ceil(missingSpan / 10) * 5);
+    scoreMax = Math.min(100, scoreMin + 20);
+    scoreMin = Math.max(0, scoreMax - 20);
+  }
+  const scoreTickStep = Math.max(
+    5,
+    Math.ceil((scoreMax - scoreMin) / 20) * 5,
+  );
+  scoreMax = scoreMin + scoreTickStep * 4;
+  if (scoreMax > 100) {
+    scoreMax = 100;
+    scoreMin = Math.max(0, scoreMax - scoreTickStep * 4);
+  }
   const xForIndex = (index: number) =>
     data.length <= 1
       ? left + plotWidth / 2
       : left + (index / (data.length - 1)) * plotWidth;
-  const yForAmount = (value: number) =>
-    top + ((maxAmount - Math.max(0, value)) / maxAmount) * (plotBottom - top);
+  const yForDomain = (
+    value: number,
+    domain: { min: number; max: number },
+  ) =>
+    top +
+    ((domain.max - Math.max(domain.min, Math.min(domain.max, value))) /
+      (domain.max - domain.min)) *
+      (plotBottom - top);
+  const yForRevenue = (value: number) => yForDomain(value, revenueDomain);
+  const yForCash = (value: number) => yForDomain(value, cashDomain);
   const yForScore = (value: number) =>
-    top + ((100 - Math.max(0, Math.min(100, value))) / 100) * (plotBottom - top);
+    top +
+    ((scoreMax - Math.max(scoreMin, Math.min(scoreMax, value))) /
+      (scoreMax - scoreMin)) *
+      (plotBottom - top);
   const basePoints = data.map((point, index) => {
     const previous = index > 0 ? data[index - 1] : null;
     const revenueChangeRate =
@@ -5629,7 +5666,7 @@ function FinanceMarketChart({ game }: { game: GameState }) {
     return {
       ...point,
       x: xForIndex(index),
-      revenueY: yForAmount(point.revenue),
+      revenueY: yForRevenue(point.revenue),
       revenueChangeRate,
       environmentDelta,
       trustDelta,
@@ -5678,7 +5715,7 @@ function FinanceMarketChart({ game }: { game: GameState }) {
     yForScore,
   );
   const trustPath = getSeriesPath((point) => point.purchaseTrust, yForScore);
-  const cashPath = getSeriesPath((point) => point.cash, yForAmount);
+  const cashPath = getSeriesPath((point) => point.cash, yForCash);
   const sentimentPath = getSeriesPath(
     (point) => point.communitySentiment,
     yForScore,
@@ -5688,13 +5725,15 @@ function FinanceMarketChart({ game }: { game: GameState }) {
     const ratio = index / 4;
     return {
       y: top + ratio * (plotBottom - top),
-      value: maxAmount * (1 - ratio),
+      revenueValue:
+        revenueDomain.max - (revenueDomain.max - revenueDomain.min) * ratio,
+      cashValue: cashDomain.max - (cashDomain.max - cashDomain.min) * ratio,
     };
   });
-  const scoreTicks = [100, 75, 50, 25, 0].map((value) => ({
-    value,
-    y: yForScore(value),
-  }));
+  const scoreTicks = Array.from({ length: 5 }, (_, index) => {
+    const value = scoreMax - scoreTickStep * index;
+    return { value, y: yForScore(value) };
+  });
   const displayedDays = new Set(
     [0, 0.25, 0.5, 0.75, 1]
       .map((ratio) => points[Math.round((points.length - 1) * ratio)])
@@ -5733,8 +5772,8 @@ function FinanceMarketChart({ game }: { game: GameState }) {
         <div className="finance-chart-legend" aria-label="차트 범례">
           <span className="revenue">매출 상승/하락</span>
           <span className="cash">보유자금</span>
-          <span className="health">생태계 건강</span>
-          <span className="trust">구매 신뢰</span>
+          <span className="health" data-tutorial-term="environment-health">생태계 건강</span>
+          <span className="trust" data-tutorial-term="purchase-trust">구매 신뢰</span>
           <span className="sentiment">커뮤니티 여론 · 50 중립</span>
           <span className="divergence">매출·환경 역행</span>
           <span className="event">R 발매 · B 금제</span>
@@ -5754,7 +5793,11 @@ function FinanceMarketChart({ game }: { game: GameState }) {
         </span>
       </div>
 
-      <div className="finance-chart-stage" onPointerLeave={() => setHoveredDay(null)}>
+      <div
+        className="finance-chart-stage"
+        data-tutorial-control="finance-chart"
+        onPointerLeave={() => setHoveredDay(null)}
+      >
         <svg
           aria-describedby="finance-chart-description"
           className="finance-market-chart"
@@ -5763,7 +5806,7 @@ function FinanceMarketChart({ game }: { game: GameState }) {
         >
           <title>최대 90일 매출, 보유자금, 생태계 건강, 구매 신뢰, 커뮤니티 여론 비교</title>
           <desc id="finance-chart-description">
-            왼쪽 금액 축에는 일매출과 보유자금, 오른쪽 0에서 100점 축에는 생태계 건강, 구매 신뢰와 커뮤니티 여론을 표시합니다. 여론은 50점이 중립이며 높을수록 긍정적입니다. 붉은 음영은 매출 급등 당일이나 다음 날 환경 지표가 하락한 구간입니다.
+            일매출과 보유자금은 서로 다른 관측 범위의 왼쪽 금액 축으로, 생태계 건강·구매 신뢰·커뮤니티 여론은 현재 기록 범위에 맞춘 오른쪽 점수 축으로 표시합니다. 축 눈금은 실제 값이며 마우스를 올리면 정확한 수치를 확인할 수 있습니다. 여론은 50점이 중립이며 높을수록 긍정적입니다. 붉은 음영은 매출 급등 당일이나 다음 날 환경 지표가 하락한 구간입니다.
           </desc>
           <defs>
             <linearGradient id="revenue-area-gradient" x1="0" x2="0" y1="0" y2="1">
@@ -5788,8 +5831,8 @@ function FinanceMarketChart({ game }: { game: GameState }) {
             </linearGradient>
           </defs>
 
-          <text className="finance-axis-title amount" x={left} y={17}>금액 · 억원</text>
-          <text className="finance-axis-title score" textAnchor="end" x={width - right} y={17}>시장·여론 지수 · 0–100</text>
+          <text className="finance-axis-title amount" x={left} y={17}>매출 / 자금 · 각 관측 범위</text>
+          <text className="finance-axis-title score" textAnchor="end" x={width - right} y={17}>시장·여론 지수 · {scoreMin}–{scoreMax}</text>
 
           <g className="finance-sentiment-neutral" aria-hidden="true">
             <line x1={left} x2={width - right} y1={yForScore(50)} y2={yForScore(50)} />
@@ -5799,7 +5842,10 @@ function FinanceMarketChart({ game }: { game: GameState }) {
           {amountTicks.map((tick) => (
             <g className="finance-grid-line" key={`amount-${tick.y}`}>
               <line x1={left} x2={width - right} y1={tick.y} y2={tick.y} />
-              <text x={left - 10} y={tick.y + 4}>{formatRevenue(tick.value)}</text>
+              <text x={left - 10} y={tick.y - 2}>
+                <tspan className="revenue-scale" x={left - 10}>{formatRevenue(tick.revenueValue)}</tspan>
+                <tspan className="cash-scale" dy={12} x={left - 10}>{formatRevenue(tick.cashValue)}</tspan>
+              </text>
             </g>
           ))}
           {scoreTicks.map((tick) => (
@@ -5887,7 +5933,7 @@ function FinanceMarketChart({ game }: { game: GameState }) {
             <circle
               className="finance-endpoint cash"
               cx={lastCashPoint.x}
-              cy={yForAmount(lastCashPoint.cash)}
+              cy={yForCash(lastCashPoint.cash)}
               r={5}
             />
           ) : null}
@@ -5930,6 +5976,7 @@ function FinanceMarketChart({ game }: { game: GameState }) {
                 point.divergence ? "매출과 환경 역행 감지" : "",
               ].filter(Boolean).join(", ")}
               className="finance-hit-zone"
+              data-tutorial-target={guidedInspection ? "active" : undefined}
               key={`hit-${point.day}`}
               onBlur={() =>
                 setHoveredDay((current) => current === point.day ? null : current)
@@ -6042,6 +6089,13 @@ function OperationsView({
   onRunAction: (action: BusinessActionType) => void;
 }) {
   const environmentHealth = getBusinessEnvironmentHealth(game);
+  const supportNeglect = getSupportNeglectPressure(game);
+  const supportNeglectNames = supportNeglect.neglectedThemeIds
+    .map((themeId) => THEME_BY_ID[themeId]?.shortName)
+    .filter((name): name is string => Boolean(name));
+  const purchaseTrustNote = supportNeglect.dailyTrustLoss >= 0.005
+    ? `${supportNeglectNames.join(" · ")} 후속 공백으로 하락 압력`
+    : "테마 후속 연속성 안정";
   const monthlyOperatingCost = getMonthlyOperatingCost(totalUsers(game));
   const isTodayRecorded = game.history.at(-1)?.day === game.day;
   const operatingDayLabel = isTodayRecorded
@@ -6087,7 +6141,7 @@ function OperationsView({
         <div>
           <span className="eyebrow">BUSINESS OPERATIONS</span>
           <h1>사업 운영</h1>
-          <p>운영자금을 집행해 발매 사이의 유입·구매·신뢰 흐름을 설계합니다.</p>
+          <p>일반 액션은 상태 기반 확률, 위험 액션은 결정일 챌린지로 운영합니다.</p>
         </div>
         <div className="cadence-card operations-cadence">
           <ClockIcon />
@@ -6115,15 +6169,17 @@ function OperationsView({
           value={formatSignedRevenue(game.finance.todayOperatingCash)}
         />
         <OverviewCard
+          dataTutorialTerm="purchase-trust"
           icon={<GavelIcon />}
           label="구매 신뢰"
-          note="광고보다 오래 남는 구매 기반"
+          note={purchaseTrustNote}
           value={`${Math.round(game.purchaseTrust)} / 100`}
         />
         <OverviewCard
+          dataTutorialTerm="environment-health"
           icon={<UsersIcon />}
           label="환경 건강"
-          note="챔피언십 흥행 위험 판정 기준"
+          note="챔피언십 도전과제 판정 지표"
           value={`${Math.round(environmentHealth)} · ${environmentLabel}`}
         />
       </div>
@@ -6139,7 +6195,10 @@ function OperationsView({
             </div>
             <span>비용 단위 · 원</span>
           </div>
-          <div className="business-action-grid">
+          <div
+            className="business-action-grid"
+            data-tutorial-control="business-actions"
+          >
             {BUSINESS_ACTIONS.map((action) => {
               const availability = getBusinessActionAvailability(
                 game,
@@ -6148,14 +6207,34 @@ function OperationsView({
               const latest = records.find(
                 (record) => record.type === action.type,
               );
-              const risk = action.type === "championship"
-                ? getChampionshipBacklashRisk(game)
-                : action.type === "pack-odds"
-                  ? getPackOddsDetectionRisk(game)
-                  : isStrategicBusinessAction(action.type)
-                    ? getStrategicProjectRiskProfile(game, action.type).risk
-                  : null;
-              const projectedOutcome = action.type === "championship"
+              const detectionRisk = action.type === "pack-odds"
+                ? getPackOddsDetectionRisk(game)
+                : null;
+              const successProbability = getBusinessActionSuccessProbability(
+                game,
+                action.type,
+              );
+              const challengeDefinition = isChallengeBusinessAction(action.type)
+                ? BUSINESS_CHALLENGE_BY_TYPE[action.type]
+                : null;
+              const challengeProgress = latest?.challenge;
+              const challengeMetric =
+                challengeProgress?.metric ?? challengeDefinition?.metric;
+              const challengeThreshold =
+                challengeProgress?.threshold ?? challengeDefinition?.threshold;
+              const challengeRequiredDays =
+                challengeProgress?.requiredQualifyingDays ??
+                challengeDefinition?.requiredQualifyingDays;
+              const challengeQualifyingDays =
+                challengeProgress?.qualifyingDays ?? 0;
+              const challengeDeadline =
+                challengeProgress?.deadlineDay ??
+                (challengeDefinition
+                  ? game.day + challengeDefinition.deadlineOffset
+                  : null);
+              const challengeLastValue = challengeProgress?.lastValue ?? null;
+              const projectedOutcome =
+                action.type === "championship" || successProbability !== null
                 ? "success"
                 : "active";
               const hasDirectRevenue = getBusinessActionDailyGrossRevenue(
@@ -6198,22 +6277,47 @@ function OperationsView({
                   <div className="business-action-title">
                     <span>{action.kicker}</span>
                     <strong>{action.title}</strong>
+                    <em className={`business-action-model ${
+                      successProbability !== null
+                        ? "probability"
+                        : challengeDefinition
+                          ? "challenge"
+                          : "detection"
+                    }`}>
+                      {successProbability !== null
+                        ? "일반 · 상태 기반 확률"
+                        : challengeDefinition
+                          ? "위험 · 결정일 챌린지"
+                          : "위험 · 적발 확률"}
+                    </em>
                     <small>{action.summary}</small>
                   </div>
                   <dl className="business-action-facts">
                     <div><dt>비용</dt><dd>₩{formatRevenue(action.cost)}</dd></div>
-                    <div><dt>효과 기간</dt><dd>{action.duration}일</dd></div>
+                    <div>
+                      <dt>{isStrategicBusinessAction(action.type) ? "구축 기간" : "효과 기간"}</dt>
+                      <dd>{action.duration}일</dd>
+                    </div>
                     <div>
                       <dt>{"oncePerCampaign" in action && action.oncePerCampaign ? "집행 한도" : "쿨다운"}</dt>
                       <dd>{"oncePerCampaign" in action && action.oncePerCampaign ? "임기 1회" : `${action.cooldown}일`}</dd>
                     </div>
                   </dl>
-                  <p className="business-action-effect">{action.effect}</p>
+                  <p className="business-action-effect">
+                    {action.effect}
+                    {availability.effectivenessMultiplier < 0.999 ? (
+                      <small>
+                        최근 저위험 사업 과밀 · 현재 효율 {Math.round(
+                          availability.effectivenessMultiplier * 100,
+                        )}%
+                      </small>
+                    ) : null}
+                  </p>
                   {hasDirectRevenue ? (
                     <div className="business-action-return">
                       <span>
-                        {action.type === "championship"
-                          ? "흥행 시 추가 현금(추정)"
+                        {action.type === "championship" || successProbability !== null
+                          ? "성공 시 추가 현금(추정)"
                           : "현재 조건 추가 현금(추정)"}
                       </span>
                       <strong>{formatSignedRevenue(projectedDirectCash)}</strong>
@@ -6224,13 +6328,54 @@ function OperationsView({
                       </small>
                     </div>
                   ) : null}
-                  <div className={`business-action-risk ${action.tone}`}>
-                    <span>{risk === null ? "직접 위험" : action.type === "pack-odds" ? "현재 적발 위험" : isStrategicBusinessAction(action.type) ? "현재 실패 위험" : "현재 역풍 위험"}</span>
-                    <strong>{risk === null ? action.tone === "safe" ? "매우 낮음" : "낮음" : `${Math.round(risk * 100)}%`}</strong>
-                    {risk !== null ? (
-                      <i aria-hidden="true"><span style={{ width: `${risk * 100}%` }} /></i>
-                    ) : null}
-                  </div>
+                  {detectionRisk !== null ? (
+                    <div className={`business-action-risk ${action.tone}`}>
+                      <span>현재 적발 위험</span>
+                      <strong>{Math.round(detectionRisk * 100)}%</strong>
+                      <i aria-hidden="true">
+                        <span style={{ width: `${detectionRisk * 100}%` }} />
+                      </i>
+                    </div>
+                  ) : null}
+                  {successProbability !== null ? (
+                    <div className="business-action-risk success">
+                      <span>현재 상태 성공 확률</span>
+                      <strong>{Math.round(successProbability * 100)}%</strong>
+                      <i aria-hidden="true">
+                        <span style={{ width: `${successProbability * 100}%` }} />
+                      </i>
+                    </div>
+                  ) : null}
+                  {challengeDefinition &&
+                  challengeMetric &&
+                  challengeThreshold !== undefined &&
+                  challengeRequiredDays !== undefined &&
+                  challengeDeadline !== null ? (
+                    <dl className="business-action-challenge">
+                      <div>
+                        <dt>도전 목표</dt>
+                        <dd>
+                          {BUSINESS_CHALLENGE_METRIC_LABEL[challengeMetric]} ≥ {challengeThreshold}점
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>달성일</dt>
+                        <dd>{challengeQualifyingDays} / {challengeRequiredDays}일</dd>
+                      </div>
+                      <div>
+                        <dt>마감</dt>
+                        <dd>DAY {challengeDeadline}</dd>
+                      </div>
+                      <div>
+                        <dt>최근 측정</dt>
+                        <dd>
+                          {challengeLastValue === null
+                            ? "측정 전"
+                            : `${challengeLastValue.toFixed(1)}점 · ${challengeLastValue >= challengeThreshold ? "달성" : "미달"}`}
+                        </dd>
+                      </div>
+                    </dl>
+                  ) : null}
                   <div className="business-action-footer">
                     <small id={descriptionId}>
                       {reason
@@ -6255,9 +6400,13 @@ function OperationsView({
                         ? `D-${availability.cooldownRemaining}`
                         : action.type === "pack-odds"
                           ? "위험 확인 · 예약"
+                          : successProbability !== null
+                            ? "확률 확인 · 집행"
                           : isStrategicBusinessAction(action.type)
-                            ? "위험 확인 · 집행"
-                          : "집행"}
+                            ? "조건 확인 · 집행"
+                            : isChallengeBusinessAction(action.type)
+                              ? "도전 시작"
+                              : "집행"}
                     </button>
                   </div>
                 </article>
@@ -6284,7 +6433,11 @@ function OperationsView({
                     <article className={`operations-record outcome-${record.outcome}`} key={record.id}>
                       <div><strong>{definition.title}</strong><span>{getBusinessRecordStatus(record, game.day)}</span></div>
                       <div
-                        aria-label={`${progress.toFixed(0)}% 진행`}
+                        aria-label={
+                          record.challenge
+                            ? `필요 ${record.challenge.requiredQualifyingDays}일 중 ${record.challenge.qualifyingDays}일 달성`
+                            : `${progress.toFixed(0)}% 진행`
+                        }
                         aria-valuemax={100}
                         aria-valuemin={0}
                         aria-valuenow={Math.round(progress)}
@@ -6293,7 +6446,11 @@ function OperationsView({
                       >
                         <span style={{ width: `${progress}%` }} />
                       </div>
-                      <small>DAY {record.startedDay} 집행 · 종료 기준 DAY {record.endsDay}</small>
+                      <small>
+                        DAY {record.startedDay} 집행 · {record.challenge
+                          ? `${BUSINESS_CHALLENGE_METRIC_LABEL[record.challenge.metric]} ${record.challenge.threshold}점 이상 · 마감 DAY ${record.challenge.deadlineDay}`
+                          : `종료 기준 DAY ${record.endsDay}`}
+                      </small>
                     </article>
                   );
                 })}
@@ -6350,7 +6507,12 @@ function OperationsView({
                         </div>
                         <small>
                           DAY {record.startedDay} · ₩{formatRevenue(record.cost)}
-                          {record.risk !== undefined ? ` · 위험 ${Math.round(record.risk * 100)}%` : ""}
+                          {record.type === "pack-odds" && record.risk !== undefined
+                            ? ` · 적발 ${Math.round(record.risk * 100)}%`
+                            : ""}
+                          {isProbabilisticBusinessAction(record.type) && record.risk !== undefined
+                            ? ` · 성공 ${Math.round((1 - record.risk) * 100)}%`
+                            : ""}
                           {record.cashReturn !== undefined ? ` · 회수 ₩${formatRevenue(record.cashReturn)}` : ""}
                         </small>
                       </article>
@@ -6371,7 +6533,7 @@ function OperationsView({
                         <span>{result?.headline ?? `DAY ${record.resolutionDay} 결과 대기`}</span>
                       </div>
                       <small>
-                        DAY {record.appearedDay} · {choice?.title ?? record.choice} · 비용 {record.cost > 0 ? `₩${formatRevenue(record.cost)}` : "없음"} · 역풍 {Math.round(record.risk * 100)}%
+                        DAY {record.appearedDay} · {choice?.title ?? record.choice} · 비용 {record.cost > 0 ? `₩${formatRevenue(record.cost)}` : "없음"}
                       </small>
                     </article>
                   );
@@ -6398,28 +6560,15 @@ function FinanceView({
   const previousRecord = game.history.at(-2);
   const latestRevenue = latestRecord?.revenue ?? game.finance.today;
   const previousRevenue = previousRecord?.revenue;
-  const isTodayRecorded = latestRecord?.day === game.day;
-  const settledDayLabel = isTodayRecorded
-    ? "오늘"
-    : `DAY ${latestRecord?.day ?? game.day}`;
   const dailyRate = previousRevenue && previousRevenue > 0
     ? ((latestRevenue - previousRevenue) / previousRevenue) * 100
     : 0;
   const dailyDirection = dailyRate > 0 ? "상승" : dailyRate < 0 ? "하락" : "보합";
-  const activeUsers = totalUsers(game);
-  const monthlyOperatingCost = getMonthlyOperatingCost(activeUsers);
-  const runwayMonths = getOperatingRunwayMonths(game.finance.cash, activeUsers);
-  const strategicReturns = game.operations.records.reduce(
-    (sum, record) => sum + (record.cashReturn ?? 0),
-    0,
-  );
 
   return (
     <section
       className="subpage finance-page"
       data-tutorial-inspection={guidedInspection ? "active" : undefined}
-      data-tutorial-target={guidedInspection ? "active" : undefined}
-      tabIndex={guidedInspection ? -1 : undefined}
     >
       <div className="subpage-heading">
         <div>
@@ -6433,17 +6582,7 @@ function FinanceView({
           <strong>{dailyDirection} {dailyRate >= 0 ? "+" : ""}{dailyRate.toFixed(1)}%</strong>
         </div>
       </div>
-      <div className="finance-kpis expanded">
-        <OverviewCard className="primary" icon={<RevenueIcon />} label={isTodayRecorded ? "오늘 매출" : `DAY ${latestRecord?.day ?? game.day} 매출`} value={`₩${formatRevenue(latestRevenue)}`} note={isTodayRecorded ? "카탈로그 + 발매 + 사업 효과" : "오늘 결정 제출 후 결산"} />
-        <OverviewCard icon={<RevenueIcon />} label="보유 운영자금" value={`₩${formatRevenue(game.finance.cash)}`} note={`현 규모 기준 약 ${runwayMonths.toFixed(1)}개월`} />
-        <OverviewCard icon={<TrendIcon />} label={`${settledDayLabel} 순운영 현금`} value={formatSignedRevenue(game.finance.todayOperatingCash)} note={isTodayRecorded ? "매출 32% − 운영비 − 오늘 집행비" : "오늘 결정 제출 후 정산"} />
-        <OverviewCard icon={<RevenueIcon />} label={game.day < OPERATING_COST_START_DAY ? "운영비 정산 시작" : `${settledDayLabel} 운영비`} value={game.day < OPERATING_COST_START_DAY ? `DAY ${OPERATING_COST_START_DAY}` : formatSignedRevenue(-game.finance.todayOperatingCost)} note={`월 예상 ₩${formatRevenue(monthlyOperatingCost)}`} />
-        <OverviewCard icon={<TrendIcon />} label="최근 30일" value={`₩${formatRevenue(game.finance.rolling30)}`} note={`누적 매출 ₩${formatRevenue(game.finance.cumulative)}`} />
-        <OverviewCard icon={<RevenueIcon />} label="누적 운영비" value={`₩${formatRevenue(game.finance.cumulativeOperatingCosts)}`} note="DAY 47부터 일할 정산" />
-        <OverviewCard icon={<RevenueIcon />} label="누적 사업비" value={`₩${formatRevenue(game.finance.cumulativeExpenses)}`} note={strategicReturns > 0 ? `대형 프로젝트 회수 ₩${formatRevenue(strategicReturns)}` : "사업 액션 집행 누계"} />
-        <OverviewCard icon={<GavelIcon />} label="구매 신뢰" value={`${Math.round(game.purchaseTrust)}`} note="100점 기준" />
-      </div>
-      <FinanceMarketChart game={game} />
+      <FinanceMarketChart game={game} guidedInspection={guidedInspection} />
     </section>
   );
 }
@@ -6466,15 +6605,64 @@ function SupportDialog({
   onSubmit: () => void;
 }) {
   const earliest = getNextReleaseDay(game.day);
+  const effectiveKeywordCount = getEffectiveThemePlayKeywords(
+    game,
+    theme.id,
+  ).length;
+  const selectedKeyword = getProspectiveSupportKeyword(
+    game,
+    theme.id,
+    direction,
+  );
   return (
     <div className="modal-backdrop">
       <div aria-labelledby="support-dialog-title" aria-modal="true" className="support-dialog" ref={dialogRef} role="dialog" tabIndex={-1}>
         <button aria-label="닫기" className="dialog-close" onClick={onClose} type="button">×</button>
         <span className="eyebrow">DESIGN REQUEST</span>
         <h2 id="support-dialog-title">{theme.name} 지원 제안</h2>
-        <p>선택한 방향의 지원안이 다음 정기 발매 시안 6개 중 한 자리를 보장받습니다.</p>
-        <fieldset><legend>지원 방향</legend><div className="choice-grid">{SUPPORT_DIRECTIONS.map((item) => <label className={direction === item.value ? "choice-card selected" : "choice-card"} key={item.value}><input checked={direction === item.value} name="support-direction" onChange={() => onDirectionChange(item.value)} type="radio"/><strong>{item.label}</strong><span>{item.description}</span></label>)}</div></fieldset>
-        <div className="release-estimate"><ReleaseIcon /><div><span>시안 보장일</span><strong>DAY {earliest} · 기존 지원 3안 중 1자리</strong></div></div>
+        <p>선택한 방향의 지원안이 다음 정기 발매의 지원 시안 한 자리를 보장받고, 실제 발매 다음 날 새 키워드가 붙습니다.</p>
+        <fieldset>
+          <legend>지원 방향</legend>
+          <div className="choice-grid">
+            {SUPPORT_DIRECTIONS.map((item) => {
+              const keyword = getProspectiveSupportKeyword(
+                game,
+                theme.id,
+                item.value,
+              );
+              return (
+                <label
+                  className={direction === item.value ? "choice-card selected" : "choice-card"}
+                  key={item.value}
+                >
+                  <input
+                    checked={direction === item.value}
+                    name="support-direction"
+                    onChange={() => onDirectionChange(item.value)}
+                    type="radio"
+                  />
+                  <strong>{item.label}</strong>
+                  <span>{item.description}</span>
+                  {keyword ? (
+                    <em className="support-keyword-preview">
+                      + {getPlayKeyword(keyword).label}
+                    </em>
+                  ) : null}
+                </label>
+              );
+            })}
+          </div>
+        </fieldset>
+        <div className="release-estimate">
+          <ReleaseIcon />
+          <div>
+            <span>시안 보장일 · 키워드 확장</span>
+            <strong>
+              DAY {earliest} · {effectiveKeywordCount} → {Math.min(6, effectiveKeywordCount + 1)}종
+              {selectedKeyword ? ` · ${getPlayKeyword(selectedKeyword).label}` : ""}
+            </strong>
+          </div>
+        </div>
         <div className="dialog-actions"><button className="text-action" onClick={onClose} type="button">취소</button><button className="primary-action" onClick={onSubmit} type="button">지원 시안 제안</button></div>
       </div>
     </div>

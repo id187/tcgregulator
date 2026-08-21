@@ -2,6 +2,7 @@ import { useEffect, type CSSProperties } from "react";
 
 import { THEME_BY_ID } from "../game/content.ts";
 import { getGenericCard } from "../game/generic-card-catalog.ts";
+import { getReleaseBatchKind } from "../game/release-kind.ts";
 import type { ReleaseBatch, SupportDirection } from "../game/types.ts";
 import { RegulatorCardFace } from "./RegulatorCardFace.tsx";
 import { ReleasePackCard } from "./ReleasePackCard.tsx";
@@ -54,7 +55,7 @@ function getProductFace(product: ReleaseBatch["products"][number]) {
       effect:
         generic?.description ??
         `${theme?.playstyle ?? "기존 전략"}의 핵심 카드를 다시 공급해 접근성을 높인다.`,
-      footer: `재판 · ${powerCopy(product.powerAdjustment)}`,
+      footer: "재판 · 원본 성능 유지",
       overline: themePart ? `${theme?.name ?? "테마"} · REPRINT` : "GENERIC · REPRINT",
       themeId: themePart ? theme?.id : undefined,
       title: themePart?.name ?? generic?.name ?? "재판 카드",
@@ -84,6 +85,7 @@ function getProductFace(product: ReleaseBatch["products"][number]) {
 }
 
 export function ReleasePublicationSequence({ batch }: { batch: ReleaseBatch }) {
+  const releaseKind = getReleaseBatchKind(batch);
   useEffect(() => {
     const reducedMotion = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
@@ -121,14 +123,18 @@ export function ReleasePublicationSequence({ batch }: { batch: ReleaseBatch }) {
         <ReleasePackCard batch={batch} />
         <span className="release-publication-burst" aria-hidden="true">
           <i />
-          <strong>ON SALE</strong>
+          <strong>{releaseKind === "reprint" ? "BACK IN PRINT" : "ON SALE"}</strong>
         </span>
       </div>
 
       <div className="release-publication-caption">
-        <span>PACK ASSEMBLY COMPLETE</span>
-        <strong>{batch.products.length}종 수록 · 정식 출시</strong>
-        <p>봉인된 생산안이 카드팩이 되어 시장에 도착했습니다.</p>
+        <span>{releaseKind === "reprint" ? "REPRINT FILE COMPLETE" : "PACK ASSEMBLY COMPLETE"}</span>
+        <strong>{batch.products.length}종 수록 · {releaseKind === "reprint" ? "재판 유통 개시" : "정식 출시"}</strong>
+        <p>
+          {releaseKind === "reprint"
+            ? "선정한 카드가 다시 시장에 풀렸습니다. 시세와 접근성 변화가 시작됩니다."
+            : "봉인된 생산안이 카드팩이 되어 시장에 도착했습니다."}
+        </p>
       </div>
     </div>
   );

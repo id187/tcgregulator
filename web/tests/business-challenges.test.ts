@@ -29,7 +29,10 @@ const GOOD_METRICS: Record<BusinessChallengeMetric, number> = {
 };
 
 function challengeRecord(
-  type: "season-overhaul" | "global-launch" | "first-print-expansion",
+  type:
+    | "season-overhaul"
+    | "global-launch"
+    | "organized-play-platform",
   startedDay = 100,
 ): BusinessActionRecord & { challenge: BusinessChallengeProgress } {
   return {
@@ -46,23 +49,36 @@ function challengeRecord(
 
 function advanceThroughFirstRestriction(
   state: GameState,
-  targetDay: 29 | 30,
+  targetDay: 9 | 10,
 ): GameState {
-  let next = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
-  assert.equal(next.day, 15);
-  assert.equal(next.phase, "ban-edit");
-  next = reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
-  return reduceGame(next, {
-    type: "ADVANCE_DAYS",
-    days: targetDay - next.day,
-  });
+  let next = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
+  next = reduceGame(next, { type: "ADVANCE_DAYS", days: 7 });
+  next = reduceGame(next, { type: "COMPLETE_HANDOVER" });
+  while (next.day < targetDay) {
+    next = reduceGame(next, { type: "ADVANCE_DAYS", days: 1 });
+  }
+  return next;
 }
+
+test("challenge decision days follow the DAY 10 + 20n product calendar", () => {
+  assert.equal(isBusinessChallengeDecisionDay(0), true);
+  assert.equal(isBusinessChallengeDecisionDay(9), false);
+  assert.equal(isBusinessChallengeDecisionDay(10), true);
+  assert.equal(isBusinessChallengeDecisionDay(20), false);
+  assert.equal(isBusinessChallengeDecisionDay(30), true);
+  assert.equal(isBusinessChallengeDecisionDay(40), true);
+  assert.equal(isBusinessChallengeDecisionDay(50), true);
+  assert.equal(isBusinessChallengeDecisionDay(60), false);
+  assert.equal(isBusinessChallengeDecisionDay(70), true);
+  assert.equal(isBusinessChallengeDecisionDay(120), true);
+  assert.equal(getNextBusinessChallengeDecisionDay(121), 130);
+});
 
 test("strategic challenges persist readable progress and resolve only at their deadline", () => {
   for (const type of [
     "season-overhaul",
     "global-launch",
-    "first-print-expansion",
+    "organized-play-platform",
   ] as const) {
     const record = challengeRecord(type);
     const definition = BUSINESS_CHALLENGE_BY_TYPE[type];
@@ -105,7 +121,7 @@ test("engine advancement is chunk-independent and applies a material championshi
   const prepare = (seed: number): GameState => {
     let state = createCampaignStart(seed);
     state.finance.cash = 10;
-    state = advanceThroughFirstRestriction(state, 30);
+    state = advanceThroughFirstRestriction(state, 10);
     state = reduceGame(state, {
       type: "SUBMIT_RELEASE",
       selections: getPrologueReleaseSelections(state),
@@ -130,7 +146,7 @@ test("engine advancement is chunk-independent and applies a material championshi
     requiredQualifyingDays: 1,
     qualifyingDays: 0,
     observedDays: 0,
-    deadlineDay: 31,
+    deadlineDay: 11,
     lastEvaluatedDay: null,
     lastValue: null,
   });
@@ -142,7 +158,7 @@ test("engine advancement is chunk-independent and applies a material championshi
   }
   assert.deepEqual(jumped, stepped);
   assert.equal(jumped.operations.records[0].outcome, "success");
-  assert.equal(jumped.operations.records[0].resolvedDay, 31);
+  assert.equal(jumped.operations.records[0].resolvedDay, 11);
   assert.equal(jumped.operations.records[0].risk, undefined);
   assert.equal(jumped.operations.records[0].challenge?.qualifyingDays, 1);
 
@@ -157,7 +173,7 @@ test("engine advancement is chunk-independent and applies a material championshi
 test("save validation round-trips challenge progress and rejects forged thresholds", () => {
   let state = createCampaignStart(82_003);
   state.finance.cash = 10;
-  state = advanceThroughFirstRestriction(state, 30);
+  state = advanceThroughFirstRestriction(state, 10);
   state = reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: getPrologueReleaseSelections(state),
@@ -181,15 +197,15 @@ test("save validation round-trips challenge progress and rejects forged threshol
   );
 });
 
-test("challenge actions open only after a scheduled decision is submitted", () => {
-  let day29 = createCampaignStart(82_004);
-  day29.finance.cash = 10;
-  day29 = advanceThroughFirstRestriction(day29, 29);
-  const before = getBusinessActionAvailability(day29, "championship");
+test("challenge actions open only after an offset-calendar decision is submitted", () => {
+  let day9 = createCampaignStart(82_004);
+  day9.finance.cash = 10;
+  day9 = advanceThroughFirstRestriction(day9, 9);
+  const before = getBusinessActionAvailability(day9, "championship");
   assert.equal(before.available, false);
-  assert.equal(before.nextEligibleDay, 30);
+  assert.equal(before.nextEligibleDay, 10);
 
-  const releaseEdit = reduceGame(day29, { type: "ADVANCE_DAYS", days: 1 });
+  const releaseEdit = reduceGame(day9, { type: "ADVANCE_DAYS", days: 1 });
   assert.equal(releaseEdit.phase, "release-edit");
   assert.equal(
     getBusinessActionAvailability(releaseEdit, "championship").available,
@@ -204,19 +220,10 @@ test("challenge actions open only after a scheduled decision is submitted", () =
     true,
   );
 
-  const day31 = reduceGame(submitted, { type: "ADVANCE_DAYS", days: 1 });
-  const after = getBusinessActionAvailability(day31, "championship");
+  const day11 = reduceGame(submitted, { type: "ADVANCE_DAYS", days: 1 });
+  const after = getBusinessActionAvailability(day11, "championship");
   assert.equal(after.available, false);
-  assert.equal(after.nextEligibleDay, 60);
-  assert.match(after.reason ?? "", /DAY 60/);
+  assert.equal(after.nextEligibleDay, 30);
+  assert.match(after.reason ?? "", /DAY 30/);
 
-  assert.equal(isBusinessChallengeDecisionDay(15), true);
-  assert.equal(isBusinessChallengeDecisionDay(29), false);
-  assert.equal(isBusinessChallengeDecisionDay(30), true);
-  assert.equal(isBusinessChallengeDecisionDay(45), false);
-  assert.equal(isBusinessChallengeDecisionDay(46), false);
-  assert.equal(isBusinessChallengeDecisionDay(60), true);
-  assert.equal(isBusinessChallengeDecisionDay(75), true);
-  assert.equal(isBusinessChallengeDecisionDay(120), true);
-  assert.equal(getNextBusinessChallengeDecisionDay(121), 135);
 });

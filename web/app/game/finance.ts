@@ -7,12 +7,12 @@ export const OPERATING_COST_START_DAY = 1;
 export const OPERATING_CASH_MARGIN = 0.32;
 
 /**
- * Release revenue follows the same thirty-day exponential tail in both the
+ * Release revenue follows the same twenty-day exponential tail in both the
  * engine and the market-shock detector. Keeping the constants here prevents
  * chart alerts from drifting when the sales model is tuned.
  */
-export const RELEASE_SALES_WINDOW_DAYS = 30;
-export const RELEASE_SALES_DECAY_DAYS = 6;
+export const RELEASE_SALES_WINDOW_DAYS = 20;
+export const RELEASE_SALES_DECAY_DAYS = 4.5;
 export const RELEASE_SALES_DAILY_DECAY_MULTIPLIER = Math.exp(
   -1 / RELEASE_SALES_DECAY_DAYS,
 );

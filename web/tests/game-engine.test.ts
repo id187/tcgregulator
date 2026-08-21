@@ -3,7 +3,9 @@ import test from "node:test";
 
 import { THEMES } from "../app/game/content.ts";
 import {
+  BUSINESS_ACTIONS,
   BUSINESS_ACTION_DAILY_REVENUE_CAP,
+  HANDOVER_STARTER_BUSINESS_ACTION_TYPES,
   getBusinessActionAvailability,
   getBusinessActionDailyGrossRevenue,
   getBusinessActionProjectedDirectCash,
@@ -15,12 +17,17 @@ import {
 import {
   BUSINESS_EVENTS,
   BUSINESS_EVENT_BY_TYPE,
+  BUSINESS_EVENT_MAX_INTERVAL,
+  BUSINESS_EVENT_MIN_INTERVAL,
   BUSINESS_EVENT_TYPES,
+  FIRST_BUSINESS_EVENT_DAY,
+  RECURRING_BUSINESS_EVENT_START_DAY,
   applyBusinessStrategyDelta,
   getBusinessEventChoice,
   getBusinessEventOutcome,
   getBusinessEventResult,
   getBusinessEventType,
+  getFirstRecurringBusinessEventDay,
   getBusinessStrategyModifiers,
   getInitialBusinessEventDay,
 } from "../app/game/business-events.ts";
@@ -28,10 +35,12 @@ import {
   BAN_INTERVAL,
   CAMPAIGN_END_DAY,
   FIRST_BAN_DAY,
+  FIRST_RELEASE_DAY,
   LAST_BAN_DAY,
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
-  RELEASE_INTERVAL,
+  REPRINT_PACK_CANDIDATE_COUNT,
+  RESTRICTION_REPORT_DELAY_DAYS,
   SETTLEMENT_START_DAY,
   TUTORIAL_END_DAY,
 } from "../app/game/campaign.ts";
@@ -49,6 +58,7 @@ import {
   getOperatingRunwayMonths,
   getRevenueChangeSignal,
   OPERATING_COST_START_DAY,
+  RELEASE_SALES_DAILY_DECAY_MULTIPLIER,
 } from "../app/game/finance.ts";
 import {
   getPublishedRestrictionPolicyProfile,
@@ -191,6 +201,18 @@ function advanceToNextReleaseHandlingBusinessEvents(state: State): State {
   throw new Error("A release review did not appear before the campaign ended.");
 }
 
+function advanceToNextRegularReleaseHandlingBusinessEvents(
+  state: State,
+): State {
+  let next = state;
+  for (let guard = 0; guard < 1_000; guard += 1) {
+    next = advanceToNextReleaseHandlingBusinessEvents(next);
+    if (next.releaseSlate?.releaseKind === "regular") return next;
+    next = submitFirstThree(next);
+  }
+  throw new Error("A regular release review did not appear before campaign end.");
+}
+
 test("restriction announcements state whether limits tighten or loosen", () => {
   const state = createCampaignStart(9001);
   const baseEvent = {
@@ -221,14 +243,17 @@ test("restriction announcements state whether limits tighten or loosen", () => {
 
 function advanceToFirstRelease(state: State): State {
   let next = state;
-  while (next.day < 60) {
+  while (next.day < FIRST_RELEASE_DAY) {
     if (next.operations.pendingEvent) {
       next = choosePendingBusinessEvent(next);
     } else {
-      next = reduceGame(next, { type: "ADVANCE_DAYS", days: 60 - next.day });
+      next = reduceGame(next, {
+        type: "ADVANCE_DAYS",
+        days: FIRST_RELEASE_DAY - next.day,
+      });
     }
   }
-  assert.equal(next.day, 60);
+  assert.equal(next.day, FIRST_RELEASE_DAY);
   assert.equal(next.phase, "release-edit");
   assert.ok(next.releaseSlate);
   return next;
@@ -353,17 +378,17 @@ function tuneRestrictionTarget(
   return tuned;
 }
 
-test("uses releases through DAY 450 and 60-day restriction reviews through DAY 435", () => {
+test("uses releases through DAY 450 and 40-day restriction reviews through DAY 440", () => {
   const releaseDays = Array.from(
-    { length: CAMPAIGN_END_DAY },
-    (_, index) => index + 1,
+    { length: CAMPAIGN_END_DAY + 1 },
+    (_, index) => index,
   ).filter(isReleaseDay);
-  const banDays = Array.from({ length: CAMPAIGN_END_DAY }, (_, index) => index + 1).filter(
+  const banDays = Array.from({ length: CAMPAIGN_END_DAY + 1 }, (_, index) => index).filter(
     isBanDay,
   );
 
-  assert.equal(releaseDays.length, 15);
-  assert.equal(releaseDays[0], 30);
+  assert.equal(releaseDays.length, 23);
+  assert.equal(releaseDays[0], FIRST_RELEASE_DAY);
   assert.equal(releaseDays.at(-1), LAST_RELEASE_DAY);
   assert.deepEqual(
     banDays,
@@ -375,18 +400,18 @@ test("uses releases through DAY 450 and 60-day restriction reviews through DAY 4
   assert.equal(banDays.at(-1), LAST_BAN_DAY);
   assert.equal(LAST_DECISION_DAY, LAST_RELEASE_DAY);
   assert.equal(SETTLEMENT_START_DAY, 451);
-  assert.equal(getNextReleaseDay(42), 60);
-  assert.equal(getNextReleaseDay(60), 90);
+  assert.equal(getNextReleaseDay(0), FIRST_RELEASE_DAY);
+  assert.equal(getNextReleaseDay(FIRST_RELEASE_DAY), 30);
   assert.equal(getNextBanDay(FIRST_BAN_DAY - 1), FIRST_BAN_DAY);
   assert.equal(getNextBanDay(FIRST_BAN_DAY), FIRST_BAN_DAY + BAN_INTERVAL);
   assert.equal(releaseDays.some((day) => isBanDay(day)), false);
 });
 
-test("creates a fixed DAY 1 campaign start with five themes and 10,000 users", () => {
+test("creates a fixed DAY 0 emergency review with five themes and 10,000 users", () => {
   const state = createCampaignStart(17);
   const otherSeed = createCampaignStart(999_017);
-  assert.equal(state.day, 1);
-  assert.equal(state.phase, "running");
+  assert.equal(state.day, FIRST_BAN_DAY);
+  assert.equal(state.phase, "ban-edit");
   assert.equal(THEMES.length, 150);
   assert.equal(state.activeThemeIds.length, 5);
   assert.equal(new Set(state.activeThemeIds).size, 5);
@@ -428,50 +453,56 @@ test("creates a fixed DAY 1 campaign start with five themes and 10,000 users", (
   state.activeThemeIds.forEach((themeId, index) => {
     assert.ok(Math.abs(state.themes[themeId].share - expectedShares[index]) < 1e-8);
   });
-  assert.equal(state.history.length, 1);
-  assert.deepEqual(state.history.map((entry) => entry.day), [1]);
-  assert.ok(state.history.every((entry) => entry.totalUsers === 10_000));
-  assert.deepEqual(state.history.map((entry) => entry.revenue), state.recentRevenue);
-  assert.equal(state.history[0].cash, state.finance.cash);
-  assert.equal(state.history[0].operatingCash, state.finance.todayOperatingCash);
+  assert.deepEqual(state.history, []);
+  const published = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
+  assert.deepEqual(published.history.map((entry) => entry.day), [0]);
+  assert.equal(published.history[0].totalUsers, 10_000);
+  assert.equal(published.history[0].cash, published.finance.cash);
   assert.equal(
-    state.history[0].environmentHealth,
-    getBusinessEnvironmentHealth(state),
+    published.history[0].operatingCash,
+    published.finance.todayOperatingCash,
   );
   assert.equal(
-    state.history[0].environmentHealthModel,
+    published.history[0].environmentHealth,
+    getBusinessEnvironmentHealth(published),
+  );
+  assert.equal(
+    published.history[0].environmentHealthModel,
     ENVIRONMENT_HEALTH_MODEL,
   );
-  assert.equal(state.history[0].purchaseTrust, state.purchaseTrust);
+  assert.equal(published.history[0].purchaseTrust, published.purchaseTrust);
   assert.deepEqual(
-    state.history[0].winRates,
+    published.history[0].winRates,
     Object.fromEntries(
-      state.activeThemeIds.map((themeId) => [
+      published.activeThemeIds.map((themeId) => [
         themeId,
-        state.themes[themeId].winRate,
+        published.themes[themeId].winRate,
       ]),
     ),
   );
   assert.deepEqual(
-    Object.keys(state.history[0].topCutPlacements ?? {}).sort(),
-    [...state.activeThemeIds].sort(),
+    Object.keys(published.history[0].topCutPlacements ?? {}).sort(),
+    [...published.activeThemeIds].sort(),
   );
   assert.equal(
-    Object.values(state.history[0].topCutPlacements ?? {}).reduce(
+    Object.values(published.history[0].topCutPlacements ?? {}).reduce(
       (sum, placements) => sum + placements,
       0,
     ),
     DAILY_TOP_CUT_SLOTS,
   );
-  const advanced = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
-  assert.notStrictEqual(advanced.history[0].winRates, state.history[0].winRates);
+  const advanced = reduceGame(published, { type: "ADVANCE_DAYS", days: 1 });
+  assert.notStrictEqual(
+    advanced.history[0].winRates,
+    published.history[0].winRates,
+  );
   assert.notStrictEqual(
     advanced.history[0].topCutPlacements,
-    state.history[0].topCutPlacements,
+    published.history[0].topCutPlacements,
   );
   assert.deepEqual(state.community, []);
   assert.equal(
-    state.releaseHistory.filter((batch) => !batch.baseline).length,
+    state.releaseHistory.filter((batch) => batch.releaseKind !== "baseline").length,
     0,
   );
 });
@@ -484,7 +515,7 @@ test("stops the fixed handover at a fully authored first restriction review", ()
   assert.equal(state.handoverComplete, false);
   assert.equal(state.seed, 1000);
   assert.equal(
-    state.releaseHistory.filter((batch) => !batch.baseline).length,
+    state.releaseHistory.filter((batch) => batch.releaseKind !== "baseline").length,
     0,
   );
 
@@ -496,47 +527,33 @@ test("stops the fixed handover at a fully authored first restriction review", ()
   assert.equal(unchanged.seed, 1000);
 });
 
-test("DAY 31 handover requires the restriction, release, and D+1 review", () => {
+test("DAY 7 handover requires the emergency restriction and observation week", () => {
   const review = createFirstBanGame(1_001);
   assert.throws(
     () => reduceGame(review, { type: "COMPLETE_HANDOVER" }),
-    /DAY 15 restriction, DAY 30 release, and DAY 31 impact review/,
+    /DAY 0 emergency restriction and observation through DAY 7/,
   );
 
   let published = reduceGame(review, { type: "SUBMIT_BAN", changes: {} });
   assert.throws(
     () => reduceGame(published, { type: "COMPLETE_HANDOVER" }),
-    /DAY 30 release/,
+    /observation through DAY 7/,
   );
   published = reduceGame(published, { type: "ADVANCE_DAYS", days: 7 });
-  assert.equal(published.day, 22);
-  published = reduceGame(published, {
-    type: "RUN_BUSINESS_ACTION",
-    action: "tv-cm",
-  });
-  published = reduceGame(published, { type: "ADVANCE_DAYS", days: 8 });
-  published = reduceGame(published, {
-    type: "SUBMIT_RELEASE",
-    selections: getPrologueReleaseSelections(published),
-  });
-  assert.throws(
-    () => reduceGame(published, { type: "COMPLETE_HANDOVER" }),
-    /DAY 31 impact review/,
-  );
-  published = reduceGame(published, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(published.day, TUTORIAL_END_DAY);
   const completed = reduceGame(published, { type: "COMPLETE_HANDOVER" });
   assert.equal(completed.day, TUTORIAL_END_DAY);
   assert.equal(completed.phase, "running");
   assert.equal(completed.handoverComplete, true);
   assert.throws(
     () => reduceGame(completed, { type: "COMPLETE_HANDOVER" }),
-    /DAY 15 restriction, DAY 30 release, and DAY 31 impact review/,
+    /DAY 0 emergency restriction and observation through DAY 7/,
   );
 });
 
 test("soft restriction reviews preserve purchase trust until severe neglect persists", () => {
   const state = createCampaignStart(60_225);
-  state.day = 195;
+  state.day = 120;
   const themeId = state.currentTopThemeId;
   const partId = THEMES.find((theme) => theme.id === themeId)?.parts[0]?.id;
   assert.ok(partId);
@@ -551,15 +568,15 @@ test("soft restriction reviews preserve purchase trust until severe neglect pers
   assert.equal(profile.quality, "narrow");
   assert.equal(getProlongedSoftPolicyTrustLoss(state, profile), 0);
 
-  for (const day of [75, 135]) {
+  for (const day of [40, 80]) {
     state.community.push({
       id: `soft-policy-${day}`,
       day,
       category: "restriction",
-      type: "restriction-no-change",
+      type: "restriction-applied",
       themeId,
       partId,
-      value: 3,
+      value: 2,
       previousValue: 3,
       body: "",
     });
@@ -628,9 +645,8 @@ test("exposes deterministic guided choices that replay through the ordinary redu
 
   assert.throws(
     () => getPrologueReleaseSelections(guided),
-    /DAY 30 review/,
+    /DAY 10 review/,
   );
-  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 14 });
   assert.equal(guided.day, FIRST_BAN_DAY);
   assert.equal(guided.phase, "ban-edit");
   const changes = getPrologueRestrictionChanges(guided);
@@ -660,12 +676,14 @@ test("exposes deterministic guided choices that replay through the ordinary redu
 
   guided = reduceGame(guided, { type: "SUBMIT_BAN", changes });
   guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 7 });
-  assert.equal(guided.day, 22);
-  guided = reduceGame(guided, {
-    type: "RUN_BUSINESS_ACTION",
-    action: "tv-cm",
-  });
-  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 8 });
+  assert.equal(guided.day, TUTORIAL_END_DAY);
+  assert.equal(guided.handoverComplete, false);
+  guided = reduceGame(guided, { type: "COMPLETE_HANDOVER" });
+  assert.deepEqual(guided, expected);
+
+  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 3 });
+  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(guided.day, FIRST_RELEASE_DAY);
   const selections = getPrologueReleaseSelections(guided);
   assert.equal(selections.length, 4);
   assert.ok(
@@ -683,81 +701,28 @@ test("exposes deterministic guided choices that replay through the ordinary redu
     false,
   );
 
-  guided = reduceGame(guided, { type: "SUBMIT_RELEASE", selections });
-  guided = reduceGame(guided, { type: "ADVANCE_DAYS", days: 1 });
-  assert.equal(guided.day, TUTORIAL_END_DAY);
-  assert.equal(guided.handoverComplete, false);
-  guided = reduceGame(guided, { type: "COMPLETE_HANDOVER" });
-  assert.deepEqual(guided, expected);
+  const released = reduceGame(guided, { type: "SUBMIT_RELEASE", selections });
+  assert.equal(released.releaseHistory.at(-1)?.day, FIRST_RELEASE_DAY);
 });
 
-test("replays the DAY 15 restriction, DAY 22 TV-CM, and DAY 30 release into DAY 31", () => {
+test("replays the DAY 0 restriction and observation week into DAY 7", () => {
   const raw = createCampaignStart(1000);
   const fullPrologue = createInitialGame(1000);
   const skippedPrologue = createInitialGame(1000);
 
   assert.deepEqual(fullPrologue, skippedPrologue);
-  assert.equal(raw.day, 1);
+  assert.equal(raw.day, FIRST_BAN_DAY);
+  assert.equal(raw.phase, "ban-edit");
   assert.equal(fullPrologue.day, TUTORIAL_END_DAY);
   assert.equal(fullPrologue.phase, "running");
   assert.equal(fullPrologue.releaseSlate, null);
-  assert.deepEqual(
-    fullPrologue.operations.records.map((record) => ({
-      type: record.type,
-      startedDay: record.startedDay,
-      outcome: record.outcome,
-    })),
-    [{ type: "tv-cm", startedDay: 22, outcome: "success" }],
-  );
-  assert.equal(fullPrologue.finance.cumulativeExpenses, 0.6);
-  assert.equal(fullPrologue.activeThemeIds.length, 7);
-  const prologueRelease = fullPrologue.releaseHistory.find(
-    (batch) => !batch.baseline,
-  );
-  assert.ok(prologueRelease);
+  assert.deepEqual(fullPrologue.operations.records, []);
+  assert.equal(fullPrologue.finance.cumulativeExpenses, 0);
+  assert.equal(fullPrologue.activeThemeIds.length, 5);
   assert.equal(
-    fullPrologue.releaseHistory.filter((batch) => !batch.baseline).length,
-    1,
+    fullPrologue.releaseHistory.filter((batch) => batch.releaseKind !== "baseline").length,
+    0,
   );
-  assert.equal(prologueRelease.day, 30);
-  assert.deepEqual(
-    prologueRelease.products.map((product) => ({
-      optionId: product.optionId,
-      kind: product.kind,
-      powerAdjustment: product.powerAdjustment,
-    })),
-    [
-      { optionId: "release-option-4", kind: "new-theme", powerAdjustment: 3 },
-      { optionId: "release-option-5", kind: "new-theme", powerAdjustment: 3 },
-      { optionId: "release-option-1", kind: "support", powerAdjustment: 3 },
-      { optionId: "release-option-7", kind: "generic", powerAdjustment: 0 },
-    ],
-  );
-  const decisionDayReleaseEvents = fullPrologue.community.filter(
-    (event) =>
-      event.day === 30 &&
-      (event.type === "release-reaction" || event.type === "support-released"),
-  );
-  assert.equal(decisionDayReleaseEvents.length, 0);
-  const releaseEvents = fullPrologue.community.filter(
-    (event) =>
-      event.day === 31 &&
-      (event.type === "release-reaction" || event.type === "support-released"),
-  );
-  assert.equal(releaseEvents.length, 4);
-  assert.deepEqual(
-    releaseEvents
-      .filter((event) => !event.genericCardId)
-      .map((event) => event.themeId),
-    prologueRelease.products.flatMap((product) =>
-      product.kind === "generic" ? [] : [product.themeId],
-    ),
-  );
-  assert.equal(
-    releaseEvents.filter((event) => event.genericCardId).length,
-    1,
-  );
-  assert.ok(releaseEvents.every((event) => event.body.length > 0));
   assert.equal(fullPrologue.handoverComplete, true);
   const prologueRestrictionEvents = fullPrologue.community.filter(
     (event) =>
@@ -785,11 +750,7 @@ test("replays the DAY 15 restriction, DAY 22 TV-CM, and DAY 30 release into DAY 
   assert.equal(prologueProfile.tier2MeaningfulCuts, 2);
   assert.deepEqual(
     fullPrologue.history.map((entry) => entry.day),
-    Array.from({ length: TUTORIAL_END_DAY }, (_, index) => index + 1),
-  );
-  assert.equal(
-    fullPrologue.history.filter((entry) => entry.day === 30).length,
-    1,
+    Array.from({ length: TUTORIAL_END_DAY + 1 }, (_, index) => index),
   );
   assert.equal(
     fullPrologue.history.filter((entry) => entry.day === FIRST_BAN_DAY).length,
@@ -798,24 +759,13 @@ test("replays the DAY 15 restriction, DAY 22 TV-CM, and DAY 30 release into DAY 
   const historyByDay = new Map(
     fullPrologue.history.map((entry) => [entry.day, entry]),
   );
-  assert.deepEqual(historyByDay.get(30)?.shares, historyByDay.get(29)?.shares);
-  assert.equal(historyByDay.get(30)?.totalUsers, historyByDay.get(29)?.totalUsers);
-  assert.notDeepEqual(historyByDay.get(31)?.shares, historyByDay.get(30)?.shares);
-  assert.deepEqual(
-    historyByDay.get(FIRST_BAN_DAY)?.shares,
-    historyByDay.get(FIRST_BAN_DAY - 1)?.shares,
-  );
-  assert.equal(
-    historyByDay.get(FIRST_BAN_DAY)?.totalUsers,
-    historyByDay.get(FIRST_BAN_DAY - 1)?.totalUsers,
-  );
   assert.notDeepEqual(
     historyByDay.get(FIRST_BAN_DAY + 1)?.shares,
     historyByDay.get(FIRST_BAN_DAY)?.shares,
   );
   assert.deepEqual(
-    fullPrologue.history.slice(-30).map((entry) => entry.revenue),
-    fullPrologue.recentRevenue,
+    fullPrologue.history.map((entry) => entry.revenue),
+    fullPrologue.recentRevenue.slice(-fullPrologue.history.length),
   );
   assert.equal(raw.activeThemeIds.length, 5, "the prologue must not mutate its raw input");
 });
@@ -911,17 +861,22 @@ test("stops at restriction and release gates until each review is submitted", ()
   assert.equal(initial.day, TUTORIAL_END_DAY, "the reducer must not mutate its input");
   assert.equal(initial.phase, "running");
 
-  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 60);
-  assert.equal(state.day, 60);
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(
+    state,
+    FIRST_RELEASE_DAY,
+  );
+  assert.equal(state.day, FIRST_RELEASE_DAY);
   assert.equal(state.phase, "release-edit");
   const releaseBlocked = reduceGame(state, {
     type: "ADVANCE_DAYS",
     days: 100,
   });
-  assert.equal(releaseBlocked.day, 60);
+  assert.equal(releaseBlocked.day, FIRST_RELEASE_DAY);
   assert.equal(releaseBlocked.phase, "release-edit");
   state = submitFirstThree(releaseBlocked);
 
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 30);
+  state = submitFirstThree(state);
   state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, SECOND_BAN_DAY);
   assert.equal(state.day, SECOND_BAN_DAY);
   assert.equal(state.phase, "ban-edit");
@@ -929,13 +884,8 @@ test("stops at restriction and release gates until each review is submitted", ()
   assert.equal(banBlocked.day, SECOND_BAN_DAY);
   state = reduceGame(banBlocked, { type: "SUBMIT_BAN", changes: {} });
 
-  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 90);
-  assert.equal(state.day, 90);
-  assert.equal(state.phase, "release-edit");
-  state = submitFirstThree(state);
-
-  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 120);
-  assert.equal(state.day, 120);
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 50);
+  assert.equal(state.day, 50);
   assert.equal(state.phase, "release-edit");
 });
 
@@ -963,12 +913,19 @@ test("is deterministic for the same seed and release command log", () => {
       state,
       SECOND_BAN_DAY,
     );
+    if (state.phase === "release-edit") {
+      state = submitFirstThree(state);
+      state = advanceUntilDayOrDecisionHandlingBusinessEvents(
+        state,
+        SECOND_BAN_DAY,
+      );
+    }
     assert.equal(state.phase, "ban-edit");
     state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
-    state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 90);
-    assert.equal(state.day, 90);
+    state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 50);
+    assert.equal(state.day, 50);
     assert.equal(state.phase, "release-edit");
-    return submitFirstThree(state, [1, 0, -1]);
+    return submitFirstThree(state);
   }
 
   assert.deepEqual(scenario(20260815), scenario(20260815));
@@ -1039,7 +996,7 @@ test("a one-copy finisher restriction is cosmetic but a three-copy starter restr
   );
 });
 
-test("hands over a stable DAY 31 environment and continues normalizing on DAY 32", () => {
+test("hands over the live emergency environment after DAY 7 observation", () => {
   const state = createInitialGame(1000);
   const runtimes = state.activeThemeIds.map((themeId) => state.themes[themeId]);
   const totalUsers = Object.values(state.users).reduce(
@@ -1059,16 +1016,15 @@ test("hands over a stable DAY 31 environment and continues normalizing on DAY 32
   assert.equal(state.handoverComplete, true);
   assert.ok(totalUsers >= 9_500);
   assert.ok(topShare < 0.29);
-  assert.ok(health >= 55);
+  assert.ok(health >= 50 && health < 60);
   assert.ok(Math.max(...runtimes.map((runtime) => runtime.fatigue)) < 35);
   assert.ok(state.finance.today > 0);
   assert.ok(state.finance.rolling30 > state.finance.today);
 
   const next = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
-  assert.ok(
-    Math.max(
-      ...next.activeThemeIds.map((themeId) => next.themes[themeId].share),
-    ) < 0.28,
+  assert.notEqual(
+    Math.max(...next.activeThemeIds.map((themeId) => next.themes[themeId].share)),
+    topShare,
   );
 });
 
@@ -1239,14 +1195,21 @@ test("healthy no-change and complete threat coverage reject chaser pre-cuts", ()
   state.phase = "ban-edit";
   const fixedShares: Partial<Record<string, number>> = {
     cycle: 0.24,
-    "white-night": 0.13,
-    "machine-revolution": 0.14,
-    abyss: 0.1,
+    "white-night": 0.19,
+    "machine-revolution": 0.18,
+    abyss: 0.2,
+    ironblood: 0.19,
   };
   const remainingIds = state.activeThemeIds.filter(
     (themeId) => fixedShares[themeId] === undefined,
   );
-  const remainingShare = 0.39 / remainingIds.length;
+  const assignedShare = Object.values(fixedShares).reduce<number>(
+    (sum, share) => sum + (share ?? 0),
+    0,
+  );
+  const remainingShare = remainingIds.length > 0
+    ? (1 - assignedShare) / remainingIds.length
+    : 0;
   for (const themeId of state.activeThemeIds) {
     const runtime = state.themes[themeId];
     runtime.share = fixedShares[themeId] ?? remainingShare;
@@ -1651,7 +1614,10 @@ test("restriction quality covers every clear threat without preemptive chaser cu
 });
 
 test("restriction outcome labels require real target movement and a healthy follow-up meta", () => {
-  const base = createInitialGame(13_506);
+  const base = reduceGame(
+    submitFirstThree(advanceToFirstRelease(createInitialGame(13_506))),
+    { type: "ADVANCE_DAYS", days: 1 },
+  );
   const targetThemeId = base.activeThemeIds[0];
   const targetContent = THEMES.find((theme) => theme.id === targetThemeId);
   assert.ok(targetContent);
@@ -1670,7 +1636,7 @@ test("restriction outcome labels require real target movement and a healthy foll
     followupUsers = 100_000,
   ) => {
     const state = structuredClone(base);
-    state.day = FIRST_BAN_DAY + 4;
+    state.day = FIRST_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS;
     state.phase = "running";
     state.community = state.community.filter(
       (event) =>
@@ -1699,7 +1665,8 @@ test("restriction outcome labels require real target movement and a healthy foll
     state.history = state.history
       .filter(
         (entry) =>
-          entry.day !== FIRST_BAN_DAY && entry.day !== FIRST_BAN_DAY + 4,
+          entry.day !== FIRST_BAN_DAY &&
+          entry.day !== FIRST_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS,
       )
       .concat([
         {
@@ -1710,7 +1677,7 @@ test("restriction outcome labels require real target movement and a healthy foll
           shares: sharesFor(decisionShares),
         },
         {
-          day: FIRST_BAN_DAY + 4,
+          day: FIRST_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS,
           totalUsers: followupUsers,
           revenue: 1,
           topThemeId: themeIds[0],
@@ -1721,7 +1688,7 @@ test("restriction outcome labels require real target movement and a healthy foll
     return getRestrictionHistoricalOutcome(
       state,
       FIRST_BAN_DAY,
-      FIRST_BAN_DAY + 4,
+      FIRST_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS,
     );
   };
 
@@ -1770,7 +1737,7 @@ function makeRestrictionOutcomeConsequenceFixture(
 ): State {
   const state = advanceThroughDecisions(
     createInitialGame(seed),
-    SECOND_BAN_DAY + 3,
+    SECOND_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS - 1,
   );
   const themeIds = state.activeThemeIds.slice(0, 7);
   assert.equal(themeIds.length, 7);
@@ -1821,7 +1788,10 @@ function makeRestrictionOutcomeConsequenceFixture(
   decisionSnapshot.shares = sharesFor(decisionShares);
   decisionSnapshot.topThemeId = targetThemeId;
   delete decisionSnapshot.topCutPlacements;
-  assert.equal(state.day, SECOND_BAN_DAY + 3);
+  assert.equal(
+    state.day,
+    SECOND_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS - 1,
+  );
   state.purchaseTrust = 60;
   for (const [index, themeId] of state.activeThemeIds.entries()) {
     const share = followupShares[index] ?? 0;
@@ -1836,11 +1806,8 @@ function makeRestrictionOutcomeConsequenceFixture(
   return state;
 }
 
-test("D+4 restriction outcomes apply each ownership consequence once and update history", () => {
-  const naturalState = createInitialGame(13_507);
-  const naturalShares = naturalState.activeThemeIds
-    .slice(0, 7)
-    .map((themeId) => naturalState.themes[themeId].share);
+test("D+9 restriction outcomes apply each ownership consequence once and update history", () => {
+  const naturalShares = [...RESTRICTION_OUTCOME_DECISION_SHARES];
   const ineffectiveShares = [...naturalShares];
   ineffectiveShares[0] += 0.015;
   ineffectiveShares[1] -= 0.015;
@@ -1888,7 +1855,7 @@ test("D+4 restriction outcomes apply each ownership consequence once and update 
         days: 1,
       });
       const probeSnapshot = probe.history.find(
-        (entry) => entry.day === SECOND_BAN_DAY + 4,
+        (entry) => entry.day === SECOND_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS,
       );
       const decisionSnapshot = input.history.find(
         (entry) => entry.day === SECOND_BAN_DAY,
@@ -1911,7 +1878,7 @@ test("D+4 restriction outcomes apply each ownership consequence once and update 
     const outcome = getRestrictionHistoricalOutcome(
       resolved,
       SECOND_BAN_DAY,
-      SECOND_BAN_DAY + 4,
+      SECOND_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS,
     );
     assert.equal(
       outcome.classification,
@@ -1924,7 +1891,10 @@ test("D+4 restriction outcomes apply each ownership consequence once and update 
         10_000,
     );
     assert.equal(
-      resolved.history.find((entry) => entry.day === SECOND_BAN_DAY + 4)
+      resolved.history.find(
+        (entry) =>
+          entry.day === SECOND_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS,
+      )
         ?.purchaseTrust,
       resolved.purchaseTrust,
     );
@@ -1987,9 +1957,12 @@ test("D+4 restriction outcomes apply each ownership consequence once and update 
 test("a first ineffective review is trust-neutral while a repeated miss erodes trust and raises risk", () => {
   const base = advanceThroughDecisions(
     createInitialGame(13_508),
-    SECOND_BAN_DAY + 3,
+    SECOND_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS - 1,
   );
-  assert.equal(base.day, SECOND_BAN_DAY + 3);
+  assert.equal(
+    base.day,
+    SECOND_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS - 1,
+  );
   assert.equal(base.phase, "running");
   const themeIds = base.activeThemeIds.slice(0, 8);
   const targetThemeId = themeIds[0];
@@ -2027,7 +2000,7 @@ test("a first ineffective review is trust-neutral while a repeated miss erodes t
     (entry) => entry.day === FIRST_BAN_DAY,
   );
   const firstFollowupSnapshot = base.history.find(
-    (entry) => entry.day === FIRST_BAN_DAY + 4,
+    (entry) => entry.day === FIRST_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS,
   );
   const currentDecisionSnapshot = base.history.find(
     (entry) => entry.day === SECOND_BAN_DAY,
@@ -2056,7 +2029,7 @@ test("a first ineffective review is trust-neutral while a repeated miss erodes t
     getRestrictionHistoricalOutcome(
       first,
       SECOND_BAN_DAY,
-      SECOND_BAN_DAY + 4,
+      SECOND_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS,
     ).classification,
     "ineffective",
   );
@@ -2064,7 +2037,7 @@ test("a first ineffective review is trust-neutral while a repeated miss erodes t
     getRestrictionHistoricalOutcome(
       repeated,
       FIRST_BAN_DAY,
-      FIRST_BAN_DAY + 4,
+      FIRST_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS,
     ).classification,
     "ineffective",
   );
@@ -2072,13 +2045,16 @@ test("a first ineffective review is trust-neutral while a repeated miss erodes t
     getRestrictionHistoricalOutcome(
       repeated,
       SECOND_BAN_DAY,
-      SECOND_BAN_DAY + 4,
+      SECOND_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS,
     ).classification,
     "ineffective",
   );
   assert.equal(repeated.purchaseTrust, first.purchaseTrust - 1.5);
   assert.equal(
-    repeated.history.find((entry) => entry.day === SECOND_BAN_DAY + 4)
+    repeated.history.find(
+      (entry) =>
+        entry.day === SECOND_BAN_DAY + RESTRICTION_REPORT_DELAY_DAYS,
+    )
       ?.purchaseTrust,
     repeated.purchaseTrust,
   );
@@ -2111,7 +2087,7 @@ test("support requests replace their lane and the latest request reaches the nex
   assert.equal(state.supportRequests.length, 1);
   const firstRequest = state.supportRequests[0];
   assert.equal(firstRequest.proposedDay, TUTORIAL_END_DAY);
-  assert.equal(firstRequest.eligibleReleaseDay, 60);
+  assert.equal(firstRequest.eligibleReleaseDay, FIRST_RELEASE_DAY);
   assert.equal(firstRequest.status, "queued");
   const replacementThemeId = state.activeThemeIds[1];
   state = reduceGame(state, {
@@ -2149,10 +2125,15 @@ test("support requests replace their lane and the latest request reaches the nex
     })),
   });
   assert.equal(state.supportRequests[1].status, "released");
-  assert.equal(state.supportRequests[1].releasedDay, 60);
+  assert.equal(state.supportRequests[1].releasedDay, FIRST_RELEASE_DAY);
 
-  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 75);
-  assert.equal(state.day, 75);
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 30);
+  state = submitFirstThree(state);
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(
+    state,
+    SECOND_BAN_DAY,
+  );
+  assert.equal(state.day, SECOND_BAN_DAY);
   assert.equal(state.phase, "ban-edit");
   state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
   state = reduceGame(state, {
@@ -2160,9 +2141,9 @@ test("support requests replace their lane and the latest request reaches the nex
     themeId: state.activeThemeIds[1],
     direction: "counterplay",
   });
-  assert.equal(state.day, 75);
+  assert.equal(state.day, SECOND_BAN_DAY);
   assert.equal(state.supportRequests.length, 3);
-  assert.equal(state.supportRequests[2].eligibleReleaseDay, 90);
+  assert.equal(state.supportRequests[2].eligibleReleaseDay, 70);
 });
 
 test("a support release can bring a Tier Out theme back into the observed meta", () => {
@@ -2231,7 +2212,7 @@ test("support releases unlock exactly three prepared cards and stop after three 
       themeId: targetId,
       direction: "consistency",
     });
-    state = advanceToNextReleaseHandlingBusinessEvents(state);
+    state = advanceToNextRegularReleaseHandlingBusinessEvents(state);
     assert.equal(state.phase, "release-edit");
     assert.ok(state.releaseSlate);
     const requested = state.releaseSlate.options.find(
@@ -2318,8 +2299,8 @@ test("support releases unlock exactly three prepared cards and stop after three 
     /at most three times/,
   );
 
-  state = advanceToNextReleaseHandlingBusinessEvents(state);
-  assert.equal(state.day, 150);
+  state = advanceToNextRegularReleaseHandlingBusinessEvents(state);
+  assert.equal(state.day, 90);
   assert.ok(
     state.releaseSlate?.options.every(
       (option) => option.kind !== "support" || option.themeId !== targetId,
@@ -2327,10 +2308,10 @@ test("support releases unlock exactly three prepared cards and stop after three 
   );
 });
 
-test("day 60 release review offers three choices in every product category", () => {
+test("DAY 10 regular release review offers three choices in every product category", () => {
   const state = advanceToFirstRelease(createInitialGame(321));
   assert.ok(state.releaseSlate);
-  assert.equal(state.releaseSlate.day, 60);
+  assert.equal(state.releaseSlate.day, FIRST_RELEASE_DAY);
   assert.equal(state.releaseSlate.options.length, 9);
   assert.equal(
     state.releaseSlate.options.filter((option) => option.kind === "new-theme")
@@ -2435,9 +2416,9 @@ test("actual meta tiers create ordered and material pack-demand gaps", () => {
   assert.ok(revenueByTier.tier3 - revenueByTier.tierOut >= 0.015);
 
   const withConflictingPlacementWindows = (
-    latestFourteenDaysStrong: boolean,
+    latestWindowStrong: boolean,
   ): State => {
-    assert.equal(PLACEMENT_WINDOW_DAYS, 14);
+    assert.equal(PLACEMENT_WINDOW_DAYS, 7);
     const state = structuredClone(atRelease);
     const endDay = state.history.at(-1)?.day;
     assert.ok(endDay);
@@ -2450,7 +2431,7 @@ test("actual meta tiers create ordered and material pack-demand gaps", () => {
         entry.topCutPlacements[themeId] = 0;
       }
       const isLatestWindow = entry.day >= recentStartDay;
-      const targetIsStrong = isLatestWindow === latestFourteenDaysStrong;
+      const targetIsStrong = isLatestWindow === latestWindowStrong;
       entry.topCutPlacements[supportOption.themeId] = targetIsStrong
         ? DAILY_TOP_CUT_SLOTS
         : 0;
@@ -2471,7 +2452,7 @@ test("actual meta tiers create ordered and material pack-demand gaps", () => {
   );
   assert.ok(
     latestWindowStrong.finance.today > staleWindowStrong.finance.today,
-    "pack demand must follow the latest fourteen days, not the older sixteen",
+    "pack demand must follow the latest placement window, not stale results",
   );
 });
 
@@ -2626,7 +2607,7 @@ test("release submission requires four mixed valid selections and applies their 
   });
 
   assert.equal(atRelease.phase, "release-edit", "the reducer must not mutate its input");
-  assert.equal(released.day, 60);
+  assert.equal(released.day, FIRST_RELEASE_DAY);
   assert.equal(released.phase, "running");
   assert.equal(released.releaseSlate, null);
   assert.deepEqual(released.activeThemeIds, activeBefore);
@@ -2644,19 +2625,19 @@ test("release submission requires four mixed valid selections and applies their 
   assert.equal(
     released.community.filter(
       (event) =>
-        event.day === 60 &&
+        event.day === FIRST_RELEASE_DAY &&
         (event.type === "release-reaction" || event.type === "support-released"),
     ).length,
     0,
   );
   assert.ok(released.finance.today > atRelease.history.at(-1)!.revenue);
   const regularReleaseHistory = released.releaseHistory.filter(
-    (batch) => !batch.baseline,
+    (batch) => batch.releaseKind !== "baseline",
   );
-  assert.equal(regularReleaseHistory.length, 2);
-  assert.equal(regularReleaseHistory[1].day, 60);
+  assert.equal(regularReleaseHistory.length, 1);
+  assert.equal(regularReleaseHistory[0].day, FIRST_RELEASE_DAY);
   assert.deepEqual(
-    regularReleaseHistory[1].products.map((product) => ({
+    regularReleaseHistory[0].products.map((product) => ({
       optionId: product.optionId,
       powerAdjustment: product.powerAdjustment,
     })),
@@ -2667,16 +2648,19 @@ test("release submission requires four mixed valid selections and applies their 
   );
 
   const observed = reduceGame(released, { type: "ADVANCE_DAYS", days: 1 });
-  assert.equal(observed.day, 61);
+  assert.equal(observed.day, FIRST_RELEASE_DAY + 1);
   assert.equal(observed.activeThemeIds.length, activeBefore.length + 2);
   assert.ok(observed.activeThemeIds.includes(newOptions[0].themeId));
   assert.ok(observed.activeThemeIds.includes(newOptions[1].themeId));
   assert.ok(observed.themes[supportOption.themeId].supportPower > supportBefore);
-  assert.equal(observed.themes[supportOption.themeId].lastSupportDay, 60);
+  assert.equal(
+    observed.themes[supportOption.themeId].lastSupportDay,
+    FIRST_RELEASE_DAY,
+  );
   assert.equal(
     observed.community.filter(
       (event) =>
-        event.day === 61 &&
+        event.day === FIRST_RELEASE_DAY + 1 &&
         (event.type === "release-reaction" || event.type === "support-released"),
     ).length,
     4,
@@ -2703,8 +2687,16 @@ test("keeps shares finite and normalized through every release and restriction g
     if (state.operations.pendingEvent) {
       state = choosePendingBusinessEvent(state);
     } else if (state.phase === "release-edit") {
-      assert.equal(state.releaseSlate?.options.length, 9);
-      state = submitFirstThree(state, [-1, 0, 1]);
+      assert.ok(state.releaseSlate);
+      assert.equal(
+        state.releaseSlate.options.length,
+        state.releaseSlate.releaseKind === "reprint"
+          ? REPRINT_PACK_CANDIDATE_COUNT
+          : 9,
+      );
+      state = state.releaseSlate.releaseKind === "reprint"
+        ? submitFirstThree(state)
+        : submitFirstThree(state, [-1, 0, 1]);
       reviews += 1;
     } else if (state.phase === "ban-edit") {
       state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
@@ -2724,8 +2716,8 @@ test("keeps shares finite and normalized through every release and restriction g
   assert.equal(state.day, CAMPAIGN_END_DAY);
   assert.equal(state.phase, "ended");
   assert.equal(
-    state.releaseHistory.filter((batch) => !batch.baseline).length,
-    15,
+    state.releaseHistory.filter((batch) => batch.releaseKind !== "baseline").length,
+    23,
   );
   assert.equal(sawTierOut, true);
   const finalShares = state.activeThemeIds
@@ -2739,7 +2731,7 @@ test("keeps shares finite and normalized through every release and restriction g
   assertHealthyShares(state);
 });
 
-test("keeps nine choices when a support-heavy strategy exhausts eligible themes", () => {
+test("keeps complete slates when a support-heavy strategy exhausts eligible themes", () => {
   let state = createInitialGame(10_031);
   let releaseReviews = 0;
 
@@ -2748,7 +2740,12 @@ test("keeps nine choices when a support-heavy strategy exhausts eligible themes"
       state = choosePendingBusinessEvent(state);
     } else if (state.phase === "release-edit") {
       assert.ok(state.releaseSlate);
-      assert.equal(state.releaseSlate.options.length, 9);
+      assert.equal(
+        state.releaseSlate.options.length,
+        state.releaseSlate.releaseKind === "reprint"
+          ? REPRINT_PACK_CANDIDATE_COUNT
+          : 9,
+      );
       const supportFirst = state.releaseSlate.options
         .filter((option) => option.kind === "support")
         .slice(0, 2);
@@ -2769,11 +2766,15 @@ test("keeps nine choices when a support-heavy strategy exhausts eligible themes"
   }
 
   assert.equal(state.day, CAMPAIGN_END_DAY);
-  assert.equal(releaseReviews, 14);
+  assert.equal(releaseReviews, 23);
 });
 
-test("charges recurring operating costs from DAY 1", () => {
-  const start = createCampaignStart(20_999);
+test("charges recurring operating costs from DAY 1 after the DAY 0 decision", () => {
+  const baseline = createCampaignStart(20_999);
+  assert.equal(baseline.day, FIRST_BAN_DAY);
+  assert.equal(baseline.finance.todayOperatingCost, 0);
+  const published = reduceGame(baseline, { type: "SUBMIT_BAN", changes: {} });
+  const start = reduceGame(published, { type: "ADVANCE_DAYS", days: 1 });
   const activeUsers =
     start.users.tier + start.users.casual + start.users.collector;
   const expectedCost = getDailyOperatingCost(start.day, activeUsers);
@@ -2788,7 +2789,7 @@ test("charges recurring operating costs from DAY 1", () => {
   assert.equal(start.finance.todayOperatingCost, expectedCost);
   assert.equal(start.finance.cumulativeOperatingCosts, expectedCost);
   assert.equal(start.finance.todayOperatingCash, expectedNet);
-  assert.equal(start.history[0].operatingCash, expectedNet);
+  assert.equal(start.history.at(-1)?.operatingCash, expectedNet);
 
   const next = reduceGame(start, { type: "ADVANCE_DAYS", days: 1 });
   const nextActiveUsers =
@@ -2807,11 +2808,12 @@ test("charges recurring operating costs from DAY 1", () => {
 });
 
 test("revenue shock alerts discount the normal post-release sales tail", () => {
-  const expectedReleaseDrop = (Math.exp(-1 / 6) - 1) * 100;
+  const expectedReleaseDrop =
+    (RELEASE_SALES_DAILY_DECAY_MULTIPLIER - 1) * 100;
   const justInsideResidual =
-    (Math.exp(-1 / 6) * (1 - 0.0799) - 1) * 100;
+    (RELEASE_SALES_DAILY_DECAY_MULTIPLIER * (1 - 0.0799) - 1) * 100;
   const residualBoundary =
-    (Math.exp(-1 / 6) * (1 - 0.08) - 1) * 100;
+    (RELEASE_SALES_DAILY_DECAY_MULTIPLIER * (1 - 0.08) - 1) * 100;
 
   assert.equal(getRevenueChangeSignal(12), "surge");
   assert.equal(getRevenueChangeSignal(-11.99), null);
@@ -2833,19 +2835,22 @@ test("market divergence detects immediate and delayed ecosystem fallout", () => 
 
 test("decision gates charge operating costs once, after the decision is submitted", () => {
   let state = createInitialGame(21_000);
-  state = advanceUntilDayOrDecisionHandlingBusinessEvents(state, 59);
-  assert.equal(state.day, 59);
+  state = advanceUntilDayOrDecisionHandlingBusinessEvents(
+    state,
+    FIRST_RELEASE_DAY - 1,
+  );
+  assert.equal(state.day, FIRST_RELEASE_DAY - 1);
   assert.equal(state.phase, "running");
   const beforeGate = state.finance.cumulativeOperatingCosts;
 
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
-  assert.equal(state.day, 60);
+  assert.equal(state.day, FIRST_RELEASE_DAY);
   assert.equal(state.phase, "release-edit");
   assert.equal(state.finance.cumulativeOperatingCosts, beforeGate);
 
   state = submitFirstThree(state);
   const expectedCost = getDailyOperatingCost(
-    60,
+    FIRST_RELEASE_DAY,
     state.users.tier + state.users.casual + state.users.collector,
   );
   assert.equal(
@@ -2856,7 +2861,7 @@ test("decision gates charge operating costs once, after the decision is submitte
 
   const afterSettlement = state.finance.cumulativeOperatingCosts;
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
-  assert.equal(state.day, 61);
+  assert.equal(state.day, FIRST_RELEASE_DAY + 1);
   assert.equal(
     state.finance.cumulativeOperatingCosts,
     Math.round(
@@ -2892,8 +2897,73 @@ test("business actions remain separate from recurring operating costs", () => {
   );
 });
 
+test("DAY 4 opens only the four guided starter business actions", () => {
+  let dayThree = reduceGame(createFirstBanGame(21_000), {
+    type: "SUBMIT_BAN",
+    changes: {},
+  });
+  dayThree = reduceGame(dayThree, { type: "ADVANCE_DAYS", days: 3 });
+  assert.equal(dayThree.day, 3);
+  assert.equal(dayThree.handoverComplete, false);
+
+  for (const action of BUSINESS_ACTIONS) {
+    const availability = getBusinessActionAvailability(dayThree, action.type);
+    assert.equal(availability.available, false, action.type);
+    assert.match(availability.reason ?? "", /DAY 4/);
+  }
+
+  const dayFour = reduceGame(dayThree, { type: "ADVANCE_DAYS", days: 1 });
+  const starterTypes = new Set(HANDOVER_STARTER_BUSINESS_ACTION_TYPES);
+  assert.equal(dayFour.day, 4);
+  assert.equal(dayFour.handoverComplete, false);
+  assert.equal(starterTypes.size, 4);
+
+  for (const action of BUSINESS_ACTIONS) {
+    const availability = getBusinessActionAvailability(dayFour, action.type);
+    assert.equal(
+      availability.available,
+      starterTypes.has(
+        action.type as (typeof HANDOVER_STARTER_BUSINESS_ACTION_TYPES)[number],
+      ),
+      action.type,
+    );
+    if (!availability.available) {
+      assert.match(availability.reason ?? "", /기본 대응 4종|DAY 7/);
+    }
+  }
+
+  const launched = reduceGame(dayFour, {
+    type: "RUN_BUSINESS_ACTION",
+    action: "tv-cm",
+  });
+  assert.equal(launched.operations.records.at(-1)?.startedDay, 4);
+  assert.equal(launched.operations.records.at(-1)?.type, "tv-cm");
+
+  const beforeCompletion = reduceGame(dayFour, {
+    type: "ADVANCE_DAYS",
+    days: TUTORIAL_END_DAY - dayFour.day,
+  });
+  assert.equal(beforeCompletion.handoverComplete, false);
+  for (const type of [
+    "animation-promotion",
+    "championship",
+    "lending-exchange-network",
+    "collector-fair",
+    "pack-odds",
+    "season-overhaul",
+    "global-launch",
+    "organized-play-platform",
+  ] as const) {
+    assert.equal(
+      getBusinessActionAvailability(beforeCompletion, type).available,
+      false,
+      type,
+    );
+  }
+});
+
 test("business actions spend operating cash without double-booking the current day", () => {
-  const state = createCampaignStart(21_001);
+  const state = createInitialGame(21_001);
   const original = structuredClone(state);
   const historyLength = state.history.length;
   const cumulativeRevenue = state.finance.cumulative;
@@ -2922,8 +2992,8 @@ test("business actions spend operating cash without double-booking the current d
     {
       id: "business-action-1",
       type: "tv-cm",
-      startedDay: 1,
-      endsDay: 22,
+      startedDay: TUTORIAL_END_DAY,
+      endsDay: TUTORIAL_END_DAY + 21,
       cost: 0.6,
       outcome: "active",
       risk: undefined,
@@ -2950,22 +3020,13 @@ test("business actions spend operating cash without double-booking the current d
 });
 
 test("business cooldowns reopen on the exact boundary day", () => {
-  let state = createCampaignStart(21_002);
+  let state = createInitialGame(21_002);
   state = reduceGame(state, {
     type: "RUN_BUSINESS_ACTION",
     action: "tv-cm",
   });
-  state = reduceGame(state, {
-    type: "ADVANCE_DAYS",
-    days: FIRST_BAN_DAY - state.day,
-  });
-  state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
-  state = reduceGame(state, {
-    type: "ADVANCE_DAYS",
-    days: RELEASE_INTERVAL - state.day,
-  });
-  assert.equal(state.day, 30);
-  state = submitFirstThree(state);
+  state = advanceThroughDecisions(state, TUTORIAL_END_DAY + 29);
+  assert.equal(state.day, TUTORIAL_END_DAY + 29);
   assert.equal(getBusinessActionAvailability(state, "tv-cm").cooldownRemaining, 1);
   assert.throws(
     () => reduceGame(state, {
@@ -2985,7 +3046,7 @@ test("business cooldowns reopen on the exact boundary day", () => {
 
 test("marketing and store tours affect users and trust from the following day", () => {
   const seed = 21_003;
-  const control = createCampaignStart(seed);
+  const control = createInitialGame(seed);
   control.finance.cash = 10;
 
   const tv = reduceGame(control, {
@@ -2994,7 +3055,7 @@ test("marketing and store tours affect users and trust from the following day", 
   });
   const tvNext = reduceGame(tv, { type: "ADVANCE_DAYS", days: 1 });
   const controlNext = reduceGame(control, { type: "ADVANCE_DAYS", days: 1 });
-  assert.equal(tvNext.operations.records[0].resolvedDay, 2);
+  assert.equal(tvNext.operations.records[0].resolvedDay, TUTORIAL_END_DAY + 1);
   assert.equal(
     tvNext.users.casual > controlNext.users.casual,
     tvNext.operations.records[0].outcome === "success",
@@ -3030,7 +3091,7 @@ test("low-risk direct revenue needs scale while risky events break the saturatio
     "store-tour",
     "beginner-camp",
     "local-league",
-    "reprint-campaign",
+    "lending-exchange-network",
     "collector-fair",
   ] as const;
 
@@ -3086,12 +3147,18 @@ test("low-risk direct revenue needs scale while risky events break the saturatio
     type: "RUN_BUSINESS_ACTION",
     action: "collector-fair",
   });
+  const overlappingNextDay = reduceGame(overlapping, {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
   assert.ok(
-    getBusinessActionProjectedDirectGrossRevenue(overlapping, "store-tour") <
-      getBusinessActionDailyGrossRevenue(overlapping, "store-tour") * 14,
+    getBusinessActionProjectedDirectGrossRevenue(
+      overlappingNextDay,
+      "store-tour",
+    ) < getBusinessActionDailyGrossRevenue(overlappingNextDay, "store-tour") * 14,
   );
   assert.ok(
-    getBusinessActionProjectedDirectCash(overlapping, "store-tour") < 0,
+    getBusinessActionProjectedDirectCash(overlappingNextDay, "store-tour") < 0,
   );
 });
 
@@ -3100,7 +3167,7 @@ test("recurring business events generate revenue and grow their intended audienc
     { type: "store-tour", segment: "casual", cost: 0.35 },
     { type: "beginner-camp", segment: "casual", cost: 0.4 },
     { type: "local-league", segment: "tier", cost: 0.5 },
-    { type: "reprint-campaign", segment: "collector", cost: 0.55 },
+    { type: "lending-exchange-network", segment: "casual", cost: 0.55 },
     { type: "collector-fair", segment: "collector", cost: 0.65 },
   ] as const;
 
@@ -3120,7 +3187,7 @@ test("recurring business events generate revenue and grow their intended audienc
       fixture.type,
     );
     const launchedRecord = launched.operations.records.at(-1)!;
-    assert.equal(launchedRecord.id, "business-action-2");
+    assert.equal(launchedRecord.id, "business-action-1");
     assert.equal(launchedRecord.type, fixture.type);
     assert.equal(launchedRecord.startedDay, TUTORIAL_END_DAY);
     assert.equal(
@@ -3128,7 +3195,7 @@ test("recurring business events generate revenue and grow their intended audienc
       TUTORIAL_END_DAY +
         (fixture.type === "local-league"
           ? 21
-          : fixture.type === "reprint-campaign"
+          : fixture.type === "lending-exchange-network"
             ? 30
             : 14),
     );
@@ -3159,17 +3226,9 @@ test("recurring business events generate revenue and grow their intended audienc
 
 test("championships turn a healthy environment into growth and a hostile one into churn", () => {
   function prepare(seed: number, hostile: boolean): State {
-    let state = createCampaignStart(seed);
+    let state = createInitialGame(seed);
     state.finance.cash = 10;
-    state = reduceGame(state, {
-      type: "ADVANCE_DAYS",
-      days: FIRST_BAN_DAY - state.day,
-    });
-    state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
-    state = reduceGame(state, {
-      type: "ADVANCE_DAYS",
-      days: RELEASE_INTERVAL - state.day,
-    });
+    state = advanceToFirstRelease(state);
     state = reduceGame(state, {
       type: "SUBMIT_RELEASE",
       selections: getPrologueReleaseSelections(state),
@@ -3241,14 +3300,17 @@ test("pack odds boost a release, then detection deterministically ends the boost
     type: "RUN_BUSINESS_ACTION",
     action: "pack-odds",
   });
-  control = advanceUntilDayOrDecisionHandlingBusinessEvents(control, 60);
-  adjusted = advanceUntilDayOrDecisionHandlingBusinessEvents(adjusted, 60);
+  control = advanceToFirstRelease(control);
+  adjusted = advanceToFirstRelease(adjusted);
   control = submitFirstThree(control);
   adjusted = submitFirstThree(adjusted);
   assert.ok(adjusted.finance.today > control.finance.today);
   assert.ok(adjusted.finance.today < control.finance.today * 1.25);
   assert.equal(adjusted.operations.records.at(-1)?.outcome, "active");
-  assert.equal(adjusted.operations.records.at(-1)?.appliedDay, 60);
+  assert.equal(
+    adjusted.operations.records.at(-1)?.appliedDay,
+    FIRST_RELEASE_DAY,
+  );
 
   const overduePending = structuredClone(adjusted);
   const overdueRecord = overduePending.operations.records.at(-1)!;
@@ -3275,6 +3337,8 @@ test("pack odds boost a release, then detection deterministically ends the boost
 
   const impossibleLateAction = createCampaignStart(21_005);
   impossibleLateAction.day = LAST_RELEASE_DAY;
+  impossibleLateAction.phase = "running";
+  impossibleLateAction.handoverComplete = true;
   assert.throws(
     () =>
       reduceGame(impossibleLateAction, {
@@ -3285,9 +3349,43 @@ test("pack odds boost a release, then detection deterministically ends the boost
   );
 });
 
+test("mandatory reprint packs cap their combined D+1 trust shock at four points", () => {
+  let state = advanceToFirstRelease(createInitialGame(21_204));
+  state = submitFirstThree(state);
+  state = advanceToNextReleaseHandlingBusinessEvents(state);
+  state = submitFirstThree(state);
+  state = advanceToNextReleaseHandlingBusinessEvents(state);
+  assert.equal(state.releaseSlate?.releaseKind, "reprint");
+  const released = submitFirstThree(state);
+
+  const severe = structuredClone(released);
+  const moderate = structuredClone(released);
+  severe.purchaseTrust = 80;
+  moderate.purchaseTrust = 80;
+  for (const product of severe.releaseHistory.at(-1)!.products) {
+    if (product.kind === "reprint") product.trustDelta = -10;
+  }
+  for (const product of moderate.releaseHistory.at(-1)!.products) {
+    if (product.kind === "reprint") product.trustDelta = -1;
+  }
+
+  const severeNext = reduceGame(severe, { type: "ADVANCE_DAYS", days: 1 });
+  const moderateNext = reduceGame(moderate, {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
+  assert.equal(
+    Math.round((moderateNext.purchaseTrust - severeNext.purchaseTrust) * 10_000) /
+      10_000,
+    1,
+  );
+});
+
 test("business actions fit inside the settlement window and close before the final ban", () => {
   const state = createCampaignStart(21_006);
   state.finance.cash = 10;
+  state.phase = "running";
+  state.handoverComplete = true;
 
   state.day = 425;
   assert.equal(
@@ -3314,7 +3412,7 @@ test("business actions fit inside the settlement window and close before the fin
     "pack-odds",
     "season-overhaul",
     "global-launch",
-    "first-print-expansion",
+    "organized-play-platform",
   ] as const) {
     assert.equal(getBusinessActionAvailability(state, type).available, false);
   }
@@ -3349,11 +3447,32 @@ test("strategic projects snapshot context, use one campaign slot, and pay only o
 
   const forcedSuccess = structuredClone(launched);
   forcedSuccess.operations.records.at(-1)!.risk = 0;
+  for (const themeId of forcedSuccess.activeThemeIds) {
+    forcedSuccess.themes[themeId].fatigue = 70;
+    forcedSuccess.themes[themeId].topStreakDays = 44;
+  }
+  const preSeasonHistoryDay = forcedSuccess.history.at(0)?.day;
   const success = advanceThroughDecisions(forcedSuccess, 150);
   const successRecord = success.operations.records.at(-1)!;
   assert.equal(successRecord.outcome, "success");
   assert.equal(successRecord.resolvedDay, 150);
   assert.equal(successRecord.cashReturn, 6.5);
+  assert.equal(success.operations.season?.currentSeasonNumber, 2);
+  assert.equal(success.operations.season?.startedDay, 150);
+  assert.equal(
+    success.operations.season?.boundaries[0]?.sourceActionId,
+    successRecord.id,
+  );
+  assert.equal(success.history.at(0)?.day, preSeasonHistoryDay);
+  assert.ok(success.history.some((entry) => entry.day < 150));
+  for (const themeId of success.activeThemeIds) {
+    assert.equal(success.themes[themeId].fatigue, 0);
+    assert.equal(success.themes[themeId].topStreakDays, 0);
+    assert.equal(
+      success.themes[themeId].previousWeekShare,
+      success.themes[themeId].share,
+    );
+  }
 
   const forcedFailure = structuredClone(launched);
   forcedFailure.operations.records.at(-1)!.risk = 1;
@@ -3362,6 +3481,11 @@ test("strategic projects snapshot context, use one campaign slot, and pay only o
   assert.equal(failureRecord.outcome, "backlash");
   assert.equal(failureRecord.resolvedDay, 150);
   assert.equal(failureRecord.cashReturn, undefined);
+  assert.deepEqual(failure.operations.season, {
+    currentSeasonNumber: 1,
+    startedDay: FIRST_BAN_DAY,
+    boundaries: [],
+  });
   assert.ok(success.finance.cash - failure.finance.cash > 6);
   assert.ok(success.purchaseTrust - failure.purchaseTrust > 14);
 
@@ -3385,7 +3509,7 @@ test("strategic failure odds respond to the environment, trust, and recent relea
   for (const type of [
     "season-overhaul",
     "global-launch",
-    "first-print-expansion",
+    "organized-play-platform",
   ] as const) {
     const strongProfile = getStrategicProjectRiskProfile(strong, type);
     const weakProfile = getStrategicProjectRiskProfile(weak, type);
@@ -3394,39 +3518,39 @@ test("strategic failure odds respond to the environment, trust, and recent relea
   }
 });
 
-test("first-print expansion unlocks only after a regular release is submitted", () => {
-  let state = advanceThroughDecisions(createInitialGame(21_008), 179);
-  assert.equal(state.day, 179);
+test("the tournament platform launches as a long project after a decision", () => {
+  const state = createCampaignStart(21_008);
+  state.day = 120;
+  state.finance.cash = 100;
+  state.handoverComplete = true;
+  state.phase = "ban-edit";
   assert.equal(
-    getBusinessActionAvailability(state, "first-print-expansion").available,
+    getBusinessActionAvailability(state, "organized-play-platform").available,
     false,
   );
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
-  assert.equal(state.day, 180);
-  assert.equal(state.phase, "release-edit");
+  state.phase = "running";
   assert.equal(
-    getBusinessActionAvailability(state, "first-print-expansion").available,
-    false,
-  );
-  state = submitFirstThree(state);
-  assert.equal(
-    getBusinessActionAvailability(state, "first-print-expansion").available,
+    getBusinessActionAvailability(state, "organized-play-platform").available,
     true,
   );
 });
 
-test("business dilemmas stop advancement without stealing scheduled decision gates", () => {
+test("a fixed early business dilemma stops advancement without stealing scheduled decision gates", () => {
   const seed = 31_001;
   const initial = createInitialGame(seed);
   assert.equal(initial.day, TUTORIAL_END_DAY);
   assert.equal(initial.operations.pendingEvent, null);
   assert.deepEqual(initial.operations.eventRecords, []);
 
-  const offered = reduceGame(initial, { type: "ADVANCE_DAYS", days: 1_000 });
+  const offered = advanceToPendingBusinessEvent(initial);
   assert.equal(offered.day, getInitialBusinessEventDay(seed));
-  assert.ok(offered.day >= 52 && offered.day < 60);
+  assert.equal(offered.day, FIRST_BUSINESS_EVENT_DAY);
   assert.equal(offered.phase, "running");
   assert.equal(offered.operations.pendingEvent?.appearedDay, offered.day);
+  assert.equal(
+    offered.operations.pendingEvent?.type,
+    getBusinessEventType(seed, 1),
+  );
   assert.equal(offered.operations.nextEventDay, null);
   assert.equal(offered.history.at(-1)?.day, offered.day);
 
@@ -3457,21 +3581,30 @@ test("business dilemmas stop advancement without stealing scheduled decision gat
   assert.equal(chosen.operations.pendingEvent, null);
   const nextEventDay = chosen.operations.nextEventDay;
   assert.ok(nextEventDay !== null);
-  assert.ok(nextEventDay - chosen.day >= 14 && nextEventDay - chosen.day <= 22);
+  assert.equal(nextEventDay, getFirstRecurringBusinessEventDay(seed));
+  assert.ok(
+    nextEventDay >= RECURRING_BUSINESS_EVENT_START_DAY &&
+      nextEventDay <=
+        RECURRING_BUSINESS_EVENT_START_DAY +
+          (BUSINESS_EVENT_MAX_INTERVAL - BUSINESS_EVENT_MIN_INTERVAL),
+  );
   assert.equal(isReleaseDay(nextEventDay), false);
   assert.equal(isBanDay(nextEventDay), false);
 
-  const releaseGate = reduceGame(chosen, { type: "ADVANCE_DAYS", days: 100 });
-  assert.equal(releaseGate.day, 60);
+  const releaseGate = advanceToNextReleaseHandlingBusinessEvents(chosen);
+  assert.equal(releaseGate.day, getNextReleaseDay(chosen.day));
   assert.equal(releaseGate.phase, "release-edit");
   assert.equal(releaseGate.operations.pendingEvent, null);
 });
 
+test("the first recurring dilemma may use DAY 60 on the original cadence", () => {
+  assert.equal(isReleaseDay(60), false);
+  assert.equal(getInitialBusinessEventDay(1), FIRST_BUSINESS_EVENT_DAY);
+  assert.equal(getFirstRecurringBusinessEventDay(1), 60);
+});
+
 test("both dilemma choices snapshot cost and strategy, then resolve on schedule", () => {
-  const seed = Array.from({ length: 200 }, (_, index) => 31_100 + index).find(
-    (candidate) => getInitialBusinessEventDay(candidate) <= 58,
-  );
-  assert.ok(seed !== undefined);
+  const seed = 31_100;
   const offered = advanceToPendingBusinessEvent(createInitialGame(seed));
   offered.finance.cash = 100;
   const pending = offered.operations.pendingEvent!;
@@ -3618,7 +3751,14 @@ test("business dilemma order is chunk-independent and uses all sixteen types fir
     const record = jumped.operations.eventRecords[index];
     assert.equal(isReleaseDay(record.appearedDay), false);
     assert.equal(isBanDay(record.appearedDay), false);
-    if (index > 0) {
+    if (index === 1) {
+      assert.ok(
+        record.appearedDay >= RECURRING_BUSINESS_EVENT_START_DAY &&
+          record.appearedDay <=
+            RECURRING_BUSINESS_EVENT_START_DAY +
+              (BUSINESS_EVENT_MAX_INTERVAL - BUSINESS_EVENT_MIN_INTERVAL),
+      );
+    } else if (index > 1) {
       const gap = record.appearedDay -
         jumped.operations.eventRecords[index - 1].appearedDay;
       assert.ok(gap >= 14 && gap <= 22, `${record.id} gap ${gap}`);

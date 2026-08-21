@@ -4274,6 +4274,37 @@ body {
   font-size: 9px;
 }
 
+.campaign-stewardship-record {
+  width: min(700px, 100%);
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  text-align: left;
+  background: #102a49;
+  color: #fff;
+  border-radius: 10px;
+}
+
+.campaign-stewardship-record > header { display: grid; gap: 2px; }
+.campaign-stewardship-record > header span { color: #8fc2ee; font-size: 9px; font-weight: 900; letter-spacing: .12em; }
+.campaign-stewardship-record > header h2 { margin: 0; font-size: 17px; }
+.campaign-stewardship-record > header p { margin: 0; color: rgb(255 255 255 / .66); font-size: 10px; }
+.game-over-panel .campaign-stewardship-record > dl {
+  width: 100%;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1px;
+  background: rgb(255 255 255 / .12);
+}
+.game-over-panel .campaign-stewardship-record > dl > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 9px;
+  background: #17395f;
+  border: 0;
+}
+.campaign-stewardship-record dt { color: #9fb9d2; font-size: 9px; }
+.campaign-stewardship-record dd { color: #fff; font-size: 14px; }
 .campaign-end-note {
   margin: -2px 0 6px;
   color: var(--ink-500);
@@ -4304,6 +4335,10 @@ body {
 
   .campaign-ending-hints ul {
     grid-template-columns: 1fr;
+  }
+
+  .game-over-panel .campaign-stewardship-record > dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .game-over-panel dl > div,
@@ -9926,6 +9961,16 @@ body {
   border: 1px solid rgb(255 255 255 / 0.13);
 }
 
+@media (min-width: 901px) {
+  .release-option-group-reprint {
+    grid-column: 1 / -1;
+  }
+
+  .release-option-group-reprint > div {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 @keyframes impact-message-arrive {
   from {
     opacity: 0;
@@ -10197,7 +10242,8 @@ body {
   gap: 6px;
 }
 
-.settings-options > button {
+.settings-options > button,
+.settings-options__volume {
   min-width: 0;
   min-height: 50px;
   display: grid;
@@ -10210,6 +10256,24 @@ body {
   border: 1px solid var(--line-strong);
 }
 
+.settings-options__volume {
+  cursor: default;
+}
+
+.settings-options__volume-control {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-options__volume input {
+  width: 100%;
+  accent-color: var(--blue);
+  cursor: pointer;
+}
+
 .settings-options > button:hover,
 .settings-options > button:focus-visible,
 .settings-options > button[aria-pressed="true"] {
@@ -10218,14 +10282,16 @@ body {
   border-color: #8eb4df;
 }
 
-.settings-options > button span {
+.settings-options > button span,
+.settings-options__volume > span:first-child {
   overflow: hidden;
   font-size: 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.settings-options > button strong {
+.settings-options > button strong,
+.settings-options__volume strong {
   color: inherit;
   font-size: 10px;
 }
@@ -10243,10 +10309,15 @@ body {
   box-shadow: 0 14px 36px rgb(13 39 74 / 0.2);
 }
 
-.header-settings .settings-options > button {
+.header-settings .settings-options > button,
+.header-settings .settings-options__volume {
   min-height: 42px;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+}
+
+.header-settings .settings-options__volume {
+  grid-template-columns: 1fr;
 }
 
 .play-card {
@@ -12410,6 +12481,8 @@ body {
 
 .settings-options > button span,
 .settings-options > button strong,
+.settings-options__volume > span:first-child,
+.settings-options__volume strong,
 .play-settings > summary,
 .play-settings > summary small {
   font-size: 11px;
@@ -12777,6 +12850,8 @@ body {
 .header-settings > summary,
 .settings-options > button span,
 .settings-options > button strong,
+.settings-options__volume > span:first-child,
+.settings-options__volume strong,
 .play-settings > summary,
 .play-settings > summary small,
 .advisor-brief-copy > span,

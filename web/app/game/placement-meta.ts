@@ -3,7 +3,7 @@ import type { MetaTier } from "./meta-tiers.ts";
 
 export const DAILY_TOP_CUT_SLOTS = 32;
 export const ESTIMATED_DAILY_TOURNAMENT_ENTRANTS = 400;
-export const PLACEMENT_WINDOW_DAYS = 14;
+export const PLACEMENT_WINDOW_DAYS = 7;
 export const PROVISIONAL_THEME_DAYS = 7;
 
 type PlacementMap = Record<ThemeId, number>;
@@ -123,8 +123,8 @@ export function getDeterministicDailyTopCutPlacements({
   if (!Number.isInteger(slots) || slots <= 0) {
     throw new Error("Top-cut slots must be a positive integer.");
   }
-  if (!Number.isInteger(day) || day < 0) {
-    throw new Error("Placement day must be a non-negative integer.");
+  if (!Number.isInteger(day)) {
+    throw new Error("Placement day must be an integer.");
   }
 
   const themeIds = positiveThemeIds(shares);

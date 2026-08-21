@@ -18,6 +18,339 @@
   box-shadow: 0 14px 34px rgb(5 19 32 / 0.2);
 }
 
+.emergency-restriction-dossier {
+  display: grid;
+  gap: 16px;
+  margin-top: 22px;
+  padding-top: 22px;
+  border-top: 2px solid var(--red);
+}
+
+.report-arrival-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(7 17 31 / 0.78);
+  backdrop-filter: blur(8px);
+  animation: report-layer-in 280ms ease-out both;
+}
+
+.report-arrival-card {
+  position: relative;
+  width: min(760px, 100%);
+  overflow: hidden;
+  padding: 28px;
+  color: var(--ink-950);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-top: 6px solid var(--blue);
+  border-radius: 18px;
+  box-shadow: 0 28px 80px rgb(0 0 0 / 0.34);
+  animation: report-card-arrive 560ms cubic-bezier(.2,.8,.2,1) both;
+}
+
+.tone-positive .report-arrival-card { border-top-color: var(--mint); }
+.tone-caution .report-arrival-card { border-top-color: var(--amber); }
+.tone-negative .report-arrival-card { border-top-color: var(--red); }
+
+.business-result-stamp-stage {
+  position: relative;
+  display: grid;
+  min-height: 116px;
+  place-items: center;
+  margin: 18px -28px 0;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 25px,
+      rgb(23 52 92 / 0.045) 25px 26px
+    ),
+    linear-gradient(90deg, transparent, rgb(23 52 92 / 0.035), transparent);
+  border-bottom: 1px solid var(--line);
+  animation: business-result-impact 900ms ease-out 120ms both;
+}
+
+.business-result-stamp-stage::before,
+.business-result-stamp-stage::after {
+  --impact-angle: 14deg;
+  position: absolute;
+  z-index: -1;
+  width: 360px;
+  height: 1px;
+  content: "";
+  background: currentColor;
+  opacity: 0;
+  transform: rotate(var(--impact-angle)) scaleX(0.1);
+  animation: business-result-impact-line 620ms ease-out 430ms both;
+}
+
+.business-result-stamp-stage::after {
+  --impact-angle: -14deg;
+}
+
+.business-result-stamp {
+  --result-stamp-ink: #15715d;
+  position: relative;
+  display: grid;
+  min-width: 310px;
+  min-height: 80px;
+  place-items: center;
+  gap: 0;
+  padding: 8px 24px 5px;
+  color: var(--result-stamp-ink);
+  background: rgb(255 255 255 / 0.72);
+  border: 6px solid currentColor;
+  box-shadow:
+    inset 0 0 0 2px var(--surface),
+    inset 0 0 0 4px currentColor,
+    0 10px 20px rgb(16 24 40 / 0.14);
+  opacity: 0;
+  filter: blur(2px);
+  transform: rotate(-5deg) scale(2.25);
+  animation: business-result-stamp-slam 820ms cubic-bezier(0.16, 1, 0.3, 1) 180ms both;
+}
+
+.business-result-stamp::after {
+  position: absolute;
+  inset: 6px;
+  content: "";
+  pointer-events: none;
+  border: 1px dashed currentColor;
+  opacity: 0.55;
+}
+
+.business-result-stamp.is-fail {
+  --result-stamp-ink: #ad2520;
+  transform: rotate(5deg) scale(2.25);
+}
+
+.business-result-stamp small {
+  align-self: end;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.28em;
+  line-height: 1;
+}
+
+.business-result-stamp strong {
+  align-self: start;
+  font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+  font-size: 43px;
+  font-weight: 900;
+  letter-spacing: 0.13em;
+  line-height: 1;
+  text-shadow: 1px 1px 0 rgb(16 24 40 / 0.12);
+}
+
+.report-arrival-scanline {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent 0 45%, rgb(47 104 174 / .1) 50%, transparent 55%);
+  background-size: 100% 180px;
+  animation: report-scan 1.1s ease-out both;
+}
+
+.report-arrival-card > header {
+  display: grid;
+  gap: 5px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.report-arrival-card > header span,
+.report-arrival-card > header strong,
+.report-arrival-verdict > span {
+  color: var(--ink-600);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+
+.report-arrival-card h2 {
+  margin: 4px 0 0;
+  font-size: clamp(24px, 4vw, 38px);
+  line-height: 1.15;
+}
+
+.report-arrival-verdict {
+  display: grid;
+  gap: 6px;
+  padding: 24px 0 18px;
+}
+
+.report-arrival-verdict strong {
+  color: var(--navy-strong);
+  font-size: 26px;
+}
+
+.report-arrival-verdict p { margin: 0; color: var(--ink-700); }
+
+.report-arrival-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.report-arrival-metrics > div {
+  display: grid;
+  gap: 5px;
+  padding: 13px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.report-arrival-metrics dt { color: var(--ink-600); font-size: 12px; }
+.report-arrival-metrics dd { margin: 0; font-size: 18px; font-weight: 900; }
+
+.report-arrival-recommendation {
+  display: grid;
+  gap: 5px;
+  margin-top: 12px;
+  padding: 13px 15px;
+  background: color-mix(in srgb, var(--blue) 7%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--blue) 28%, var(--line));
+  border-left: 4px solid var(--blue);
+  border-radius: 10px;
+}
+
+.tone-positive .report-arrival-recommendation { border-left-color: var(--mint); }
+.tone-caution .report-arrival-recommendation { border-left-color: var(--amber); }
+.tone-negative .report-arrival-recommendation { border-left-color: var(--red); }
+
+.report-arrival-recommendation span {
+  color: var(--ink-600);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .08em;
+}
+
+.report-arrival-recommendation p {
+  margin: 0;
+  color: var(--ink-800);
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+.report-arrival-card > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 22px;
+}
+
+.report-arrival-card > footer small { color: var(--ink-600); }
+
+@keyframes report-layer-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes report-card-arrive {
+  from { opacity: 0; transform: translateY(36px) scale(.94) rotateX(6deg); }
+  to { opacity: 1; transform: translateY(0) scale(1) rotateX(0); }
+}
+
+@keyframes report-scan {
+  from { background-position-y: -180px; opacity: 1; }
+  to { background-position-y: 360px; opacity: 0; }
+}
+
+@keyframes business-result-impact {
+  0%, 43% { background-color: transparent; }
+  52% { background-color: rgb(16 24 40 / 0.13); }
+  62% { background-color: transparent; }
+}
+
+@keyframes business-result-impact-line {
+  0% { opacity: 0; transform: rotate(var(--impact-angle)) scaleX(0.1); }
+  28% { opacity: 0.18; transform: rotate(var(--impact-angle)) scaleX(1); }
+  100% { opacity: 0; transform: rotate(var(--impact-angle)) scaleX(1.25); }
+}
+
+@keyframes business-result-stamp-slam {
+  0%, 36% {
+    opacity: 0;
+    filter: blur(2px);
+    transform: rotate(-5deg) scale(2.25);
+  }
+  49% {
+    opacity: 0.98;
+    filter: blur(0);
+    transform: rotate(-5deg) scale(0.82);
+  }
+  62% { transform: rotate(-5deg) scale(1.08); }
+  74%, 100% {
+    opacity: 0.94;
+    filter: blur(0);
+    transform: rotate(-5deg) scale(1);
+  }
+}
+
+.business-result-stamp.is-fail {
+  animation-name: business-result-stamp-slam-fail;
+}
+
+@keyframes business-result-stamp-slam-fail {
+  0%, 36% {
+    opacity: 0;
+    filter: blur(2px);
+    transform: rotate(5deg) scale(2.25);
+  }
+  49% {
+    opacity: 0.98;
+    filter: blur(0);
+    transform: rotate(5deg) scale(0.82);
+  }
+  62% { transform: rotate(5deg) scale(1.08); }
+  74%, 100% {
+    opacity: 0.94;
+    filter: blur(0);
+    transform: rotate(5deg) scale(1);
+  }
+}
+
+@media (max-width: 680px) {
+  .report-arrival-layer { padding: 12px; }
+  .report-arrival-card { padding: 20px; }
+  .report-arrival-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .report-arrival-card > footer { align-items: stretch; flex-direction: column; }
+  .business-result-stamp-stage { margin-inline: -20px; }
+  .business-result-stamp { min-width: 260px; }
+  .business-result-stamp strong { font-size: 36px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .report-arrival-layer,
+  .report-arrival-card,
+  .report-arrival-scanline,
+  .business-result-stamp-stage,
+  .business-result-stamp-stage::before,
+  .business-result-stamp-stage::after,
+  .business-result-stamp {
+    animation: none;
+  }
+
+  .business-result-stamp {
+    opacity: 0.94;
+    filter: none;
+    transform: rotate(-5deg) scale(1);
+  }
+
+  .business-result-stamp.is-fail {
+    transform: rotate(5deg) scale(1);
+  }
+}
+
 .decision-event-hero::after {
   content: "";
   position: absolute;

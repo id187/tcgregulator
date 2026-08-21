@@ -45,7 +45,7 @@ function makeState(
     themes: Object.fromEntries(
       Object.entries(shares).map(([themeId, share]) => [themeId, { share }]),
     ),
-    releaseHistory: [{ day: releaseDay, products }],
+    releaseHistory: [{ day: releaseDay, releaseKind: "regular", products }],
     genericLimits,
   };
 }

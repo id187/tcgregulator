@@ -5,6 +5,7 @@ import type {
   GenericCardId,
 } from "./generic-card-catalog.ts";
 import type { GenericCardMetaEntry } from "./generic-card-meta.ts";
+import { FIRST_BAN_DAY } from "./campaign.ts";
 import {
   INITIAL_GENERIC_RELEASE_DAY,
   isInitialGenericCardId,
@@ -315,8 +316,14 @@ export function getThemeCardMarketQuoteAtDay(
   if (!theme || !runtime || !part || !runtime.releasedPartIds.includes(partId)) {
     return null;
   }
-  const asOfDay = Math.max(1, Math.min(state.day, Math.floor(observationDay)));
-  const comparisonDay = Math.max(1, asOfDay - Math.max(1, lookbackDays));
+  const asOfDay = Math.max(
+    FIRST_BAN_DAY,
+    Math.min(state.day, Math.floor(observationDay)),
+  );
+  const comparisonDay = Math.max(
+    FIRST_BAN_DAY,
+    asOfDay - Math.max(1, lookbackDays),
+  );
   const current = themePartSnapshot(state, themeId, part, asOfDay);
   const previous = themePartSnapshot(state, themeId, part, comparisonDay);
   const stats = runtime.partStats[partId];
@@ -490,7 +497,7 @@ export function getNextDayRestrictionMarketImpact(
 ): RestrictionMarketImpact | null {
   if (
     !Number.isInteger(observationDay) ||
-    observationDay < 2 ||
+    observationDay < FIRST_BAN_DAY + 1 ||
     observationDay > state.day
   ) {
     return null;

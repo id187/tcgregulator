@@ -3,6 +3,8 @@ import {
   LAST_BAN_DAY,
   LAST_RELEASE_DAY,
   SETTLEMENT_START_DAY,
+  TUTORIAL_END_DAY,
+  isReprintReleaseDay,
 } from "./campaign.ts";
 
 export type CampaignMilestone = {
@@ -15,17 +17,27 @@ export function getNextCampaignMilestone({
   nextBanDay,
   nextReleaseDay,
   phase,
+  handoverComplete = true,
 }: {
   day: number;
   nextBanDay: number;
   nextReleaseDay: number;
   phase: "running" | "release-edit" | "ban-edit" | "ended";
+  handoverComplete?: boolean;
 }): CampaignMilestone | null {
   if (phase === "ended" || day >= CAMPAIGN_END_DAY) return null;
+  if (!handoverComplete && day < TUTORIAL_END_DAY) {
+    return { days: 1, label: "다음 인수인계" };
+  }
 
   const next = [
     day < LAST_RELEASE_DAY && nextReleaseDay > day
-      ? { day: nextReleaseDay, label: "정기 발매" }
+      ? {
+          day: nextReleaseDay,
+          label: isReprintReleaseDay(nextReleaseDay)
+            ? "재판팩 심의"
+            : "정기 발매",
+        }
       : null,
     day < LAST_BAN_DAY && nextBanDay > day
       ? { day: nextBanDay, label: "금제위원회" }

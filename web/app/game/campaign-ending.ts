@@ -25,9 +25,9 @@ export type CampaignEndingEvaluation = {
     cash: number;
     environmentHealth: number;
     purchaseTrust: number;
-    /** Final active users divided by active users at the DAY 31 handover. */
+    /** Final active users divided by active users at the DAY 7 handover. */
     userRatio: number;
-    /** Final active users minus the DAY 31 handover baseline. */
+    /** Final active users minus the DAY 7 handover baseline. */
     userDelta: number;
   };
   bands: {
@@ -36,17 +36,32 @@ export type CampaignEndingEvaluation = {
     trust: CampaignTrustBand;
     users: CampaignUserBand;
   };
-  /** DAY 31 active users used as the audience-growth baseline. */
+  /** DAY 7 active users used as the audience-growth baseline. */
   handoverUsers: number;
   totalUsers: number;
-  /** Derived only from the four final result axes, never from action counts. */
+  stewardship: {
+    observedDays: number;
+    averageEnvironmentHealth: number;
+    averagePurchaseTrust: number;
+    healthyDayRate: number;
+    severeTierZeroDays: number;
+    longestUnhealthyStreak: number;
+    averageEffectiveThemeCount: number;
+    totalRestrictionChanges: number;
+    largestRestrictionList: number;
+    emergencyRestrictionMagnitude: number;
+    averageReleasePowerAdjustment: number;
+    reprintedCards: number;
+    historicallySustainable: boolean;
+  };
+  /** Final result axes and the full mandate record must both qualify. */
   qualifiedForBestEnding: boolean;
   title: string;
   body: string;
 };
 
 export type CampaignEndingHint = {
-  id: "cash" | "environment" | "trust" | "users";
+  id: "cash" | "environment" | "trust" | "users" | "history";
   title: string;
   body: string;
 };
@@ -195,6 +210,131 @@ function getHandoverUsers(state: GameState, fallback: number): number {
     fallback;
 }
 
+function getStewardshipRecord(state: GameState): CampaignEndingEvaluation["stewardship"] {
+  const rows = state.history.filter((entry) => entry.day >= PLAYER_START_DAY);
+  const observed = rows.length > 0 ? rows : state.history;
+  const finalEnvironment = getCampaignEnvironmentStability(state);
+  const healthValues = observed.map((entry) =>
+    typeof entry.environmentHealth === "number"
+      ? entry.environmentHealth
+      : finalEnvironment
+  );
+  const trustValues = observed.map((entry) =>
+    typeof entry.purchaseTrust === "number"
+      ? entry.purchaseTrust
+      : state.purchaseTrust
+  );
+  const averageEnvironmentHealth = round(
+    healthValues.length > 0
+      ? healthValues.reduce((sum, value) => sum + value, 0) / healthValues.length
+      : finalEnvironment,
+    1,
+  );
+  const averagePurchaseTrust = round(
+    trustValues.length > 0
+      ? trustValues.reduce((sum, value) => sum + value, 0) / trustValues.length
+      : state.purchaseTrust,
+    1,
+  );
+  const healthyDays = healthValues.filter(
+    (value) => value >= CAMPAIGN_ENVIRONMENT_STABLE_MIN,
+  ).length;
+  let longestUnhealthyStreak = 0;
+  let currentUnhealthyStreak = 0;
+  for (const value of healthValues) {
+    if (value < CAMPAIGN_ENVIRONMENT_CAUTION_MIN) {
+      currentUnhealthyStreak += 1;
+      longestUnhealthyStreak = Math.max(
+        longestUnhealthyStreak,
+        currentUnhealthyStreak,
+      );
+    } else {
+      currentUnhealthyStreak = 0;
+    }
+  }
+  const severeTierZeroDays = observed.filter((entry) =>
+    Math.max(0, ...Object.values(entry.shares)) >= 0.4
+  ).length;
+  const diversityValues = observed.map((entry) => {
+    const hhi = Object.values(entry.shares).reduce(
+      (sum, share) => sum + share ** 2,
+      0,
+    );
+    return hhi > 0 ? 1 / hhi : 0;
+  });
+  const restrictionChanges = state.community.filter(
+    (event) =>
+      (event.type === "restriction-applied" ||
+        event.type === "cosmetic-restriction") &&
+      event.previousValue !== undefined &&
+      event.value !== undefined &&
+      event.previousValue !== event.value,
+  );
+  const restrictionCountByDay = new Map<number, number>();
+  for (const event of restrictionChanges) {
+    restrictionCountByDay.set(
+      event.day,
+      (restrictionCountByDay.get(event.day) ?? 0) + 1,
+    );
+  }
+  const emergencyRestrictionMagnitude = restrictionChanges
+    .filter((event) => event.day === 0)
+    .reduce(
+      (sum, event) =>
+        sum + Math.abs((event.previousValue ?? 0) - (event.value ?? 0)),
+      0,
+    );
+  const authoredProducts = state.releaseHistory
+    .filter((batch) => batch.releaseKind !== "baseline")
+    .flatMap((batch) => batch.products);
+  const adjustableProducts = authoredProducts.filter(
+    (product) => product.kind !== "reprint",
+  );
+  const averageReleasePowerAdjustment = round(
+    adjustableProducts.length > 0
+      ? adjustableProducts.reduce(
+          (sum, product) => sum + product.powerAdjustment,
+          0,
+        ) / adjustableProducts.length
+      : 0,
+    2,
+  );
+  const observedDays = observed.length;
+  // Short fixtures and legacy handovers do not pretend to contain a full
+  // mandate. On a real campaign, chronic bad periods can disqualify an
+  // otherwise flattering final-day snapshot.
+  const historicallySustainable = observedDays < 30 || (
+    averageEnvironmentHealth >= 57 &&
+    averagePurchaseTrust >= 65 &&
+    severeTierZeroDays <= Math.max(12, Math.floor(observedDays * 0.1)) &&
+    longestUnhealthyStreak <= 30
+  );
+  return {
+    observedDays,
+    averageEnvironmentHealth,
+    averagePurchaseTrust,
+    healthyDayRate: round(
+      observedDays > 0 ? healthyDays / observedDays : 0,
+      4,
+    ),
+    severeTierZeroDays,
+    longestUnhealthyStreak,
+    averageEffectiveThemeCount: round(
+      diversityValues.length > 0
+        ? diversityValues.reduce((sum, value) => sum + value, 0) /
+          diversityValues.length
+        : 0,
+      2,
+    ),
+    totalRestrictionChanges: restrictionChanges.length,
+    largestRestrictionList: Math.max(0, ...restrictionCountByDay.values()),
+    emergencyRestrictionMagnitude,
+    averageReleasePowerAdjustment,
+    reprintedCards: authoredProducts.filter((product) => product.kind === "reprint").length,
+    historicallySustainable,
+  };
+}
+
 function getResultCopy(
   cash: CampaignCashBand,
   environment: CampaignEnvironmentBand,
@@ -231,12 +371,18 @@ export function evaluateCampaignEnding(
   const environmentBand = getCampaignEnvironmentBand(environmentHealth);
   const trustBand = getCampaignTrustBand(purchaseTrust);
   const userBand = getCampaignUserBand(userRatio);
-  const qualifiedForBestEnding =
+  const stewardship = getStewardshipRecord(state);
+  const finalAxesQualified =
     cashBand === "reserve" &&
     environmentBand === "stable" &&
     trustBand === "trusted" &&
     userBand !== "contracted";
+  const qualifiedForBestEnding =
+    finalAxesQualified && stewardship.historicallySustainable;
   const copy = getResultCopy(cashBand, environmentBand, trustBand, userBand);
+  const historyCopy = stewardship.historicallySustainable
+    ? `임기 평균 환경 ${stewardship.averageEnvironmentHealth}, 평균 구매 신뢰 ${stewardship.averagePurchaseTrust}로 누적 운영도 지속 가능 판정을 받았다.`
+    : `다만 임기 평균 환경 ${stewardship.averageEnvironmentHealth}, 심각한 Tier 0 ${stewardship.severeTierZeroDays}일, 최장 위험 연속 ${stewardship.longestUnhealthyStreak}일이 남아 마지막 날의 회복만으로 누적 기록을 지우지는 못했다.`;
 
   return {
     scores: {
@@ -254,9 +400,12 @@ export function evaluateCampaignEnding(
     },
     handoverUsers,
     totalUsers,
+    stewardship,
     qualifiedForBestEnding,
-    title: copy.title,
-    body: copy.body,
+    title: finalAxesQualified && !stewardship.historicallySustainable
+      ? "마지막 날만의 안정"
+      : copy.title,
+    body: `${copy.body} ${historyCopy}`,
   };
 }
 
@@ -299,6 +448,13 @@ export function getCampaignEndingHints(
       id: "users",
       title: "남은 유저 기반",
       body: `활성 유저가 DAY ${PLAYER_START_DAY} 인수 시점보다 줄어 리그의 실질적인 저변이 좁아졌습니다.`,
+    });
+  }
+  if (!ending.stewardship.historicallySustainable) {
+    hints.push({
+      id: "history",
+      title: "누적 운영 기록",
+      body: `마지막 수치와 별개로 평균 환경 ${ending.stewardship.averageEnvironmentHealth}, 심각한 Tier 0 ${ending.stewardship.severeTierZeroDays}일, 최장 위험 연속 ${ending.stewardship.longestUnhealthyStreak}일이 임기 기록에 남았습니다.`,
     });
   }
   return hints;

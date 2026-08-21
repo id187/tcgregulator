@@ -11,10 +11,10 @@ import { BrandMark } from "./BrandMark";
 export type TitleScreenMotionPreference = "system" | "reduced";
 
 export type TitleScreenSettings = {
+  bgmVolume: number;
   soundEnabled: boolean;
   impactEffectsEnabled: boolean;
   motionPreference: TitleScreenMotionPreference;
-  tutorialGuidanceEnabled: boolean;
 };
 
 export type TitleScreenSettingsUpdate = <
@@ -40,6 +40,7 @@ export type TitleScreenProps = {
   onSettingsOpen?: () => void;
   onSettingsClose?: () => void;
   onSoundTest?: () => void;
+  onTutorialReset: () => void;
   children?: ReactNode;
 };
 
@@ -55,10 +56,12 @@ export function TitleScreen({
   onSettingsClose,
   onSettingsOpen,
   onSoundTest,
+  onTutorialReset,
   savedGame,
   settings,
 }: TitleScreenProps) {
   const [mode, setMode] = useState<TitleScreenMode>("main");
+  const [tutorialResetConfirmed, setTutorialResetConfirmed] = useState(false);
   const titleId = useId();
   const savedGameSummaryId = useId();
   const mainHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -230,20 +233,22 @@ export function TitleScreen({
               </strong>
             </button>
             <button
-              aria-pressed={settings.tutorialGuidanceEnabled}
               className="settings-screen__option settings-screen__option--tutorial"
-              onClick={() =>
-                onSettingsChange(
-                  "tutorialGuidanceEnabled",
-                  !settings.tutorialGuidanceEnabled,
-                )
-              }
-              title="각 화면을 처음 열 때 설명 팝업을 표시합니다."
+              onClick={() => {
+                onTutorialReset();
+                setTutorialResetConfirmed(true);
+              }}
+              title="안내 기록을 초기화합니다. 전체 인수인계 안내는 새 임기를 시작하면 DAY 0부터 다시 표시됩니다."
               type="button"
             >
-              <span className="settings-screen__option-label">첫 방문 도움말</span>
-              <strong className="settings-screen__option-value">
-                {settings.tutorialGuidanceEnabled ? "ON" : "OFF"}
+              <span className="settings-screen__option-label">
+                안내 처음부터 다시 보기
+              </span>
+              <strong
+                aria-live="polite"
+                className="settings-screen__option-value"
+              >
+                {tutorialResetConfirmed ? "초기화됨" : "RESET"}
               </strong>
             </button>
             {onSoundTest ? (

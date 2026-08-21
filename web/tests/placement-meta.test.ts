@@ -98,7 +98,7 @@ test("uses saved placement counts and reconstructs legacy history deterministica
   assert.equal(saved.topCutPlacements?.[cycle], reconstructed[cycle]);
 });
 
-test("aggregates an inclusive recent-14-day report with observed conversion", () => {
+test("aggregates an inclusive recent-7-day report with observed conversion", () => {
   const history = Array.from({ length: 31 }, (_, index) => {
     const day = index + 1;
     return {
@@ -119,7 +119,7 @@ test("aggregates an inclusive recent-14-day report with observed conversion", ()
   });
   const report = getRecentPlacementReport(history, 202, 31);
 
-  assert.equal(report.startDay, 18);
+  assert.equal(report.startDay, 25);
   assert.equal(report.recordedDays, PLACEMENT_WINDOW_DAYS);
   assert.equal(report.totalPlacements, PLACEMENT_WINDOW_DAYS * DAILY_TOP_CUT_SLOTS);
   assert.equal(report.themes[cycle].placementShare, 0.75);
@@ -175,7 +175,7 @@ test("rolling placement leader ties resolve by stable theme id", () => {
 test("reports each theme's actual observed days without filling the window", () => {
   const history = Array.from({ length: PLACEMENT_WINDOW_DAYS }, (_, index) => {
     const day = index + 1;
-    const released = day >= 9;
+    const released = day >= 5;
     return {
       day,
       shares: released
@@ -197,12 +197,12 @@ test("reports each theme's actual observed days without filling the window", () 
   );
 
   assert.equal(report.themes[cycle].observedDays, PLACEMENT_WINDOW_DAYS);
-  assert.equal(report.themes[whiteNight].observedDays, 6);
-  assert.equal(report.themes[whiteNight].placements, 18);
-  assert.equal(report.themes[whiteNight].estimatedEntrants, 6 * 400 * 0.1);
-  assert.equal(report.themes[whiteNight].observedConversion, 18 / 240);
-  assert.equal(hasCompletePlacementSample(13), false);
-  assert.equal(hasCompletePlacementSample(14), true);
+  assert.equal(report.themes[whiteNight].observedDays, 3);
+  assert.equal(report.themes[whiteNight].placements, 9);
+  assert.equal(report.themes[whiteNight].estimatedEntrants, 3 * 400 * 0.1);
+  assert.equal(report.themes[whiteNight].observedConversion, 9 / 120);
+  assert.equal(hasCompletePlacementSample(6), false);
+  assert.equal(hasCompletePlacementSample(7), true);
 });
 
 test("applies absolute placement tiers and a seven-day provisional floor", () => {

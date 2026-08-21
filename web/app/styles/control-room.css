@@ -96,6 +96,35 @@ body,
   background: linear-gradient(180deg, rgb(101 201 208 / 0.1), transparent);
 }
 
+.nav-item.is-locked,
+.nav-item.is-locked:hover {
+  color: #72869a;
+  background: transparent;
+  cursor: not-allowed;
+}
+
+.nav-item.is-locked:focus-visible {
+  color: #b7c6d3;
+}
+
+.nav-lock-indicator {
+  width: 19px;
+  height: 19px;
+  display: inline-grid;
+  grid-column: 3;
+  justify-self: center;
+  place-items: center;
+  color: #9fb0c0;
+  background: #1b3043;
+  border: 1px solid #395168;
+  border-radius: 50%;
+}
+
+.nav-lock-indicator svg {
+  width: 12px;
+  height: 12px;
+}
+
 .nav-item.active::after {
   background: var(--chrome-gold);
   box-shadow: 0 0 16px rgb(216 189 114 / 0.55);

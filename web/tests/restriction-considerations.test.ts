@@ -6,6 +6,7 @@ import { getAutomaticReleaseSelections } from "../app/game/automatic-release.ts"
 import {
   BAN_INTERVAL,
   FIRST_BAN_DAY,
+  FIRST_RELEASE_DAY,
   RELEASE_INTERVAL,
 } from "../app/game/campaign.ts";
 import {
@@ -49,6 +50,7 @@ function firstMeaningfulPart(state: GameState, themeId: ThemeId): PartContent {
   const part = THEME_BY_ID[themeId].parts.find(
     (candidate) =>
       runtime.releasedPartIds.includes(candidate.id) &&
+      runtime.legalLimits[candidate.id] === 3 &&
       candidate.preferredCopies >= 2,
   );
   assert.ok(part);
@@ -62,6 +64,7 @@ function overbroadChanges(state: GameState): Record<string, RestrictionLimit> {
     for (const part of THEME_BY_ID[themeId].parts) {
       if (
         runtime.releasedPartIds.includes(part.id) &&
+        runtime.legalLimits[part.id] === 3 &&
         part.preferredCopies >= 2
       ) {
         changes[part.id] = meaningfulLimit(part);
@@ -123,8 +126,10 @@ function createInitialGameWithNextReview(seed: number): GameState {
   assert.equal(state.day, reviewDay);
   assert.equal(state.phase, "ban-edit");
   assert.ok(
-    state.releaseHistory.some((batch) => batch.day === RELEASE_INTERVAL * 2),
-    "the later review fixture should include the DAY60 release",
+    state.releaseHistory.some(
+      (batch) => batch.day === FIRST_RELEASE_DAY + RELEASE_INTERVAL,
+    ),
+    "the later review fixture should include the DAY 30 release",
   );
   return state;
 }
@@ -132,7 +137,8 @@ function createInitialGameWithNextReview(seed: number): GameState {
 test("classifies a balanced draft deterministically without mutating state", () => {
   const state = createFirstBanGame(1000);
   state.releaseHistory.push({
-    day: 2,
+    day: FIRST_BAN_DAY,
+    releaseKind: "regular",
     products: state.activeThemeIds.map((themeId, index) => ({
       optionId: `recent-product-fixture-${index}`,
       kind: "support" as const,
@@ -235,7 +241,7 @@ test("distinguishes low-use, shared, recent-product, and cosmetic cuts", () => {
   assert.equal(shared.flags.lowUsageCut, true);
 
   const recentThemeId = state.releaseHistory
-    .find((batch) => batch.day === RELEASE_INTERVAL * 2)!
+    .find((batch) => batch.day === FIRST_RELEASE_DAY + RELEASE_INTERVAL)!
     .products.find((product) => product.kind === "new-theme")!.themeId;
   const recentPart = firstMeaningfulPart(state, recentThemeId);
   const recent = getRestrictionDecisionSignals(state, {
@@ -262,7 +268,7 @@ test("distinguishes low-use, shared, recent-product, and cosmetic cuts", () => {
 
 test("separates stale release from stale neglect on a later review", () => {
   const state = createFirstBanGame(1002);
-  state.day = FIRST_BAN_DAY + BAN_INTERVAL * 2;
+  state.day = FIRST_BAN_DAY + BAN_INTERVAL * 3;
   state.phase = "ban-edit";
   const themeId = "cycle";
   const part = THEME_BY_ID[themeId].parts[0];

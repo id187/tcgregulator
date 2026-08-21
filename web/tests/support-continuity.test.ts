@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { getAutomaticReleaseSelections } from "../app/game/automatic-release.ts";
 import { BUSINESS_EVENT_BY_TYPE } from "../app/game/business-events.ts";
 import {
   createFirstBanGame,
@@ -17,6 +18,9 @@ import {
 import type { GameState } from "../app/game/types.ts";
 
 function getPlannedReleaseSelections(state: GameState) {
+  if (state.releaseSlate?.releaseKind === "reprint") {
+    return getAutomaticReleaseSelections(state);
+  }
   const options = state.releaseSlate?.options;
   assert.ok(options, "release-edit must expose a release slate");
   const selected = [

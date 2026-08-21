@@ -3,6 +3,8 @@ import type { GameState } from "./types";
 
 const STORAGE_KEY = "tcg-regulator-save-v2";
 const LEGACY_STORAGE_KEY = "tcg-regulator-save-v1";
+const INCOMPATIBLE_SAVE_WARNING =
+  "호환되지 않는 개발 저장 데이터를 삭제했습니다. 새 임기를 시작해 주세요.";
 
 export type PersistenceBackend =
   | { kind: "local" }
@@ -45,7 +47,7 @@ function withWarning(
   };
 }
 
-/** Exposed for deterministic storage fallback tests. */
+/** Exposed for deterministic storage loading tests. */
 export function loadPersistedGameFromStorage(
   storage: PersistenceReader,
 ): PersistenceLoadResult {
@@ -60,55 +62,46 @@ export function loadPersistedGameFromStorage(
     );
   }
 
-  let currentWarning: string | undefined;
-  if (current) {
+  if (current !== null) {
     if (byteLength(current) <= MAX_SAVE_BYTES) {
       try {
-        return withWarning(parseGameState(JSON.parse(current) as unknown));
+        const game = parseGameState(JSON.parse(current) as unknown);
+        if (legacy !== null) {
+          try {
+            storage.removeItem(LEGACY_STORAGE_KEY);
+          } catch {
+            return unavailable(
+              "이전 개발 저장 데이터를 정리할 수 없습니다. 저장소 권한을 확인해 주세요.",
+            );
+          }
+        }
+        return withWarning(game);
       } catch {
-        currentWarning = "손상된 새 저장 데이터를 제거했습니다.";
+        // Development saves from older schemas are intentionally incompatible.
       }
-    } else {
-      currentWarning = "너무 큰 새 저장 데이터를 제거했습니다.";
     }
 
     try {
       storage.removeItem(STORAGE_KEY);
+      if (legacy !== null) storage.removeItem(LEGACY_STORAGE_KEY);
     } catch {
       return unavailable(
-        "손상된 저장 데이터를 읽거나 정리할 수 없습니다. 저장소 권한을 확인해 주세요.",
+        "호환되지 않는 개발 저장 데이터를 정리할 수 없습니다. 저장소 권한을 확인해 주세요.",
       );
     }
+    return withWarning(null, INCOMPATIBLE_SAVE_WARNING);
   }
 
-  if (!legacy) return withWarning(null, currentWarning);
-  if (byteLength(legacy) > MAX_SAVE_BYTES) {
-    return withWarning(
-      null,
-      [
-        currentWarning,
-        "이전 1000일 임기 저장은 보존했습니다. 새 500일 임기를 시작해주세요.",
-      ].filter(Boolean).join(" "),
-    );
-  }
+  if (legacy === null) return withWarning(null);
 
   try {
-    const game = parseGameState(JSON.parse(legacy) as unknown);
-    return withWarning(
-      game,
-      currentWarning
-        ? `${currentWarning} 보존된 이전 저장을 새 500일 임기 일정으로 불러왔습니다.`
-        : "기존 저장을 새 500일 임기 일정으로 이어갑니다.",
-    );
+    storage.removeItem(LEGACY_STORAGE_KEY);
   } catch {
-    return withWarning(
-      null,
-      [
-        currentWarning,
-        "이전 1000일 임기 저장은 보존했습니다. 일정 개편에 맞춰 새 임기를 시작해주세요.",
-      ].filter(Boolean).join(" "),
+    return unavailable(
+      "이전 개발 저장 데이터를 정리할 수 없습니다. 저장소 권한을 확인해 주세요.",
     );
   }
+  return withWarning(null, INCOMPATIBLE_SAVE_WARNING);
 }
 
 /** Loads the campaign from the fixed-origin WebView/browser localStorage. */

@@ -7,10 +7,16 @@ import {
 } from "../app/game/release-pack-name.ts";
 
 test("scheduled releases receive stable generic volume names", () => {
-  assert.equal(getReleasePackVolume(30), 1);
-  assert.equal(getReleasePackName(30), "REGULATOR PACK Vol. 1");
-  assert.equal(getReleasePackName(60), "REGULATOR PACK Vol. 2");
-  assert.equal(getReleasePackName(450), "REGULATOR PACK Vol. 15");
+  assert.equal(getReleasePackVolume(10), 1);
+  assert.equal(getReleasePackName(10), "REGULATOR PACK Vol. 1");
+  assert.equal(getReleasePackName(30), "REGULATOR PACK Vol. 2");
+  assert.equal(getReleasePackName(70), "REGULATOR PACK Vol. 3");
+  assert.equal(getReleasePackName(450), "REGULATOR PACK Vol. 16");
+});
+
+test("dedicated reprint slots use their own series", () => {
+  assert.equal(getReleasePackName(50), "REGULATOR REPRINT Vol. 1");
+  assert.equal(getReleasePackName(110), "REGULATOR REPRINT Vol. 2");
 });
 
 test("invalid or pre-release days fall back to the first volume", () => {

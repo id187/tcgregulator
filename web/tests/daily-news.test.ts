@@ -6,15 +6,70 @@ import {
   getDailyNewsRange,
   getImpactNewsRange,
 } from "../app/game/daily-news.ts";
-import { FIRST_BAN_DAY, PLAYER_START_DAY } from "../app/game/campaign.ts";
+import { getAutomaticReleaseSelections } from "../app/game/automatic-release.ts";
+import {
+  FIRST_BAN_DAY,
+  FIRST_RELEASE_DAY,
+  PLAYER_START_DAY,
+  RELEASE_REPORT_DELAY_DAYS,
+} from "../app/game/campaign.ts";
 import { THEME_BY_ID } from "../app/game/content.ts";
-import { createInitialGame } from "../app/game/engine.ts";
+import { createInitialGame, reduceGame } from "../app/game/engine.ts";
+import { PLACEMENT_WINDOW_DAYS } from "../app/game/placement-meta.ts";
+import { getReleaseSlateKind } from "../app/game/release-kind.ts";
 import { parseGameState } from "../app/game/save-schema.ts";
 import type { DailyHistory, GameState, ThemeId } from "../app/game/types.ts";
 
 const NEWS_DAY = PLAYER_START_DAY;
 const PREVIOUS_NEWS_DAY = NEWS_DAY - 1;
-const ROLLING_WINDOW_START_DAY = NEWS_DAY - 14;
+const ROLLING_WINDOW_START_DAY = NEWS_DAY - PLACEMENT_WINDOW_DAYS;
+
+function openReleaseReview(seed: number, targetDay: number): GameState {
+  let state = createInitialGame(seed);
+  for (let guard = 0; guard < 100; guard += 1) {
+    if (state.day === targetDay && state.phase === "release-edit") return state;
+    if (state.operations.pendingEvent) {
+      state = reduceGame(state, {
+        type: "CHOOSE_BUSINESS_EVENT",
+        eventId: state.operations.pendingEvent.id,
+        choice: "a",
+      });
+      continue;
+    }
+    if (state.phase === "release-edit") {
+      state = reduceGame(state, {
+        type: "SUBMIT_RELEASE",
+        selections: getAutomaticReleaseSelections(state),
+      });
+      continue;
+    }
+    if (state.phase === "ban-edit") {
+      state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
+      continue;
+    }
+    state = reduceGame(state, {
+      type: "ADVANCE_DAYS",
+      days: targetDay - state.day,
+    });
+  }
+  throw new Error(`stalled while progressing to DAY ${targetDay}`);
+}
+
+function publishFirstRegularPack(
+  seed: number,
+  powerAdjustment: -3 | 0 | 3,
+): GameState {
+  const review = openReleaseReview(seed, FIRST_RELEASE_DAY);
+  assert.ok(review.releaseSlate);
+  assert.equal(getReleaseSlateKind(review.releaseSlate), "regular");
+  return reduceGame(review, {
+    type: "SUBMIT_RELEASE",
+    selections: getAutomaticReleaseSelections(review).map((selection) => ({
+      ...selection,
+      powerAdjustment,
+    })),
+  });
+}
 
 function stableFixtureThemeIds(state: GameState): [ThemeId, ThemeId] {
   const firstWindowRow = state.history.find(
@@ -117,12 +172,14 @@ test("range collection preserves every intermediate day in stable order", () => 
 });
 
 test("a weak release explains the trust response in plain player language", () => {
-  const state = createInitialGame(0x5eed1234);
-  const release = state.releaseHistory.find((batch) => batch.day === 30);
+  let state = publishFirstRegularPack(0x5eed1234, -3);
+  const release = state.releaseHistory.find(
+    (batch) => batch.day === FIRST_RELEASE_DAY,
+  );
   assert.ok(release);
-  for (const product of release.products) product.powerAdjustment = -3;
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
 
-  const metric = getDailyNews(state, 31).find(
+  const metric = getDailyNews(state, FIRST_RELEASE_DAY + 1).find(
     (item) => item.kind === "trust",
   );
   assert.ok(metric);
@@ -133,9 +190,14 @@ test("a weak release explains the trust response in plain player language", () =
   assert.doesNotMatch(metric.reason, /DAY|D\+|정기 발매/);
 });
 
-test("release D+1 presents several distinct consequences instead of one alert", () => {
-  const state = createInitialGame(0x5eed1234);
-  const impact = getImpactNewsRange(state, 30, 31);
+test("DAY 10 release D+1 presents several consequences before the D+9 report", () => {
+  const published = publishFirstRegularPack(0x5eed1234, -3);
+  const state = reduceGame(published, { type: "ADVANCE_DAYS", days: 1 });
+  const impact = getImpactNewsRange(
+    state,
+    FIRST_RELEASE_DAY,
+    FIRST_RELEASE_DAY + 1,
+  );
   const metricKinds = new Set(impact.map((item) => item.kind));
 
   for (const kind of ["revenue", "environment", "trust", "sentiment"] as const) {
@@ -144,7 +206,7 @@ test("release D+1 presents several distinct consequences instead of one alert", 
   assert.ok(impact.length >= 4);
   assert.ok(
     impact
-      .filter((item) => item.chainId === "release-30")
+      .filter((item) => item.chainId === `release-${FIRST_RELEASE_DAY}`)
       .every((item) => !/DAY|D\+|관측/.test(item.reason)),
   );
   const environment = impact.find((item) => item.kind === "environment");
@@ -157,6 +219,15 @@ test("release D+1 presents several distinct consequences instead of one alert", 
     impact.some((item) => item.kind === "community"),
     false,
     "the side burst should not repeat the same strongest post twice",
+  );
+
+  const reportBoundary = reduceGame(state, {
+    type: "ADVANCE_DAYS",
+    days: 100,
+  });
+  assert.equal(
+    reportBoundary.day,
+    FIRST_RELEASE_DAY + RELEASE_REPORT_DELAY_DAYS,
   );
 });
 
@@ -239,6 +310,26 @@ test("meta-leader news is stable across save and news-range chunks", () => {
 test("keeps restriction, next-day top-cut shock, and price shock as rapid separate notices", () => {
   const state = createInitialGame(0x5eed1234);
   const impactDay = FIRST_BAN_DAY + 1;
+  const restrictionTarget = state.community.find(
+    (event) =>
+      event.day === FIRST_BAN_DAY &&
+      event.type === "restriction-applied" &&
+      event.partId,
+  );
+  assert.ok(restrictionTarget);
+  const runnerId = state.activeThemeIds.find(
+    (themeId) => themeId !== restrictionTarget.themeId,
+  );
+  const decisionHistory = state.history.find(
+    (entry) => entry.day === FIRST_BAN_DAY,
+  );
+  const impactHistory = state.history.find((entry) => entry.day === impactDay);
+  assert.ok(runnerId);
+  assert.ok(decisionHistory);
+  assert.ok(impactHistory);
+  setPlacements(decisionHistory, restrictionTarget.themeId, 32, runnerId);
+  setPlacements(impactHistory, restrictionTarget.themeId, 0, runnerId);
+
   const impact = getImpactNewsRange(
     state,
     FIRST_BAN_DAY - 1,
@@ -260,4 +351,47 @@ test("keeps restriction, next-day top-cut shock, and price shock as rapid separa
   assert.equal(topCut.chainId, restriction.chainId);
   assert.equal(price.chainId, restriction.chainId);
   assert.ok(impact.indexOf(topCut) < impact.indexOf(price));
+});
+
+test("DAY 50 publishes a dedicated three-card reprint news chain", () => {
+  const review = openReleaseReview(0x55667788, 50);
+  assert.deepEqual(
+    review.releaseHistory
+      .filter((batch) => batch.releaseKind !== "baseline")
+      .map((batch) => batch.day),
+    [10, 30],
+  );
+  assert.ok(review.releaseSlate);
+  assert.equal(getReleaseSlateKind(review.releaseSlate), "reprint");
+
+  const published = reduceGame(review, {
+    type: "SUBMIT_RELEASE",
+    selections: getAutomaticReleaseSelections(review),
+  });
+  const release = published.releaseHistory.at(-1);
+  assert.equal(release?.day, 50);
+  assert.equal(release?.releaseKind, "reprint");
+  assert.equal(release?.products.length, 3);
+
+  const releaseNews = getDailyNews(published, 50).find(
+    (item) => item.kind === "release",
+  );
+  assert.ok(releaseNews);
+  assert.equal(releaseNews.headline, "재판 카드팩 3종이 발매됐습니다");
+  assert.doesNotMatch(releaseNews.detail, /신규 테마/);
+
+  const followingDay = reduceGame(published, {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
+  const aftershock = getDailyNews(followingDay, 51).filter(
+    (item) => item.chainId === "release-50",
+  );
+  assert.ok(aftershock.length > 0);
+  assert.ok(
+    aftershock.some((item) => /재판|카드 접근성|구하기/.test(item.reason)),
+  );
+  assert.ok(
+    aftershock.every((item) => !/신규 팩|새 카드|신상품/.test(item.reason)),
+  );
 });

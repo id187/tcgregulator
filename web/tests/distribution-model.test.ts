@@ -88,9 +88,13 @@ test("a recent release creates a temporary reseller bump", () => {
   const oldRelease = createInitialGame(0x12345678);
   oldRelease.day = 60;
   oldRelease.users = { tier: 3_500, casual: 4_500, collector: 10_000 };
-  oldRelease.releaseHistory = [{ day: 30, products: [] }];
+  oldRelease.releaseHistory = [
+    { day: 30, releaseKind: "regular", products: [] },
+  ];
   const recentRelease = structuredClone(oldRelease);
-  recentRelease.releaseHistory = [{ day: 60, products: [] }];
+  recentRelease.releaseHistory = [
+    { day: 60, releaseKind: "regular", products: [] },
+  ];
   const report = getRecentPlacementReport(
     oldRelease.history,
     oldRelease.seed,

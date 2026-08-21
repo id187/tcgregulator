@@ -80,7 +80,10 @@ function derivePendingDecisionAftermath(
   const releaseBatch = game.releaseHistory
     .slice()
     .reverse()
-    .find((batch) => batch.day === game.day && !batch.baseline);
+    .find(
+      (batch) =>
+        batch.day === game.day && batch.releaseKind !== "baseline",
+    );
   if (releaseBatch) {
     return {
       kind: "release",

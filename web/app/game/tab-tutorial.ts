@@ -1,4 +1,11 @@
-import { FIRST_BAN_DAY, RELEASE_INTERVAL } from "./campaign.ts";
+import {
+  FIRST_BAN_DAY,
+  FIRST_RELEASE_DAY,
+  getNextReprintReleaseDay,
+  isRegularReleaseDay,
+  isReprintReleaseDay,
+} from "./campaign.ts";
+import { getHandoverTabAvailability } from "./handover.ts";
 
 export const TAB_TUTORIAL_TAB_IDS = [
   "distribution",
@@ -20,6 +27,8 @@ export type TabTutorialContentTerm = Readonly<{
 export type TabTutorialContentPage = Readonly<{
   id: string;
   sectionLabel?: string;
+  /** Optional background tab shown while this page remains open. */
+  targetTab?: TabTutorialTabId;
   title: string;
   body: string;
   terms?: readonly TabTutorialContentTerm[];
@@ -36,13 +45,19 @@ export type TabTutorialVisitState = Readonly<
 >;
 
 export type TabTutorialContext = Readonly<{
-  guidanceEnabled: boolean;
+  /** Omitted by standalone help callers that are not inside a campaign. */
+  day?: number;
+  handoverComplete?: boolean;
 }>;
 
 export const CONTEXTUAL_TUTORIAL_TOPIC_IDS = [
   "first-restriction",
   "first-release",
+  "first-reprint",
 ] as const;
+
+export const FIRST_REPRINT_TUTORIAL_DAY =
+  getNextReprintReleaseDay(FIRST_BAN_DAY);
 
 export type ContextualTutorialTopicId =
   (typeof CONTEXTUAL_TUTORIAL_TOPIC_IDS)[number];
@@ -202,7 +217,7 @@ const DISTRIBUTION_TUTORIAL = {
         {
           label: "입상 점유율",
           description:
-            "최근 14일 주요 대회의 입상 자리 가운데 각 테마가 차지한 비율입니다.",
+            "최근 7일 주요 대회의 입상 자리 가운데 각 테마가 차지한 비율입니다.",
         },
         {
           label: "유저 비율",
@@ -226,7 +241,7 @@ const DISTRIBUTION_TUTORIAL = {
         {
           label: "상위 3개 집중",
           description:
-            "최근 14일 입상의 몇 퍼센트를 상위 세 테마가 차지했는지 보여줍니다.",
+            "최근 7일 입상의 몇 퍼센트를 상위 세 테마가 차지했는지 보여줍니다.",
         },
         {
           label: "하단 요약",
@@ -278,7 +293,7 @@ const CARDS_TUTORIAL = {
         {
           label: "입상 점유율 / 승률",
           description:
-            "입상 점유율은 최근 14일 입상 비중, 승률은 이 테마가 치른 경기에서 이긴 비율입니다.",
+            "입상 점유율은 최근 7일 입상 비중, 승률은 이 테마가 치른 경기에서 이긴 비율입니다.",
         },
         {
           label: "지원",
@@ -290,13 +305,13 @@ const CARDS_TUTORIAL = {
             "간접은 같은 키워드의 범용 카드, 저격은 선택 테마와 상성인 범용 카드가 다음 발매 후보에 나오도록 요청합니다.",
         },
         {
-          label: "재판",
+          label: "재판팩",
           description:
-            "이미 출시된 카드의 재록을 예약합니다. 다음 팩 한 자리를 차지하고 가격을 낮추며 매출을 올릴 수 있지만 구매 신뢰가 하락할 수 있습니다.",
+            "재판은 정규팩 자리를 차지하지 않습니다. 세 번째 상품 심의마다 별도 재판팩에서 고가·품귀 카드 3종을 선택합니다.",
         },
         {
           label: "ⓘ",
-          description: "지원·간접·저격·재판의 짧은 설명을 열거나 닫습니다.",
+          description: "지원·간접·저격 요청의 짧은 설명을 열거나 닫습니다.",
         },
       ],
     },
@@ -336,13 +351,17 @@ const RELEASES_TUTORIAL = {
   pages: [
     {
       id: "releases-archive",
-      title: "확정된 발매 기록을 모아봅니다",
+      title: "정규팩과 재판팩 기록을 나누어 봅니다",
       body:
-        "발매 기록 수는 현재까지 확정된 정기 카드팩의 횟수입니다. 아직 정기 발매가 없다면 빈 기록으로 표시됩니다.",
+        "발매 기록은 직접 구성한 정규팩과 별도로 선택한 재판팩을 함께 모읍니다. 아직 확정된 상품이 없다면 빈 기록으로 표시됩니다.",
       terms: [
         {
-          label: "발매 기록",
-          description: "현재까지 확정된 정기 카드팩의 횟수입니다.",
+          label: "정규팩",
+          description: "신테마·기존 테마 지원·범용을 조합한 4종 상품입니다.",
+        },
+        {
+          label: "재판팩",
+          description: "세 번째 상품 심의마다 고가·품귀 카드 3종을 다시 공급하는 별도 상품입니다.",
         },
       ],
     },
@@ -355,7 +374,7 @@ const RELEASES_TUTORIAL = {
         {
           label: "카드팩",
           description:
-            "대표 상징은 수록된 신테마 가운데 하나이며, 신테마·지원·범용·재판 표기가 실제 카드 종류입니다.",
+            "정규팩은 신테마·지원·범용 구성을, 재판팩은 선택한 기존 카드 3종과 시장 영향을 표시합니다.",
         },
       ],
     },
@@ -394,8 +413,13 @@ const OPERATIONS_TUTORIAL = {
       id: "operations-actions",
       title: "액션 카드는 비용과 판정 방식을 모두 보여줍니다",
       body:
-        "각 카드에서 비용, 효과 또는 구축 기간, 쿨다운, 예상 현금 효과와 현재 실행 가능 여부를 읽고 아래 집행 버튼으로 실행합니다.",
+        "DAY 4에는 TV CM·매장 체험회·스타터 캠프·지역 리그부터 열립니다. 각 카드에서 비용, 효과 기간, 성공 확률과 현재 실행 가능 여부를 읽고 아래 집행 버튼으로 실행합니다.",
       terms: [
+        {
+          label: "인수인계 기본 대응",
+          description:
+            "첫 주에는 네 가지 일반 액션만 실제 집행할 수 있습니다. 봉입률 조정·챌린지·대형 프로젝트는 인수인계가 끝난 뒤 검토합니다.",
+        },
         {
           label: "일반 · 상태 기반 확률",
           description:
@@ -580,56 +604,78 @@ const FINANCE_TUTORIAL = {
 
 const FIRST_RESTRICTION_TUTORIAL = {
   topic: "first-restriction",
-  tab: "cards",
-  label: "첫 금제위원회",
+  tab: "distribution",
+  label: "긴급 금제",
   pages: [
     {
-      id: "first-restriction-principles",
-      title: "금제는 문제를 줄이는 대신 다른 충격을 만듭니다",
+      id: "first-restriction-emergency",
+      sectionLabel: "긴급 인수인계",
+      targetTab: "distribution",
+      title: "오늘, 당신이 금제 책임자로 긴급 투입됐습니다",
       body:
-        "강한 카드와 높은 채용률은 상품 수요를 만들지만 입상 집중과 환경 피로를 키울 수 있습니다. 금제로 지배력을 낮출 수 있지만 카드 시세·구매 신뢰·다른 카드의 채용에도 후폭풍이 생깁니다.",
+        "전임 책임자의 공백으로 오늘 안에 첫 금제안을 확정해야 합니다. 지금 믿을 수 있는 근거는 현재 입상 분포와 공개된 카드 데이터뿐입니다. 분포에서 이상 징후를 찾고, 카드에서 원인을 확인한 뒤 허용 매수를 정하십시오.",
       terms: [
         {
-          label: "판단 기준",
+          label: "오늘의 임무",
           description:
-            "최근 입상표와 분포, 카드별 채용·시세, 커뮤니티 반응을 함께 보고 무엇을 얼마나 줄일지 정합니다.",
+            "문제 테마 확인 → 원인 카드 검토 → 0·1·2·3장 결정 → 금제안 제출 순서로 판결합니다.",
         },
         {
-          label: "반응 시점",
+          label: "판단 원칙",
           description:
-            "제출한 금제는 확정되고, 입상·채용·시세·여론의 실제 반응은 다음 날부터 관찰합니다.",
+            "입상 비율이 높다는 사실은 조사 신호일 뿐입니다. 점유율만 보고 테마 전체를 처벌하지 마십시오.",
         },
       ],
     },
     {
-      id: "first-restriction-limits",
-      title: "숫자는 덱에 허용되는 최대 매수입니다",
+      id: "first-restriction-distribution",
+      sectionLabel: "분포",
+      targetTab: "distribution",
+      title: "분포에서 조사할 테마를 고르십시오",
       body:
-        "카드 행의 0·1·2·3 가운데 하나를 고릅니다. 제재 상태인 카드는 현재 전체 카드풀의 절반을 넘길 수 없습니다.",
+        "입상 점유율은 최근 7일 대회 입상 자리 가운데 각 테마가 차지한 몫입니다. 상위권이 한 테마에 과도하게 몰렸는지, 여러 테마가 고르게 경쟁하는지 비교해 먼저 살펴볼 테마를 정하십시오.",
       terms: [
         {
-          label: "0 · 금지",
-          description: "덱에 넣을 수 없습니다.",
+          label: "입상 점유율",
+          description:
+            "어느 테마가 결과를 지배하는지 보여주지만, 어떤 카드가 원인인지는 알려주지 않습니다.",
         },
         {
-          label: "1 · 제한",
-          description: "덱에 최대 1장 넣을 수 있습니다.",
-        },
-        {
-          label: "2 · 준제한",
-          description: "덱에 최대 2장 넣을 수 있습니다.",
-        },
-        {
-          label: "3 · 무제한",
-          description: "덱에 최대 3장 넣을 수 있습니다.",
+          label: "테마 선택",
+          description:
+            "그래프 조각이나 테마 목록을 선택하면 카드 탭의 해당 테마로 이동합니다.",
         },
       ],
     },
     {
-      id: "first-restriction-submit",
-      title: "조정안을 확인한 뒤 한 번 제출합니다",
+      id: "first-restriction-cards",
+      sectionLabel: "카드",
+      targetTab: "cards",
+      title: "카드 데이터로 원인을 확인하고 허용 매수를 정하십시오",
       body:
-        "초기화는 이번에 바꾼 숫자를 모두 현재 값으로 되돌립니다. 금제안 제출은 현재 조정을 확정하며, 바꿀 카드가 없다면 변경 없음으로 제출합니다.",
+        "선택한 테마의 전용 카드와 여러 테마가 쓰는 범용 카드를 비교하십시오. 채용률과 평균 투입 매수로 실제 핵심 카드인지 확인하고, 현행 제한에서 몇 장까지 허용할지 결정합니다. 시세는 보유가치와 후폭풍의 근거이지 카드가 강하다는 단독 증거는 아닙니다.",
+      terms: [
+        {
+          label: "채용률",
+          description:
+            "해당 테마 덱 가운데 이 카드를 사용하는 덱의 비율입니다.",
+        },
+        {
+          label: "평균 매수",
+          description:
+            "사용하는 덱이 평균 몇 장을 넣는지 보여줍니다. 제한 단계가 실제 덱에 줄 충격을 판단하는 기준입니다.",
+        },
+        {
+          label: "현행 제한",
+          description:
+            "현재 허용 매수입니다. 3은 유지, 2는 준제한, 1은 제한, 0은 금지입니다.",
+        },
+        {
+          label: "최종 확인",
+          description:
+            "높은 점유율의 원인 카드인지, 단순히 함께 쓰이는 카드인지 구분한 뒤 금제안을 제출하십시오.",
+        },
+      ],
     },
   ],
 } as const satisfies ContextualTutorialDefinition;
@@ -637,7 +683,7 @@ const FIRST_RESTRICTION_TUTORIAL = {
 const FIRST_RELEASE_TUTORIAL = {
   topic: "first-release",
   tab: "releases",
-  label: "첫 정기 발매",
+  label: "첫 정규 발매",
   pages: [
     {
       id: "first-release-principles",
@@ -663,11 +709,6 @@ const FIRST_RELEASE_TUTORIAL = {
           description:
             "신테마·기존 테마 지원·범용을 각각 1종 이상 포함해 4종을 직접 고르며, 남는 한 자리는 세 종류 중 하나를 더 선택합니다.",
         },
-        {
-          label: "예약 재판",
-          description:
-            "미리 요청된 재판이 있으면 카드팩 한 자리를 차지해 자동 포함되고, 직접 선택할 자리는 하나 줄어듭니다.",
-        },
       ],
     },
     {
@@ -675,6 +716,48 @@ const FIRST_RELEASE_TUTORIAL = {
       title: "고른 카드의 파워를 조정합니다",
       body:
         "파워는 -3이 가장 약하고, 0이 기본, +3이 가장 강합니다. 강하게 내면 초기 매출과 채용을 끌어올리기 쉽지만, 환경 집중과 구매 신뢰 하락 위험도 커집니다. 구성과 파워를 모두 정한 뒤 발매를 확정하세요.",
+    },
+  ],
+} as const satisfies ContextualTutorialDefinition;
+
+const FIRST_REPRINT_TUTORIAL = {
+  topic: "first-reprint",
+  tab: "releases",
+  label: "첫 재판팩",
+  pages: [
+    {
+      id: "first-reprint-market",
+      title: "품귀 카드를 다시 공급할 때입니다",
+      body:
+        "필수 카드 9장이 높은 가격과 수요를 보이고 있습니다. 후보의 현재가·플레이 수요·출시 후 경과일을 비교해 재판팩에 넣을 3장을 고르십시오.",
+      terms: [
+        {
+          label: "접근성",
+          description:
+            "재판된 카드의 가격이 내려가면 덱 구축 비용이 낮아지고 신규 플레이어가 들어오기 쉬워집니다.",
+        },
+        {
+          label: "시장 충격",
+          description:
+            "가격 하락은 최근 구매자와 초판 보유자의 반발을 불러 구매 신뢰를 낮출 수 있습니다.",
+        },
+      ],
+    },
+    {
+      id: "first-reprint-selection",
+      title: "비싼 카드 3종을 하나의 재판팩으로 묶습니다",
+      body:
+        "예상 가격 하락·접근성 개선·수집가 반발·수혜 테마를 함께 확인하십시오. 이미 강한 테마의 핵심 카드를 싸게 풀면 접근성은 좋아져도 메타 집중은 더 심해질 수 있습니다.",
+      terms: [
+        {
+          label: "후보 9종 / 선택 3종",
+          description: "재판팩은 정규팩과 분리되며 신카 4종 자리를 사용하지 않습니다.",
+        },
+        {
+          label: "출시 후 30일",
+          description: "출시된 지 30일 이상 지난 카드만 재판 후보가 됩니다.",
+        },
+      ],
     },
   ],
 } as const satisfies ContextualTutorialDefinition;
@@ -696,6 +779,7 @@ export const CONTEXTUAL_TUTORIALS: Readonly<
 > = {
   "first-restriction": FIRST_RESTRICTION_TUTORIAL,
   "first-release": FIRST_RELEASE_TUTORIAL,
+  "first-reprint": FIRST_REPRINT_TUTORIAL,
 };
 
 export function getTabTutorial(
@@ -719,18 +803,23 @@ export function createTabTutorialVisitState(
   ) as unknown as TabTutorialVisitState;
 }
 
-export function isTabTutorialGuidanceActive({
-  guidanceEnabled,
-}: TabTutorialContext): boolean {
-  return guidanceEnabled;
-}
-
 export function shouldOpenTabTutorial(
   tab: TabTutorialTabId,
   visits: TabTutorialVisitState,
   context: TabTutorialContext,
 ): boolean {
-  return isTabTutorialGuidanceActive(context) && !visits[tab];
+  if (visits[tab]) return false;
+  if (context.day === undefined) return true;
+
+  const availability = getHandoverTabAvailability(tab, {
+    day: context.day,
+    handoverComplete: context.handoverComplete ?? false,
+  });
+  if (!availability.unlocked) return false;
+
+  // The one-page emergency briefing owns DAY 0. The longer distribution
+  // reference remains available on a later visit without delaying the ruling.
+  return !(tab === "distribution" && context.day === FIRST_BAN_DAY);
 }
 
 export function getFirstVisitTabTutorial(
@@ -779,11 +868,21 @@ export function isContextualTutorialTriggered(
   topic: ContextualTutorialTopicId,
   context: ContextualTutorialContext,
 ): boolean {
-  if (!context.guidanceEnabled) return false;
   if (topic === "first-restriction") {
     return context.day === FIRST_BAN_DAY && context.phase === "ban-edit";
   }
-  return context.day === RELEASE_INTERVAL && context.phase === "release-edit";
+  if (topic === "first-release") {
+    return (
+      context.day === FIRST_RELEASE_DAY &&
+      context.phase === "release-edit" &&
+      isRegularReleaseDay(context.day)
+    );
+  }
+  return (
+    context.day === FIRST_REPRINT_TUTORIAL_DAY &&
+    context.phase === "release-edit" &&
+    isReprintReleaseDay(context.day)
+  );
 }
 
 export function shouldOpenContextualTutorial(
@@ -819,23 +918,22 @@ export function getPendingTutorialPopups(
   context: ContextualTutorialContext,
 ): readonly PendingTutorialPopup[] {
   const pending: PendingTutorialPopup[] = [];
+  const activeContextualTutorials = CONTEXTUAL_TUTORIAL_TOPIC_IDS.filter(
+    (topic) => {
+      const tutorial = getContextualTutorial(topic);
+      return (
+        (tutorial.tab === activeTab ||
+          tutorial.pages.some((page) => page.targetTab === activeTab)) &&
+        isContextualTutorialTriggered(topic, context)
+      );
+    },
+  );
 
-  if (shouldOpenTabTutorial(activeTab, tabVisits, context)) {
-    const tutorial = getTabTutorial(activeTab);
-    pending.push({
-      kind: "tab",
-      id: activeTab,
-      label: tutorial.label,
-      pages: tutorial.pages,
-    });
-  }
-
-  for (const topic of CONTEXTUAL_TUTORIAL_TOPIC_IDS) {
+  // A live decision gets the first and only blocking explanation. The ordinary
+  // tab overview can wait until the player returns after submitting it.
+  for (const topic of activeContextualTutorials) {
     const tutorial = getContextualTutorial(topic);
-    if (
-      tutorial.tab === activeTab &&
-      shouldOpenContextualTutorial(topic, contextualVisits, context)
-    ) {
+    if (shouldOpenContextualTutorial(topic, contextualVisits, context)) {
       pending.push({
         kind: "contextual",
         id: topic,
@@ -843,6 +941,19 @@ export function getPendingTutorialPopups(
         pages: tutorial.pages,
       });
     }
+  }
+
+  if (
+    activeContextualTutorials.length === 0 &&
+    shouldOpenTabTutorial(activeTab, tabVisits, context)
+  ) {
+    const tutorial = getTabTutorial(activeTab);
+    pending.push({
+      kind: "tab",
+      id: activeTab,
+      label: tutorial.label,
+      pages: tutorial.pages,
+    });
   }
 
   return pending;

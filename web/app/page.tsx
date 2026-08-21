@@ -14,6 +14,7 @@ import {
 } from "./components/MetricGlyphs";
 import { HeaderReferenceTools } from "./components/HeaderReferenceTools";
 import { CurrentBanList } from "./components/CurrentBanList";
+import { GameBackgroundMusic } from "./components/GameBackgroundMusic";
 import {
   GenericAdopterNames,
   getReleasedGenericCardReferences,
@@ -44,6 +45,10 @@ import {
 } from "./components/decision-aftermath-client";
 import { DailyNewsView, ImpactMessageStack } from "./components/NewsViews";
 import { ReleasesView } from "./components/ReleasesView";
+import {
+  BusinessEventResultOverlay,
+  FormalDecisionReportOverlay,
+} from "./components/ReportArrivalOverlay";
 import { ThemeEmblem } from "./components/ThemeEmblem";
 import { TitleScreen } from "./components/TitleScreen";
 import {
@@ -53,9 +58,13 @@ import {
 import {
   CAMPAIGN_END_DAY,
   FIRST_BAN_DAY,
+  getNextRegularReleaseDay,
+  getNextReprintReleaseDay,
+  isReprintReleaseDay,
   LAST_BAN_DAY,
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
+  PLAYER_START_DAY,
   PROLOGUE_SEED,
   SETTLEMENT_START_DAY,
   SETTLEMENT_DAYS,
@@ -107,7 +116,6 @@ import {
   createContextualTutorialVisitState,
   createTabTutorialVisitState,
   getPendingTutorialPopups,
-  isTabTutorialSeriesComplete,
   markContextualTutorialVisited,
   markTabTutorialVisited,
   type ContextualTutorialTopicId,
@@ -124,6 +132,7 @@ import {
   type GenericCardId,
 } from "./game/generic-card-catalog";
 import { getPartReleaseLabel } from "./game/release-display";
+import { getReleaseBatchKind } from "./game/release-kind";
 import { getSupportNeglectPressure } from "./game/support-continuity";
 import {
   getPlacementTier,
@@ -134,6 +143,17 @@ import {
   type RecentPlacementReport,
   type ThemePlacementReport,
 } from "./game/placement-meta";
+import { getCampaignAnalysisHistory } from "./game/pre-campaign-history";
+import {
+  getDecisionReportsArriving,
+  type DecisionReport,
+} from "./game/decision-reports";
+import {
+  getHandoverBriefing,
+  getNewlyUnlockedHandoverTabs,
+  getHandoverTabAvailabilityMap,
+  resolveHandoverTab,
+} from "./game/handover";
 import {
   BUSINESS_ACTIONS,
   BUSINESS_ACTION_BY_TYPE,
@@ -195,6 +215,7 @@ import type {
   BusinessEventChoice,
   BusinessEventRecord,
   CommunityEvent,
+  DailyHistory,
   GameCommand,
   GameState,
   PartRole,
@@ -217,20 +238,19 @@ type RestrictionDecisionOutcome = Extract<
 >;
 
 type InterfaceSettings = {
+  bgmVolume: number;
   soundEnabled: boolean;
   impactEffectsEnabled: boolean;
   motionPreference: MotionPreference;
-  tutorialGuidanceEnabled: boolean;
 };
 
 const INTERFACE_SETTINGS_KEY = "tcg-regulator-interface-settings-v1";
 const TAB_TUTORIAL_PROGRESS_KEY = "tcg-regulator-tab-tutorial-v1";
-const DEFAULT_TUTORIAL_GUIDANCE_ENABLED = true;
 const DEFAULT_INTERFACE_SETTINGS: InterfaceSettings = {
+  bgmVolume: 28,
   soundEnabled: true,
   impactEffectsEnabled: true,
   motionPreference: "system",
-  tutorialGuidanceEnabled: DEFAULT_TUTORIAL_GUIDANCE_ENABLED,
 };
 
 function mintCampaignSeed(previousSeed: number): number {
@@ -311,8 +331,16 @@ function loadInterfaceSettings(): InterfaceSettings {
   try {
     const saved = window.localStorage.getItem(INTERFACE_SETTINGS_KEY);
     if (!saved) return DEFAULT_INTERFACE_SETTINGS;
-    const parsed = JSON.parse(saved) as Partial<InterfaceSettings>;
+    const parsed = JSON.parse(saved) as Partial<InterfaceSettings> & {
+      bgmEnabled?: unknown;
+    };
     return {
+      bgmVolume:
+        typeof parsed.bgmVolume === "number" && Number.isFinite(parsed.bgmVolume)
+          ? Math.max(0, Math.min(100, parsed.bgmVolume))
+          : parsed.bgmEnabled === false
+            ? 0
+            : DEFAULT_INTERFACE_SETTINGS.bgmVolume,
       soundEnabled:
         typeof parsed.soundEnabled === "boolean"
           ? parsed.soundEnabled
@@ -323,10 +351,6 @@ function loadInterfaceSettings(): InterfaceSettings {
           : DEFAULT_INTERFACE_SETTINGS.impactEffectsEnabled,
       motionPreference:
         parsed.motionPreference === "reduced" ? "reduced" : "system",
-      tutorialGuidanceEnabled:
-        typeof parsed.tutorialGuidanceEnabled === "boolean"
-          ? parsed.tutorialGuidanceEnabled
-          : DEFAULT_INTERFACE_SETTINGS.tutorialGuidanceEnabled,
     };
   } catch {
     return DEFAULT_INTERFACE_SETTINGS;
@@ -469,31 +493,42 @@ function useTabTutorialProgress() {
     }
   }, [progress]);
 
-  const reset = () => setProgress(createEmptyTabTutorialProgress());
   const complete = (popup: PendingTutorialPopup) => {
-    setProgress((current) =>
-      popup.kind === "tab"
-        ? {
-            ...current,
-            tabVisits: markTabTutorialVisited(current.tabVisits, popup.id),
-          }
-        : {
-            ...current,
-            contextualVisits: markContextualTutorialVisited(
-              current.contextualVisits,
-              popup.id,
-            ),
-          },
-    );
+    setProgress((current) => {
+      if (popup.kind === "tab") {
+        return {
+          ...current,
+          tabVisits: markTabTutorialVisited(current.tabVisits, popup.id),
+        };
+      }
+
+      const tabVisits = popup.id === "first-restriction"
+        ? markTabTutorialVisited(
+            markTabTutorialVisited(current.tabVisits, "distribution"),
+            "cards",
+          )
+        : current.tabVisits;
+      return {
+        tabVisits,
+        contextualVisits: markContextualTutorialVisited(
+          current.contextualVisits,
+          popup.id,
+        ),
+      };
+    });
   };
+
+  const reset = () => setProgress(createEmptyTabTutorialProgress());
 
   return { complete, progress, reset };
 }
 
 function SettingsOptions({
+  onTutorialReset,
   settings,
   updateSetting,
 }: {
+  onTutorialReset: () => void;
   settings: InterfaceSettings;
   updateSetting: <Key extends keyof InterfaceSettings>(
     key: Key,
@@ -502,6 +537,22 @@ function SettingsOptions({
 }) {
   return (
     <div className="settings-options">
+      <label className="settings-options__volume">
+        <span>배경음악 음량</span>
+        <span className="settings-options__volume-control">
+          <input
+            max="100"
+            min="0"
+            onChange={(event) =>
+              updateSetting("bgmVolume", Number(event.currentTarget.value))
+            }
+            step="1"
+            type="range"
+            value={settings.bgmVolume}
+          />
+          <strong>{Math.round(settings.bgmVolume)}%</strong>
+        </span>
+      </label>
       <button
         aria-pressed={settings.soundEnabled}
         data-sound="none"
@@ -546,18 +597,12 @@ function SettingsOptions({
         </strong>
       </button>
       <button
-        aria-pressed={settings.tutorialGuidanceEnabled}
-        onClick={() =>
-          updateSetting(
-            "tutorialGuidanceEnabled",
-            !settings.tutorialGuidanceEnabled,
-          )
-        }
-        title="각 화면을 처음 열 때 설명 팝업을 표시합니다."
+        onClick={onTutorialReset}
+        title="안내 기록을 초기화합니다. 전체 인수인계 안내는 새 임기를 시작하면 DAY 0부터 다시 표시됩니다."
         type="button"
       >
-        <span>첫 방문 도움말</span>
-        <strong>{settings.tutorialGuidanceEnabled ? "ON" : "OFF"}</strong>
+        <span>안내 처음부터 다시 보기</span>
+        <strong>RESET</strong>
       </button>
     </div>
   );
@@ -786,6 +831,25 @@ function getBusinessEventTransitionToast(
   return null;
 }
 
+function getResolvedBusinessEventTransition(
+  previous: GameState,
+  next: GameState,
+): BusinessEventRecord | null {
+  for (const record of [...next.operations.eventRecords].reverse()) {
+    const previousRecord = previous.operations.eventRecords.find(
+      (candidate) => candidate.id === record.id,
+    );
+    if (
+      previousRecord &&
+      previousRecord.outcome !== record.outcome &&
+      record.outcome !== "pending"
+    ) {
+      return record;
+    }
+  }
+  return null;
+}
+
 function formatPercent(value: number, digits = 1) {
   return `${(value * 100).toFixed(digits)}%`;
 }
@@ -858,7 +922,7 @@ function getAdvisorBrief(
     distribution: {
       tone: "info",
       kicker: "입상 지표 해석",
-      message: "입상 점유율은 최근 14일 주요 대회의 전체 입상 자리 중 해당 테마가 차지한 비중입니다. 채용률·승률과 함께 보십시오.",
+      message: "입상 점유율은 최근 7일 주요 대회의 전체 입상 자리 중 해당 테마가 차지한 비중입니다. 채용률·승률과 함께 보십시오.",
     },
     cards: {
       tone: "info",
@@ -1092,22 +1156,7 @@ export default function Home() {
   const tabTutorial = useTabTutorialProgress();
 
   function completeTutorialPopup(popup: PendingTutorialPopup) {
-    const nextTabVisits =
-      popup.kind === "tab"
-        ? markTabTutorialVisited(tabTutorial.progress.tabVisits, popup.id)
-        : tabTutorial.progress.tabVisits;
-    const nextContextualVisits =
-      popup.kind === "contextual"
-        ? markContextualTutorialVisited(
-            tabTutorial.progress.contextualVisits,
-            popup.id,
-          )
-        : tabTutorial.progress.contextualVisits;
-
     tabTutorial.complete(popup);
-    if (isTabTutorialSeriesComplete(nextTabVisits, nextContextualVisits)) {
-      updateSetting("tutorialGuidanceEnabled", false);
-    }
   }
 
   useEffect(() => {
@@ -1155,7 +1204,8 @@ export default function Home() {
         throw new Error(boot.backend.message);
       }
       await savePersistedGame(boot.backend, next);
-      tabTutorial.reset();
+      // Onboarding is player-wide: a new mandate must not replay explanations
+      // that this browser profile has already completed.
       setTitleMessage(null);
       setBoot({
         status: "playing",
@@ -1200,6 +1250,7 @@ export default function Home() {
         onNewGame={() => void beginNewGame()}
         onSettingsChange={updateSetting}
         onSoundTest={() => undefined}
+        onTutorialReset={tabTutorial.reset}
         savedGame={{
           available: Boolean(savedGame),
           summary: savedGameSummary,
@@ -1229,6 +1280,7 @@ export default function Home() {
         );
       }}
       onTutorialPopupComplete={completeTutorialPopup}
+      onTutorialReset={tabTutorial.reset}
       tabTutorialProgress={tabTutorial.progress}
       updateInterfaceSetting={updateSetting}
     />
@@ -1242,6 +1294,7 @@ function GameSession({
   initialWarning,
   onExit,
   onTutorialPopupComplete,
+  onTutorialReset,
   tabTutorialProgress,
   updateInterfaceSetting,
 }: {
@@ -1251,6 +1304,7 @@ function GameSession({
   initialWarning?: string;
   onExit: (game: GameState, backend: PersistenceBackend) => void;
   onTutorialPopupComplete: (popup: PendingTutorialPopup) => void;
+  onTutorialReset: () => void;
   tabTutorialProgress: TabTutorialProgress;
   updateInterfaceSetting: <Key extends keyof InterfaceSettings>(
     key: Key,
@@ -1258,14 +1312,24 @@ function GameSession({
   ) => void;
 }) {
   const [game, setGame] = useState<GameState>(initialGame);
-  const [selectedThemeId, setSelectedThemeId] = useState<ThemeId>("cycle");
-  const initialTab: TabId = initialGame.operations.pendingEvent
+  const [selectedThemeId, setSelectedThemeId] = useState<ThemeId>(
+    initialGame.currentTopThemeId,
+  );
+  const initialHandoverBriefing = getHandoverBriefing({
+    day: initialGame.day,
+    handoverComplete: initialGame.handoverComplete,
+  });
+  const requestedInitialTab: TabId = initialGame.operations.pendingEvent
     ? "operations"
-    : initialGame.phase === "ban-edit"
+    : initialGame.phase === "ban-edit" && initialGame.day !== FIRST_BAN_DAY
       ? "cards"
       : initialGame.phase === "release-edit"
         ? "releases"
-        : "distribution";
+        : initialHandoverBriefing?.tab ?? "distribution";
+  const initialTab = resolveHandoverTab(requestedInitialTab, {
+    day: initialGame.day,
+    handoverComplete: initialGame.handoverComplete,
+  });
   const [activeTab, setActiveTab] = useState<TabId>(initialTab);
   const [tutorialPageIndex, setTutorialPageIndex] = useState(0);
   const [banDraft, setBanDraft] = useState<Record<string, RestrictionLimit>>(
@@ -1293,6 +1357,9 @@ function GameSession({
         ? initialDecisionAftermath.outcome
         : null,
     );
+  const [decisionReports, setDecisionReports] = useState<DecisionReport[]>([]);
+  const [businessEventResult, setBusinessEventResult] =
+    useState<BusinessEventRecord | null>(null);
   const [pendingDecisionAftermath, setPendingDecisionAftermath] =
     useState<PendingDecisionAftermath | null>(initialDecisionAftermath);
   const [restrictionConfirmation, setRestrictionConfirmation] = useState<{
@@ -1322,6 +1389,7 @@ function GameSession({
   const packOddsCommittedRef = useRef(false);
   const lastImpactFxDayRef = useRef<number | null>(null);
   const impactTimersRef = useRef<number[]>([]);
+  const pendingUnlockTabsRef = useRef<TabId[]>([]);
 
   const triggerImpactObservation = useCallback((
     day: number,
@@ -1498,19 +1566,23 @@ function GameSession({
       ),
     [game],
   );
-  const placementEndDay = game.history.at(-1)?.day ?? game.day;
+  const analysisHistory = useMemo(
+    () => getCampaignAnalysisHistory(game),
+    [game],
+  );
+  const placementEndDay = analysisHistory.at(-1)?.day ?? game.day;
   const placementReport = useMemo(
-    () => getRecentPlacementReport(game.history, game.seed, placementEndDay),
-    [game, placementEndDay],
+    () => getRecentPlacementReport(analysisHistory, game.seed, placementEndDay),
+    [analysisHistory, game.seed, placementEndDay],
   );
   const previousPlacementReport = useMemo(
     () =>
       getRecentPlacementReport(
-        game.history,
+        analysisHistory,
         game.seed,
         placementEndDay - 7,
       ),
-    [game, placementEndDay],
+    [analysisHistory, game.seed, placementEndDay],
   );
 
   const selectedTheme = THEME_BY_ID[selectedThemeId] ?? THEMES[0];
@@ -1522,6 +1594,7 @@ function GameSession({
     ? game.day
     : getNextBanDay(game.day);
   const releaseCountdown = Math.max(0, nextReleaseDay - game.day);
+  const nextReleaseIsReprint = isReprintReleaseDay(nextReleaseDay);
   const banCountdown = Math.max(0, nextBanDay - game.day);
   const hasFutureRelease =
     game.phase === "release-edit" || game.day < LAST_RELEASE_DAY;
@@ -1550,6 +1623,7 @@ function GameSession({
         : "임기 진행률";
   const nextCampaignMilestone = getNextCampaignMilestone({
     day: game.day,
+    handoverComplete: game.handoverComplete,
     nextBanDay,
     nextReleaseDay,
     phase: game.phase,
@@ -1583,19 +1657,35 @@ function GameSession({
     game,
     banDraft,
   );
-  const advisorBrief = getAdvisorBrief(
+  const handoverContext = {
+    day: game.day,
+    handoverComplete: game.handoverComplete,
+  } as const;
+  const handoverTabAvailability = getHandoverTabAvailabilityMap(
+    handoverContext,
+  );
+  const handoverBriefing = getHandoverBriefing(handoverContext);
+  const regularAdvisorBrief = getAdvisorBrief(
     game,
     activeTab,
     concentratedRestrictionRisk,
     restrictionPolicy,
   );
+  const advisorBrief: AdvisorBrief = handoverBriefing
+    ? {
+        tone: game.day === FIRST_BAN_DAY ? "critical" : "info",
+        kicker: handoverBriefing.kicker,
+        message: handoverBriefing.title,
+        submessage: handoverBriefing.message,
+      }
+    : regularAdvisorBrief;
   const pendingTutorialPopups = getPendingTutorialPopups(
     activeTab,
     tabTutorialProgress.tabVisits,
     tabTutorialProgress.contextualVisits,
     {
-      guidanceEnabled: interfaceSettings.tutorialGuidanceEnabled,
       day: game.day,
+      handoverComplete: game.handoverComplete,
       phase: game.phase,
     },
   );
@@ -1605,6 +1695,8 @@ function GameSession({
       packOddsConfirmOpen ||
       strategicConfirmAction ||
       decisionOutcome ||
+      decisionReports.length > 0 ||
+      businessEventResult ||
       restrictionConfirmation,
   );
   const tutorialPopup = tutorialPopupBlocked
@@ -1613,18 +1705,62 @@ function GameSession({
   const tutorialPopupKey = tutorialPopup
     ? `${tutorialPopup.kind}-${tutorialPopup.id}`
     : null;
+
+  useEffect(() => {
+    const nextTab = pendingUnlockTabsRef.current[0];
+    if (
+      !nextTab ||
+      tutorialPopupBlocked ||
+      tutorialPopupKey ||
+      !handoverTabAvailability[nextTab].unlocked
+    ) {
+      return;
+    }
+
+    pendingUnlockTabsRef.current = pendingUnlockTabsRef.current.slice(1);
+    seenAdvisorTabsRef.current.add(nextTab);
+    setTutorialPageIndex(0);
+    setActiveTab(nextTab);
+  }, [
+    game.day,
+    game.handoverComplete,
+    handoverTabAvailability,
+    tutorialPopupBlocked,
+    tutorialPopupKey,
+  ]);
+
   function dispatch(command: GameCommand) {
     const next = reduceGame(game, command);
     setGame(next);
     return next;
   }
 
-  function activateTab(nextTab: TabId, important = false) {
-    if (important || !seenAdvisorTabsRef.current.has(nextTab)) {
-      seenAdvisorTabsRef.current.add(nextTab);
+  function activateTab(
+    nextTab: TabId,
+    important = false,
+    accessContext = handoverContext,
+  ) {
+    const resolvedTab = resolveHandoverTab(nextTab, accessContext);
+    if (important || !seenAdvisorTabsRef.current.has(resolvedTab)) {
+      seenAdvisorTabsRef.current.add(resolvedTab);
     }
     setTutorialPageIndex(0);
-    setActiveTab(nextTab);
+    setActiveTab(resolvedTab);
+  }
+
+  function moveTutorialToPage(nextIndex: number) {
+    if (!tutorialPopup) return;
+    const safeIndex = Math.max(
+      0,
+      Math.min(nextIndex, tutorialPopup.pages.length - 1),
+    );
+    const targetTab = tutorialPopup.pages[safeIndex]?.targetTab;
+    if (targetTab) {
+      const resolvedTab = resolveHandoverTab(targetTab, handoverContext);
+      seenAdvisorTabsRef.current.add(resolvedTab);
+      setActiveTab(resolvedTab);
+    }
+    setTutorialPageIndex(safeIndex);
   }
 
   function clearImpactMessages() {
@@ -1682,6 +1818,23 @@ function GameSession({
     if (!next.handoverComplete && isHandoverReady(next)) {
       next = reduceGame(next, { type: "COMPLETE_HANDOVER" });
     }
+    const newlyUnlockedTabs = getNewlyUnlockedHandoverTabs(
+      {
+        day: game.day,
+        handoverComplete: game.handoverComplete,
+      },
+      {
+        day: next.day,
+        handoverComplete: next.handoverComplete,
+      },
+    );
+    if (newlyUnlockedTabs.length > 0) {
+      const queued = new Set(pendingUnlockTabsRef.current);
+      pendingUnlockTabsRef.current = [
+        ...pendingUnlockTabsRef.current,
+        ...newlyUnlockedTabs.filter((tab) => !queued.has(tab)),
+      ];
+    }
     const aftermathToReveal =
       pendingDecisionAftermath &&
       game.day <= pendingDecisionAftermath.decisionDay &&
@@ -1691,6 +1844,8 @@ function GameSession({
     setGame(next);
     const businessToast = getBusinessTransitionToast(game, next);
     const eventResultToast = getBusinessEventTransitionToast(game, next);
+    const resolvedBusinessEvent = getResolvedBusinessEventTransition(game, next);
+    const arrivingReports = getDecisionReportsArriving(game, next);
     const eventArrived =
       !game.operations.pendingEvent && next.operations.pendingEvent;
     if (!aftermathToReveal) showImpact(game.day, next);
@@ -1699,6 +1854,11 @@ function GameSession({
     }
     if (eventResultToast) {
       triggerImpactObservation(next.day, "caution");
+    }
+    if (resolvedBusinessEvent) setBusinessEventResult(resolvedBusinessEvent);
+    if (arrivingReports.length > 0) {
+      setDecisionReports((current) => [...current, ...arrivingReports]);
+      emitGameSound("impact");
     }
     if (aftermathToReveal) {
       setDecisionOutcome(aftermathToReveal.outcome);
@@ -1718,7 +1878,10 @@ function GameSession({
           .filter(Boolean)
           .join(" "),
       );
-      activateTab("operations", true);
+      activateTab("operations", true, {
+        day: next.day,
+        handoverComplete: next.handoverComplete,
+      });
     } else if (next.phase === "ban-edit") {
       setBanDraft(makeRestrictionDraft(next));
       setToast(
@@ -1730,7 +1893,10 @@ function GameSession({
           .filter(Boolean)
           .join(" "),
       );
-      activateTab("cards", true);
+      activateTab("cards", true, {
+        day: next.day,
+        handoverComplete: next.handoverComplete,
+      });
     } else if (next.phase === "release-edit") {
       setReleaseDraft([]);
       setToast(
@@ -1742,7 +1908,10 @@ function GameSession({
           .filter(Boolean)
           .join(" "),
       );
-      activateTab("releases", true);
+      activateTab("releases", true, {
+        day: next.day,
+        handoverComplete: next.handoverComplete,
+      });
     } else {
       setToast(
         [
@@ -1856,7 +2025,7 @@ function GameSession({
         type: "SET_RELEASE_REQUEST",
         request: { kind, themeId },
       });
-      setToast(`${THEME_BY_ID[themeId].shortName} 간접 지원을 다음 발매에 요청했습니다.`);
+      setToast(`${THEME_BY_ID[themeId].shortName} 간접 지원을 다음 일반팩에 요청했습니다.`);
       return;
     }
     if (kind === "environment-target") {
@@ -1868,7 +2037,7 @@ function GameSession({
         type: "SET_RELEASE_REQUEST",
         request: { kind, themeId },
       });
-      setToast(`${THEME_BY_ID[themeId].shortName} 환경 저격을 다음 발매에 요청했습니다.`);
+      setToast(`${THEME_BY_ID[themeId].shortName} 환경 저격을 다음 일반팩에 요청했습니다.`);
       return;
     }
     const reprint = getReprintCandidates(game).find(
@@ -1882,7 +2051,9 @@ function GameSession({
       type: "SET_RELEASE_REQUEST",
       request: { kind, cardId: reprint.cardId },
     });
-    setToast(`${reprint.cardName} 재판을 다음 발매에 요청했습니다.`);
+    setToast(
+      `${reprint.cardName} 재판을 DAY ${getNextReprintReleaseDay(game.day)} 재판팩 후보에 요청했습니다.`,
+    );
   }
 
   function runBusinessAction(
@@ -1938,17 +2109,9 @@ function GameSession({
       setToast("현재 카드풀에서 더 이상 금제할 수 없습니다.");
       return null;
     }
-    const newCalendarMandatePublished = game.community.some(
-      (event) =>
-        event.day === FIRST_BAN_DAY &&
-        (event.type === "restriction-applied" ||
-          event.type === "cosmetic-restriction" ||
-          event.type === "restriction-no-change"),
-    );
     const isFirstMandate =
       !game.handoverComplete &&
-      (game.day === FIRST_BAN_DAY ||
-        (game.day === 45 && !newCalendarMandatePublished));
+      game.day === FIRST_BAN_DAY;
     const publishedChanges = restrictionChanges.map(([cardId, after]) => {
       const card = getRestrictionCardDisplay(game, cardId);
       return { ...card, before: card.limit, after };
@@ -2014,8 +2177,13 @@ function GameSession({
     setImpactItems([]);
     setReleaseDraft([]);
     setReactionFlashDay(next.day + 1);
+    const publishedKind = publishedBatch
+      ? getReleaseBatchKind(publishedBatch)
+      : "regular";
     setToast(
-      `DAY ${next.day} 카드팩 생산안을 봉인했습니다. DAY ${next.day + 1}에 정식 출시됩니다.`,
+      publishedKind === "reprint"
+        ? `DAY ${next.day} 재판 3종을 봉인했습니다. DAY ${next.day + 1}부터 재유통과 시세 관측이 시작됩니다.`
+        : `DAY ${next.day} 카드팩 생산안을 봉인했습니다. DAY ${next.day + 1}에 정식 출시됩니다.`,
     );
     if (publishedBatch && publishedBatch.day === next.day) {
       setPendingDecisionAftermath({
@@ -2040,6 +2208,7 @@ function GameSession({
       }${impactFx ? ` is-impact-observing impact-${impactFx.tone}` : ""}`}
       data-phase={game.phase}
     >
+      <GameBackgroundMusic volume={interfaceSettings.bgmVolume} />
       {impactFx ? (
         <div
           aria-hidden="true"
@@ -2058,7 +2227,9 @@ function GameSession({
             <CalendarIcon />
             <span>DAY</span>
             <strong>{game.day}</strong>
-            <small>/ {CAMPAIGN_END_DAY}</small>
+            <small>
+              시즌 {game.operations.season.currentSeasonNumber} · / {CAMPAIGN_END_DAY}
+            </small>
           </div>
           <div
             aria-label={`${userBreakdown} · 전일 대비 ${dailyUserDelta >= 0 ? "+" : ""}${formatUsers(dailyUserDelta)}명`}
@@ -2089,7 +2260,7 @@ function GameSession({
           </div>
           <div className="header-metric">
             <ReleaseIcon />
-            <span>다음 발매</span>
+            <span>{nextReleaseIsReprint ? "다음 재판팩" : "다음 발매"}</span>
             <strong>
               {campaignEnded
                 ? "종료"
@@ -2142,6 +2313,7 @@ function GameSession({
           <details className="header-settings">
             <summary aria-label="화면 및 효과음 설정" data-tutorial-term="settings-control">설정</summary>
             <SettingsOptions
+              onTutorialReset={onTutorialReset}
               settings={interfaceSettings}
               updateSetting={updateInterfaceSetting}
             />
@@ -2154,8 +2326,12 @@ function GameSession({
         disabled={gameOver || campaignComplete}
         hasBusinessEvent={Boolean(game.operations.pendingEvent)}
         onActivate={activateTab}
+        onLockedActivate={(_, availability) =>
+          setToast(availability.reason ?? "아직 인수인계되지 않은 탭입니다.")
+        }
         onReturnToTitle={() => onExit(game, persistence)}
         phase={game.phase}
+        tabAvailability={handoverTabAvailability}
       />
 
       <main
@@ -2232,6 +2408,7 @@ function GameSession({
 
         {activeTab === "distribution" ? (
           <DistributionView
+            analysisHistory={analysisHistory}
             game={game}
             nextBanDay={nextBanDay}
             nextReleaseDay={nextReleaseDay}
@@ -2276,7 +2453,7 @@ function GameSession({
         {activeTab === "news" ? <DailyNewsView game={game} /> : null}
 
         {activeTab === "finance" ? (
-          <FinanceView game={game} />
+          <FinanceView analysisHistory={analysisHistory} game={game} />
         ) : null}
           </>
         )}
@@ -2287,7 +2464,11 @@ function GameSession({
           game.phase !== "running" ||
           Boolean(game.operations.pendingEvent)
         }
-        fastForwardLocked={Boolean(pendingDecisionAftermath)}
+        fastForwardLocked={Boolean(
+          pendingDecisionAftermath ||
+          decisionReports.length > 0 ||
+          businessEventResult
+        )}
         milestone={nextCampaignMilestone}
         onAdvance={(days) => {
           advance(days);
@@ -2380,9 +2561,48 @@ function GameSession({
             setReactionFlashDay(game.day);
             setDecisionOutcome(null);
             setPendingDecisionAftermath(null);
-            activateTab("community", true);
+            activateTab(
+              game.handoverComplete || game.day >= 2 ? "community" : "cards",
+              true,
+            );
           }}
           outcome={decisionOutcome}
+        />
+      ) : null}
+
+      {!decisionOutcome && decisionReports[0] ? (
+        <FormalDecisionReportOverlay
+          onContinue={() => {
+            const current = decisionReports[0];
+            setDecisionReports((reports) => reports.slice(1));
+            triggerImpactObservation(
+              current.reportDay,
+              current.tone === "negative" ? "negative" : "positive",
+            );
+            activateTab(
+              current.kind === "restriction"
+                ? "distribution"
+                : current.kind === "reprint-release"
+                  ? "finance"
+                  : "releases",
+              true,
+            );
+          }}
+          report={decisionReports[0]}
+        />
+      ) : null}
+
+      {!decisionOutcome && decisionReports.length === 0 && businessEventResult ? (
+        <BusinessEventResultOverlay
+          onContinue={() => {
+            setBusinessEventResult(null);
+            triggerImpactObservation(
+              businessEventResult.resolvedDay ?? businessEventResult.resolutionDay,
+              businessEventResult.outcome === "success" ? "positive" : "negative",
+            );
+            activateTab("operations", true);
+          }}
+          record={businessEventResult}
         />
       ) : null}
 
@@ -2394,14 +2614,8 @@ function GameSession({
             setTutorialPageIndex(0);
             onTutorialPopupComplete(tutorialPopup);
           }}
-          onNext={() =>
-            setTutorialPageIndex((current) =>
-              Math.min(current + 1, tutorialPopup.pages.length - 1),
-            )
-          }
-          onPrevious={() =>
-            setTutorialPageIndex((current) => Math.max(0, current - 1))
-          }
+          onNext={() => moveTutorialToPage(tutorialPageIndex + 1)}
+          onPrevious={() => moveTutorialToPage(tutorialPageIndex - 1)}
           pages={tutorialPopup.pages}
           sectionLabel={
             tutorialPopup.pages[tutorialPageIndex]?.sectionLabel ??
@@ -2581,7 +2795,7 @@ function CampaignEndingHints({
         <div>
           <span>LOTUS · POST-MANDATE REVIEW</span>
           <strong id="campaign-ending-hints-title">결산 핵심 관측</strong>
-          <small>최종 자금·환경·구매 신뢰·활성 유저 결과를 요약했습니다.</small>
+          <small>최종 결과와 임기 전체의 누적 운영 기록을 함께 심사했습니다.</small>
         </div>
       </div>
       {complete ? (
@@ -2669,6 +2883,28 @@ function CampaignEndPanel({
           <small>{CAMPAIGN_TRUST_LABEL[ending.bands.trust]}</small>
         </div>
       </dl>
+      <section
+        aria-labelledby="campaign-stewardship-title"
+        className="campaign-stewardship-record"
+      >
+        <header>
+          <span>FULL MANDATE LEDGER</span>
+          <h2 id="campaign-stewardship-title">누적 운영 기록</h2>
+          <p>마지막 날의 스냅샷이 아니라 DAY {PLAYER_START_DAY} 이후 전 기간을 집계했습니다.</p>
+        </header>
+        <dl>
+          <div><dt>평균 환경</dt><dd>{ending.stewardship.averageEnvironmentHealth}</dd></div>
+          <div><dt>평균 구매 신뢰</dt><dd>{ending.stewardship.averagePurchaseTrust}</dd></div>
+          <div><dt>안정 환경 비율</dt><dd>{Math.round(ending.stewardship.healthyDayRate * 100)}%</dd></div>
+          <div><dt>심각한 Tier 0</dt><dd>{ending.stewardship.severeTierZeroDays}일</dd></div>
+          <div><dt>최장 위험 연속</dt><dd>{ending.stewardship.longestUnhealthyStreak}일</dd></div>
+          <div><dt>평균 유효 테마</dt><dd>{ending.stewardship.averageEffectiveThemeCount}종</dd></div>
+          <div><dt>최대 금제 규모</dt><dd>{ending.stewardship.largestRestrictionList}건</dd></div>
+          <div><dt>DAY 0 긴급 강도</dt><dd>{ending.stewardship.emergencyRestrictionMagnitude}</dd></div>
+          <div><dt>평균 파워 조정</dt><dd>{ending.stewardship.averageReleasePowerAdjustment > 0 ? "+" : ""}{ending.stewardship.averageReleasePowerAdjustment}</dd></div>
+          <div><dt>재판 카드</dt><dd>{ending.stewardship.reprintedCards}종</dd></div>
+        </dl>
+      </section>
       <CampaignEndingHints ending={ending} />
       <small className="campaign-end-note">
         DAY {LAST_DECISION_DAY} 최종 발매 이후 {SETTLEMENT_DAYS}일의 관측
@@ -2698,10 +2934,10 @@ function ConfirmNewGameDialog({
       >
         <div className="confirm-icon" aria-hidden="true">!</div>
         <h2 id="new-game-dialog-title">기존 임기를 덮어쓸까요?</h2>
-        <p>새 임기를 시작하면 기존 저장을 DAY 1 상태로 교체하며 되돌릴 수 없습니다. 진행한 날짜와 확정한 결정은 자동 저장됩니다.</p>
+        <p>새 임기를 시작하면 기존 저장을 DAY 0 긴급 투입 상태로 교체하며 되돌릴 수 없습니다. 진행한 날짜와 확정한 결정은 자동 저장됩니다.</p>
         <div className="dialog-actions">
           <button className="text-action" onClick={onCancel} type="button">취소</button>
-          <button className="primary-action" onClick={onConfirm} type="button">DAY 1부터 시작</button>
+          <button className="primary-action" onClick={onConfirm} type="button">DAY 0 긴급 투입</button>
         </div>
       </div>
     </div>
@@ -3515,6 +3751,7 @@ function MetaWorkspace({
 }
 
 function DistributionView({
+  analysisHistory,
   game,
   guidedInspection = false,
   guidedModeTarget = null,
@@ -3528,6 +3765,7 @@ function DistributionView({
   onSelectTheme,
   onGuidedModeConfirm,
 }: {
+  analysisHistory: readonly DailyHistory[];
   game: GameState;
   guidedInspection?: boolean;
   guidedModeTarget?: DistributionMode | null;
@@ -3547,7 +3785,7 @@ function DistributionView({
   const [focusedEntryId, setFocusedEntryId] = useState<string | null>(null);
   const [placementExpanded, setPlacementExpanded] = useState(false);
   const placementVisible = placementExpanded || guidedPlacementInspection;
-  const latestPlacementDay = game.history.at(-1);
+  const latestPlacementDay = analysisHistory.at(-1);
   const dailyPlacementRows = useMemo(() => {
     if (!latestPlacementDay) return [];
     const placements = getDailyTopCutPlacements(latestPlacementDay, game.seed);
@@ -3698,7 +3936,7 @@ function DistributionView({
           </h1>
           <p>
             {distributionMode === "top-cut"
-              ? "최근 14일 주요 대회의 입상 점유율입니다."
+              ? "최근 7일 주요 대회의 입상 점유율입니다."
               : "메타층·캐주얼층·콜렉터층·리셀층의 현재 구성비입니다."}
           </p>
         </div>
@@ -3728,7 +3966,9 @@ function DistributionView({
               <>
                 {hasFutureRelease ? (
                   <span>
-                    <ReleaseIcon size={16} /> {game.phase === "release-edit" ? "현재 발매" : "다음 발매"}{" "}
+                    <ReleaseIcon size={16} /> {isReprintReleaseDay(nextReleaseDay)
+                      ? game.phase === "release-edit" ? "현재 재판팩" : "다음 재판팩"
+                      : game.phase === "release-edit" ? "현재 발매" : "다음 발매"}{" "}
                     <strong>DAY {nextReleaseDay}</strong>
                   </span>
                 ) : null}
@@ -3778,7 +4018,11 @@ function DistributionView({
       </div>
 
       <section
-        aria-label={`DAY ${latestPlacementDay?.day ?? game.day} 대회 입상표`}
+        aria-label={
+          latestPlacementDay && latestPlacementDay.day < 0
+            ? `임기 전 D${latestPlacementDay.day} 대회 입상표`
+            : `DAY ${latestPlacementDay?.day ?? game.day} 대회 입상표`
+        }
         className={`daily-placement-board ${
           placementVisible ? "is-expanded" : "is-collapsed"
         }`}
@@ -3790,7 +4034,9 @@ function DistributionView({
             <strong>오늘의 입상표</strong>
           </div>
           <span>
-            DAY {latestPlacementDay?.day ?? game.day} · TOP {dailyPlacementRows.reduce((sum, row) => sum + row.count, 0)}
+            {latestPlacementDay && latestPlacementDay.day < 0
+              ? `임기 전 D${latestPlacementDay.day}`
+              : `DAY ${latestPlacementDay?.day ?? game.day}`} · TOP {dailyPlacementRows.reduce((sum, row) => sum + row.count, 0)}
           </span>
           <button
             aria-expanded={placementVisible}
@@ -3933,7 +4179,7 @@ function DistributionView({
             <div>
               <span>상위 3개 집중</span>
               <strong>{formatPercent(topThreeShare)}</strong>
-              <small>{distributionMode === "top-cut" ? "14일 입상 기준" : "활성 유저 기준"}</small>
+              <small>{distributionMode === "top-cut" ? "최근 7일 입상 기준" : "활성 유저 기준"}</small>
             </div>
             <div data-tutorial-term="purchase-trust">
               <span>구매 신뢰</span>
@@ -4375,11 +4621,14 @@ type FinanceChartDatum = {
   releaseAge: number | null;
 };
 
-function getFinanceChartData(game: GameState): FinanceChartDatum[] {
+function getFinanceChartData(
+  game: GameState,
+  analysisHistory: readonly DailyHistory[] = game.history,
+): FinanceChartDatum[] {
   // Decision days do not receive a history row until the release/ban is
   // submitted. Using the undated rolling revenue buffer here would shift the
   // previous day's value onto an unresolved decision day.
-  const rows = game.history
+  const rows = analysisHistory
     .filter((entry) => entry.day <= game.day)
     .slice(-90);
   const latestEntry = rows.at(-1);
@@ -4475,14 +4724,19 @@ function getFinanceChartDomain(
 }
 
 function FinanceMarketChart({
+  analysisHistory,
   game,
   guidedInspection = false,
 }: {
+  analysisHistory?: readonly DailyHistory[];
   game: GameState;
   guidedInspection?: boolean;
 }) {
   const [hoveredDay, setHoveredDay] = useState<number | null>(null);
-  const data = useMemo(() => getFinanceChartData(game), [game]);
+  const data = useMemo(
+    () => getFinanceChartData(game, analysisHistory),
+    [analysisHistory, game],
+  );
   const width = 1200;
   const height = 310;
   const left = 94;
@@ -5058,12 +5312,18 @@ function OperationsView({
         <div>
           <span className="eyebrow">BUSINESS OPERATIONS</span>
           <h1>사업 운영</h1>
-          <p>일반 액션은 상태 기반 확률, 위험 액션은 결정일 챌린지로 운영합니다.</p>
+          <p>
+            {!game.handoverComplete
+              ? "DAY 4 인수인계에서는 TV CM·매장 행사 등 기본 대응 4종부터 집행합니다."
+              : "일반 액션은 상태 기반 확률, 위험 액션은 결정일 챌린지로 운영합니다."}
+          </p>
         </div>
         <div className="cadence-card operations-cadence">
           <ClockIcon />
-          <span>집행 주기</span>
-          <strong>하루 1회 · 액션별 쿨다운</strong>
+          <span>현재 경쟁 시즌</span>
+          <strong>
+            SEASON {game.operations.season.currentSeasonNumber} · DAY {game.operations.season.startedDay} 개막
+          </strong>
         </div>
       </div>
 
@@ -5482,9 +5742,11 @@ function OperationsView({
 }
 
 function FinanceView({
+  analysisHistory,
   game,
   guidedInspection = false,
 }: {
+  analysisHistory?: readonly DailyHistory[];
   game: GameState;
   guidedInspection?: boolean;
 }) {
@@ -5514,7 +5776,11 @@ function FinanceView({
           <strong>{dailyDirection} {dailyRate >= 0 ? "+" : ""}{dailyRate.toFixed(1)}%</strong>
         </div>
       </div>
-      <FinanceMarketChart game={game} guidedInspection={guidedInspection} />
+      <FinanceMarketChart
+        analysisHistory={analysisHistory}
+        game={game}
+        guidedInspection={guidedInspection}
+      />
     </section>
   );
 }
@@ -5536,7 +5802,7 @@ function SupportDialog({
   onClose: () => void;
   onSubmit: () => void;
 }) {
-  const earliest = getNextReleaseDay(game.day);
+  const earliest = getNextRegularReleaseDay(game.day);
   const effectiveKeywordCount = getEffectiveThemePlayKeywords(
     game,
     theme.id,

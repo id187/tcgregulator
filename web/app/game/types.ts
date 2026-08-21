@@ -227,9 +227,9 @@ export interface ReprintReleaseOption extends ReleaseOptionBase {
   cardId: string;
   /** Display/community anchor; generic reprints use the current leading theme. */
   themeId: ThemeId;
-  requested: true;
-  requestId: string;
-  locked: true;
+  /** A prior registry request guarantees candidacy, not automatic inclusion. */
+  requested: boolean;
+  requestId?: string;
 }
 
 export type ReleaseOption =
@@ -240,6 +240,7 @@ export type ReleaseOption =
 
 export interface ReleaseSlate {
   day: number;
+  releaseKind: "regular" | "reprint";
   options: ReleaseOption[];
 }
 
@@ -277,8 +278,8 @@ export interface ReleasedReprintProduct extends ReleasedProductBase {
   cardId: string;
   /** Display/community anchor; it does not grant theme support. */
   themeId: ThemeId;
-  requestId: string;
-  /** Market price immediately before the reprint was locked. */
+  requestId?: string;
+  /** Market price immediately before the reprint was selected. */
   referencePrice: number;
   /** Deterministic ownership-confidence change applied on D+1. */
   trustDelta: number;
@@ -296,12 +297,20 @@ export type ReleasedProduct =
   | ReleasedGenericProduct
   | ReleasedReprintProduct;
 
-export interface ReleaseBatch {
+export interface PublishedReleaseBatch {
   day: number;
-  /** Existing DAY 1 card pool; not a player-authored regular release. */
-  baseline?: true;
+  releaseKind: "regular" | "reprint";
   products: ReleasedProduct[];
 }
+
+export interface BaselineReleaseBatch {
+  day: 0;
+  /** Existing DAY 0 card pool; not a player-authored release. */
+  releaseKind: "baseline";
+  products: ReleasedProduct[];
+}
+
+export type ReleaseBatch = PublishedReleaseBatch | BaselineReleaseBatch;
 
 export interface UserState {
   tier: number;
@@ -333,12 +342,12 @@ export type BusinessActionType =
   | "store-tour"
   | "beginner-camp"
   | "local-league"
-  | "reprint-campaign"
+  | "lending-exchange-network"
   | "collector-fair"
   | "pack-odds"
   | "season-overhaul"
   | "global-launch"
-  | "first-print-expansion";
+  | "organized-play-platform";
 
 export type BusinessRiskFactor =
   | "environment"
@@ -397,7 +406,7 @@ export interface BusinessActionRecord {
   outcome: BusinessActionOutcome;
   /**
    * Frozen backlash/detection probability for ordinary actions and pack odds.
-   * Older schema-v8 challenge records may retain this as compatibility data.
+   * Exact 0/1 values remain useful as deterministic simulation fixtures.
    */
   risk?: number;
   /** Environment health snapshot used to judge a championship. */
@@ -466,6 +475,23 @@ export interface BusinessEventRecord {
   resolvedDay?: number;
 }
 
+/** One durable boundary between competitive seasons inside the same mandate. */
+export interface CompetitiveSeasonBoundary {
+  seasonNumber: number;
+  startedDay: number;
+  sourceActionId: string;
+}
+
+/**
+ * Competitive records may restart without discarding the mandate's financial,
+ * release, decision, community, or daily operating history.
+ */
+export interface CompetitiveSeasonState {
+  currentSeasonNumber: number;
+  startedDay: number;
+  boundaries: CompetitiveSeasonBoundary[];
+}
+
 export interface OperationsState {
   nextActionId: number;
   records: BusinessActionRecord[];
@@ -474,6 +500,7 @@ export interface OperationsState {
   pendingEvent: PendingBusinessEvent | null;
   eventRecords: BusinessEventRecord[];
   strategy: BusinessStrategy;
+  season: CompetitiveSeasonState;
 }
 
 export type EnvironmentHealthModel = "placement-v1";
@@ -507,7 +534,7 @@ export interface DailyHistory {
 }
 
 export interface GameState {
-  schemaVersion: 8;
+  schemaVersion: 9;
   seed: number;
   day: number;
   phase: "running" | "release-edit" | "ban-edit" | "ended";
@@ -532,7 +559,7 @@ export interface GameState {
   nextCommunityId: number;
   currentTopThemeId: ThemeId;
   purchaseTrust: number;
-  /** False while the guided DAY 1-31 handover still needs its final acknowledgement. */
+  /** False while the guided DAY 0-7 emergency handover needs acknowledgement. */
   handoverComplete: boolean;
 }
 
@@ -542,7 +569,7 @@ export type GameCommand =
       type: "SUBMIT_BAN";
       changes: Record<string, RestrictionLimit>;
       /**
-       * The guided DAY 15 decision may mint the real mandate seed after the
+       * The guided DAY 0 decision may mint the real mandate seed after the
        * fixed prologue. It is deliberately supplied by the UI so the reducer
        * remains deterministic and saved games remain exactly reproducible.
        */

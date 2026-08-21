@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { getAutomaticReleaseSelections } from "../app/game/automatic-release.ts";
 import { THEMES } from "../app/game/content.ts";
 import {
-  createCampaignStart,
+  createInitialGame,
   getCounterplaySupportMatchupLogitAdjustment,
   getPairWinProbability,
   reduceGame,
@@ -18,6 +19,16 @@ import {
   getPlayKeyword,
   type ThemePlayKeywords,
 } from "../app/game/play-keywords.ts";
+
+function reachDay10Review(seed: number) {
+  let state = createInitialGame(seed);
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 3 });
+  assert.equal(state.day, 9);
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(state.day, 10);
+  assert.equal(state.phase, "release-edit");
+  return state;
+}
 
 test("every theme exposes exactly three stable, displayable play keywords", () => {
   assert.equal(PLAY_KEYWORD_IDS.length, 24);
@@ -145,8 +156,12 @@ test("keywords move equal-power matchups while a raw-power lead can overcome the
 });
 
 test("counterplay support targets the leader recorded on its release day", () => {
-  const state = createCampaignStart(90_041);
-  const releaseDay = state.history[0];
+  const review = reachDay10Review(90_041);
+  const state = reduceGame(review, {
+    type: "SUBMIT_RELEASE",
+    selections: getAutomaticReleaseSelections(review),
+  });
+  const releaseDay = state.history.find((entry) => entry.day === 10);
   assert.ok(releaseDay);
   const leaderId = releaseDay.topThemeId;
   const counterThemeId = state.activeThemeIds.find((themeId) => themeId !== leaderId);
@@ -155,19 +170,20 @@ test("counterplay support targets the leader recorded on its release day", () =>
   );
   assert.ok(counterThemeId && unrelatedThemeId);
 
-  state.releaseHistory.push({
-    day: releaseDay.day,
-    products: [
-      {
-        optionId: "counterplay-keyword-fixture",
-        kind: "support",
-        themeId: counterThemeId,
-        expectedTier: "Tier 2",
-        powerAdjustment: 0,
-        direction: "counterplay",
-      },
-    ],
-  });
+  const batch = state.releaseHistory.find(
+    (candidate) => candidate.day === releaseDay.day,
+  );
+  assert.ok(batch);
+  batch.products = [
+    {
+      optionId: "counterplay-keyword-fixture",
+      kind: "support",
+      themeId: counterThemeId,
+      expectedTier: "Tier 2",
+      powerAdjustment: 0,
+      direction: "counterplay",
+    },
+  ];
   assert.equal(
     getCounterplaySupportMatchupLogitAdjustment(
       state,
@@ -224,11 +240,13 @@ test("keyword interactions flow through win rates into next-day meta shares", ()
   const activeThemes = THEMES.slice(0, 5);
   const originals = activeThemes.map((theme) => theme.playKeywords);
   const neutralKeywords: ThemePlayKeywords = ["rush", "combo", "burst"];
+  const neutralStart = createInitialGame(73_001);
+  const keywordStart = createInitialGame(73_001);
   let neutral;
 
   try {
     for (const theme of activeThemes) theme.playKeywords = neutralKeywords;
-    neutral = reduceGame(createCampaignStart(73_001), {
+    neutral = reduceGame(neutralStart, {
       type: "ADVANCE_DAYS",
       days: 1,
     });
@@ -238,7 +256,7 @@ test("keyword interactions flow through win rates into next-day meta shares", ()
     });
   }
 
-  const keywordDriven = reduceGame(createCampaignStart(73_001), {
+  const keywordDriven = reduceGame(keywordStart, {
     type: "ADVANCE_DAYS",
     days: 1,
   });

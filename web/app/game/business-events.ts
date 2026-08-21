@@ -1,8 +1,8 @@
 import {
-  FIRST_BAN_DAY,
   BAN_INTERVAL,
+  FIRST_BAN_DAY,
+  isScheduledReleaseDay,
   LAST_DECISION_DAY,
-  RELEASE_INTERVAL,
 } from "./campaign.ts";
 import type {
   BusinessEventChoice,
@@ -13,7 +13,10 @@ import type {
   UserState,
 } from "./types.ts";
 
-export const BUSINESS_EVENT_START_DAY = 52;
+/** A guaranteed introductory dilemma, after the first product review. */
+export const FIRST_BUSINESS_EVENT_DAY = 20;
+/** Random recurring dilemmas begin on the original late-opening cadence. */
+export const RECURRING_BUSINESS_EVENT_START_DAY = 52;
 export const BUSINESS_EVENT_MIN_INTERVAL = 14;
 export const BUSINESS_EVENT_MAX_INTERVAL = 22;
 export const BUSINESS_STRATEGY_MIN = -100;
@@ -672,7 +675,7 @@ function keyedRandom(seed: number, ...keys: Array<string | number>): number {
 
 function isScheduledDecisionDay(day: number): boolean {
   return (
-    day % RELEASE_INTERVAL === 0 ||
+    isScheduledReleaseDay(day) ||
     (day >= FIRST_BAN_DAY && (day - FIRST_BAN_DAY) % BAN_INTERVAL === 0)
   );
 }
@@ -693,25 +696,37 @@ function chooseOpenDay(
   return null;
 }
 
-/** First unannounced event appears between DAY 52 and DAY 60. */
+/** The first two-choice dilemma is a fixed early campaign beat. */
 export function getInitialBusinessEventDay(seed: number): number {
-  return chooseOpenDay(
-    seed,
-    BUSINESS_EVENT_START_DAY,
-    BUSINESS_EVENT_START_DAY +
-      (BUSINESS_EVENT_MAX_INTERVAL - BUSINESS_EVENT_MIN_INTERVAL),
-    "business-event-initial-day",
-  ) ?? BUSINESS_EVENT_START_DAY;
+  void seed;
+  return FIRST_BUSINESS_EVENT_DAY;
 }
 
-/** Schedules the next event 14..22 days later, never on a release or ban day. */
+/** The first recurring dilemma keeps the original seeded DAY 52..60 window. */
+export function getFirstRecurringBusinessEventDay(seed: number): number {
+  return chooseOpenDay(
+    seed,
+    RECURRING_BUSINESS_EVENT_START_DAY,
+    RECURRING_BUSINESS_EVENT_START_DAY +
+      (BUSINESS_EVENT_MAX_INTERVAL - BUSINESS_EVENT_MIN_INTERVAL),
+    "business-event-initial-day",
+  ) ?? RECURRING_BUSINESS_EVENT_START_DAY;
+}
+
+/**
+ * After the fixed opener, resumes the original seeded DAY 52..60 window.
+ * Later events arrive 14..22 days apart, never on a release or ban day.
+ */
 export function getNextBusinessEventDay(
   seed: number,
   afterDay: number,
   nextEventId: number,
 ): number | null {
+  if (nextEventId === 2) {
+    return getFirstRecurringBusinessEventDay(seed);
+  }
   const minimum = Math.max(
-    BUSINESS_EVENT_START_DAY,
+    RECURRING_BUSINESS_EVENT_START_DAY,
     afterDay + BUSINESS_EVENT_MIN_INTERVAL,
   );
   const maximum = Math.min(

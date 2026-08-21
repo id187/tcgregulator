@@ -1,9 +1,12 @@
 import { useState } from "react";
 
 import { THEME_BY_ID } from "../game/content.ts";
+import { REPRINT_PACK_CANDIDATE_COUNT } from "../game/campaign.ts";
 import { getProspectiveSupportKeyword } from "../game/engine.ts";
 import { getGenericCard } from "../game/generic-card-catalog.ts";
 import { getPlayKeyword } from "../game/play-keywords.ts";
+import { getReleaseSlateKind } from "../game/release-kind.ts";
+import { getReprintImpactPreview } from "../game/release-requests.ts";
 import {
   canToggleReleaseOption,
   getDirectReleaseSelectionCount,
@@ -69,7 +72,7 @@ function optionRole(option: ReleaseOption): string {
   if (option.kind === "new-theme") return "신테마";
   if (option.kind === "support") return "지원";
   if (option.kind === "generic") return "범용";
-  return "예약 재판";
+  return option.requested ? "요청 재판" : "재판 후보";
 }
 
 function optionEffect(game: GameState, option: ReleaseOption): string {
@@ -80,7 +83,11 @@ function optionEffect(game: GameState, option: ReleaseOption): string {
     );
   }
   if (option.kind === "reprint") {
-    return "절판된 핵심 카드의 접근성을 회복하고 보유가치의 방향을 바꿉니다.";
+    const preview = getReprintImpactPreview(game, option.cardId);
+    if (!preview) {
+      return "절판된 핵심 카드의 접근성을 회복하고 보유가치의 방향을 바꿉니다.";
+    }
+    return `현재 시세 ${Math.round(preview.referencePrice).toLocaleString("ko-KR")}원 · 수요 ${Math.round(preview.playDemandScore)} · 출시 ${preview.ageDays}일 경과`;
   }
   const theme = THEME_BY_ID[option.themeId];
   if (option.kind === "new-theme") {
@@ -112,18 +119,22 @@ export function ReleaseDecisionPanel({
   selectedOptionIds: readonly string[];
 }) {
   const options = game.releaseSlate?.options ?? [];
+  const releaseKind = game.releaseSlate?.releaseKind ?? "regular";
+  const isReprintReview = game.releaseSlate
+    ? getReleaseSlateKind(game.releaseSlate) === "reprint"
+    : false;
   const [powerAdjustments, setPowerAdjustments] = useState<
     Record<string, PowerAdjustment>
   >({});
-  const directOptions = options.filter((option) => option.kind !== "reprint");
-  const lockedReprint = options.find(
-    (option) => option.kind === "reprint" && option.locked,
-  );
-  const expectedCount = getDirectReleaseSelectionCount(options);
+  const directOptions = isReprintReview
+    ? options
+    : options.filter((option) => option.kind !== "reprint");
+  const expectedCount = getDirectReleaseSelectionCount(releaseKind);
   const hasGenericRules = directOptions.some(
     (option) => option.kind === "generic",
   );
   const complete = isCompleteReleaseSelection(
+    releaseKind,
     options,
     selectedOptionIds,
   );
@@ -135,7 +146,7 @@ export function ReleaseDecisionPanel({
   );
 
   const toggleOption = (option: ReleaseOption) => {
-    if (disabled || option.kind === "reprint") return;
+    if (disabled || (!isReprintReview && option.kind === "reprint")) return;
     const selected = selectedOptionIds.includes(option.id);
     if (selected) {
       onChange(selectedOptionIds.filter((id) => id !== option.id));
@@ -144,6 +155,7 @@ export function ReleaseDecisionPanel({
 
     if (
       !canToggleReleaseOption(
+        releaseKind,
         options,
         selectedOptionIds,
         option.id,
@@ -153,15 +165,17 @@ export function ReleaseDecisionPanel({
   };
 
   const groups: Array<{
-    kind: "new-theme" | "support" | "generic";
+    kind: "new-theme" | "support" | "generic" | "reprint";
     label: string;
-  }> = [
-    { kind: "new-theme", label: "신테마" },
-    { kind: "support", label: "지원" },
-    ...(directOptions.some((option) => option.kind === "generic")
-      ? [{ kind: "generic" as const, label: "범용" }]
-      : []),
-  ];
+  }> = isReprintReview
+    ? [{ kind: "reprint", label: `재판 후보 ${REPRINT_PACK_CANDIDATE_COUNT}종` }]
+    : [
+        { kind: "new-theme", label: "신테마" },
+        { kind: "support", label: "지원" },
+        ...(directOptions.some((option) => option.kind === "generic")
+          ? [{ kind: "generic" as const, label: "범용" }]
+          : []),
+      ];
 
   return (
     <section
@@ -172,10 +186,14 @@ export function ReleaseDecisionPanel({
     >
       <header>
         <div>
-          <span>RELEASE REVIEW · DAY {game.day}</span>
-          <h2 id="release-decision-title">이번 카드팩 구성</h2>
+          <span>{isReprintReview ? "REPRINT REVIEW" : "RELEASE REVIEW"} · DAY {game.day}</span>
+          <h2 id="release-decision-title">
+            {isReprintReview ? "이번 재판팩 구성" : "이번 카드팩 구성"}
+          </h2>
           <p>
-            {hasGenericRules
+            {isReprintReview
+              ? `시세와 수요를 비교해 후보 ${REPRINT_PACK_CANDIDATE_COUNT}종 중 ${expectedCount}종을 고르세요. 재판 카드는 파워를 조정하지 않습니다.`
+              : hasGenericRules
               ? `신테마·지원·범용을 각각 1종 이상 포함해 ${expectedCount}종을 고르세요.`
               : `신테마를 1종 이상 포함해 ${expectedCount}종을 고르세요.`}
           </p>
@@ -185,7 +203,14 @@ export function ReleaseDecisionPanel({
 
       <div className="release-option-groups">
         {groups.map((group) => (
-          <fieldset className="release-option-group" key={group.kind}>
+          <fieldset
+            className={
+              isReprintReview
+                ? "release-option-group release-option-group-reprint"
+                : "release-option-group"
+            }
+            key={group.kind}
+          >
             <legend>{group.label}</legend>
             <div>
               {directOptions
@@ -201,6 +226,7 @@ export function ReleaseDecisionPanel({
                     : "#4b86a6";
                   const atCapacity = !selected && selectedCount >= expectedCount;
                   const preservesRequiredMix = canToggleReleaseOption(
+                    releaseKind,
                     options,
                     selectedOptionIds,
                     option.id,
@@ -242,7 +268,7 @@ export function ReleaseDecisionPanel({
         ))}
       </div>
 
-      <section
+      {!isReprintReview ? <section
         aria-label="선택한 발매 카드 파워 조정"
         className="release-power-adjustments"
       >
@@ -292,21 +318,41 @@ export function ReleaseDecisionPanel({
             })
           )}
         </div>
-      </section>
-
-      {lockedReprint ? (
-        <div className="release-locked-reprint" role="status">
-          <span>예약 재판</span>
-          <strong>{optionName(lockedReprint)}</strong>
-          <small>요청에 따라 카드팩에 자동 포함됩니다.</small>
-        </div>
-      ) : null}
+      </section> : (
+        <section className="release-power-adjustments release-reprint-impact" aria-label="재판 영향 안내">
+          <header>
+            <strong>재판 영향</strong>
+            <span>접근성은 오르지만 초판 보유가치와 구매 신뢰가 흔들릴 수 있습니다.</span>
+          </header>
+          <div>
+            {selectedDirectOptions.map((option) => {
+              if (option.kind !== "reprint") return null;
+              const preview = getReprintImpactPreview(game, option.cardId);
+              return preview ? (
+                <div className="release-power-adjustment-row" key={option.id}>
+                  <span>
+                    <small>{preview.collectorLabel ?? "일반 초판"}</small>
+                    <strong>{preview.cardName}</strong>
+                  </span>
+                  <span>
+                    접근 +{preview.accessibilityUserGain.toLocaleString("ko-KR")}명 · 신뢰 {preview.trustDelta.toFixed(1)}
+                  </span>
+                </div>
+              ) : null;
+            })}
+          </div>
+        </section>
+      )}
 
       <footer>
         <p>
           {complete
-            ? `필수 구성이 완성됐습니다. DAY ${game.day} 생산안으로 봉인하고 DAY ${game.day + 1}에 정식 출시합니다.`
-            : hasGenericRules
+            ? isReprintReview
+              ? `재판 3종이 확정됐습니다. DAY ${game.day + 1}부터 시세·접근성·콜렉터 반응을 관측합니다.`
+              : `필수 구성이 완성됐습니다. DAY ${game.day} 생산안으로 봉인하고 DAY ${game.day + 1}에 정식 출시합니다.`
+            : isReprintReview
+              ? `후보 ${REPRINT_PACK_CANDIDATE_COUNT}종 중 재판할 카드 3종을 선택해주세요.`
+              : hasGenericRules
               ? "신테마·지원·범용을 각각 1종 이상 선택해주세요."
               : "신테마가 1종 이상 필요합니다."}
         </p>
@@ -321,13 +367,15 @@ export function ReleaseDecisionPanel({
               .map((option) => ({
                 optionId: option.id,
                 powerAdjustment:
-                  powerAdjustments[option.id] ?? 0,
+                  option.kind === "reprint"
+                    ? 0
+                    : powerAdjustments[option.id] ?? 0,
               }));
             onSubmit(selected);
           }}
           type="button"
         >
-          생산안 확정
+          {isReprintReview ? "재판팩 확정" : "생산안 확정"}
         </button>
       </footer>
     </section>

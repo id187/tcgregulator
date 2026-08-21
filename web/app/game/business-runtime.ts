@@ -32,12 +32,14 @@ import {
   getBusinessStrategyModifiers,
   getNextBusinessEventDay,
 } from "./business-events.ts";
+import { isRegularReleaseDay } from "./campaign.ts";
 import { getStableThemeRandomIdentifier } from "./future-theme-id-migration.ts";
 import type {
   BusinessActionRecord,
   BusinessActionType,
   BusinessEventChoice,
   BusinessEventRecord,
+  CompetitiveSeasonState,
   GameState,
 } from "./types.ts";
 
@@ -125,10 +127,10 @@ export function getBusinessUserRateModifiers(state: GameState): {
         delta.casual = 0.0002;
         delta.collector = 0.00005;
         break;
-      case "reprint-campaign":
-        delta.tier = 0.00005;
-        delta.casual = 0.0001;
-        delta.collector = 0.00055;
+      case "lending-exchange-network":
+        delta.tier = 0.00025;
+        delta.casual = 0.00065;
+        delta.collector = 0.00015;
         break;
       case "collector-fair":
         delta.tier = 0.00005;
@@ -138,7 +140,7 @@ export function getBusinessUserRateModifiers(state: GameState): {
       case "pack-odds":
       case "season-overhaul":
       case "global-launch":
-      case "first-print-expansion":
+      case "organized-play-platform":
         break;
     }
     const effectiveness = getBusinessActionSaturationMultiplier(
@@ -189,7 +191,7 @@ export function getBusinessBuyerRateBonus(state: GameState): number {
       case "local-league":
         baseBonus = 0.004;
         break;
-      case "reprint-campaign":
+      case "lending-exchange-network":
         baseBonus = 0.002;
         break;
       case "collector-fair":
@@ -211,11 +213,11 @@ export function getBusinessBuyerRateBonus(state: GameState): number {
             ? -0.008
             : 0;
         break;
-      case "first-print-expansion":
+      case "organized-play-platform":
         baseBonus = record.outcome === "success"
-          ? 0.015
+          ? 0.006
           : record.outcome === "backlash"
-            ? -0.012
+            ? -0.006
             : 0;
         break;
     }
@@ -244,7 +246,7 @@ export function getBusinessTrustRecovery(state: GameState): number {
     if (record.type === "animation-promotion") baseRecovery = 0.015;
     if (record.type === "beginner-camp") baseRecovery = 0.03;
     if (record.type === "local-league") baseRecovery = 0.015;
-    if (record.type === "reprint-campaign") baseRecovery = 0.06;
+    if (record.type === "lending-exchange-network") baseRecovery = 0.05;
     if (record.type === "collector-fair") baseRecovery = 0.01;
     if (record.type === "championship" && record.outcome === "success") {
       baseRecovery = 0.025;
@@ -318,10 +320,56 @@ export function applyPendingPackOddsToCurrentRelease(state: GameState): void {
     (record) => record.type === "pack-odds" && record.outcome === "pending",
   );
   if (!pending) return;
+  if (!isRegularReleaseDay(state.day)) {
+    throw new Error("Pack-odds adjustments can only apply to a regular release.");
+  }
 
   pending.appliedDay = state.day;
-  pending.endsDay = state.day + 29;
+  pending.endsDay =
+    state.day + BUSINESS_ACTION_BY_TYPE["pack-odds"].duration - 1;
   pending.outcome = "active";
+}
+
+export function getCurrentCompetitiveSeason(
+  state: Pick<GameState, "operations">,
+): CompetitiveSeasonState {
+  return state.operations.season;
+}
+
+/**
+ * Starts a fresh competitive season while preserving every cumulative ledger.
+ * Card legality, released products, audience, finance, community, action
+ * records, and DailyHistory remain untouched.
+ */
+export function applyCompetitiveSeasonBoundary(
+  state: GameState,
+  sourceActionId: string,
+): void {
+  const previous = state.operations.season;
+  if (previous.boundaries.some((boundary) =>
+    boundary.sourceActionId === sourceActionId
+  )) {
+    return;
+  }
+  const current = getCurrentCompetitiveSeason(state);
+  const seasonNumber = current.currentSeasonNumber + 1;
+  const boundary = {
+    seasonNumber,
+    startedDay: state.day,
+    sourceActionId,
+  };
+  state.operations.season = {
+    currentSeasonNumber: seasonNumber,
+    startedDay: state.day,
+    boundaries: [...previous.boundaries, boundary],
+  };
+
+  for (const themeId of state.activeThemeIds) {
+    const runtime = state.themes[themeId];
+    runtime.previousWeekShare = runtime.share;
+    runtime.fatigue = 0;
+    runtime.topStreakDays = 0;
+  }
 }
 
 function updateBusinessActionLifecycle(state: GameState): void {
@@ -342,8 +390,7 @@ function updateBusinessActionLifecycle(state: GameState): void {
       isChallengeBusinessAction(record.type) &&
       record.outcome === "active"
     ) {
-      // Schema-v8 saves created before deterministic challenges have no
-      // progress object. Start from a safe explicit condition on first resume.
+      // Reducer-created challenges always persist their progress.
       record.challenge ??= createBusinessChallenge(record.type, record.startedDay);
       const evaluation = updateBusinessChallenge(
         record as BusinessActionRecord & {
@@ -380,6 +427,9 @@ function updateBusinessActionLifecycle(state: GameState): void {
           const cashReturn = definition.successReturn ?? 0;
           record.cashReturn = cashReturn;
           state.finance.cash = round(state.finance.cash + cashReturn, 4);
+          if (record.type === "season-overhaul") {
+            applyCompetitiveSeasonBoundary(state, record.id);
+          }
         }
       }
     }

@@ -4,26 +4,20 @@ import test from "node:test";
 import { getAutomaticReleaseSelections } from "../app/game/automatic-release.ts";
 import {
   createCampaignStart,
-  getPrologueRestrictionChanges,
+  createInitialGame,
   reduceGame,
 } from "../app/game/engine.ts";
 import type { GameState, ReleaseOption } from "../app/game/types.ts";
 
 function openFirstRelease(seed: number): GameState {
-  let state = reduceGame(createCampaignStart(seed), {
-    type: "ADVANCE_DAYS",
-    days: 14,
-  });
-  assert.equal(state.day, 15);
-  assert.equal(state.phase, "ban-edit");
-  state = reduceGame(state, {
-    type: "SUBMIT_BAN",
-    changes: getPrologueRestrictionChanges(state),
-  });
+  let state = createInitialGame(seed);
   state = reduceGame(state, {
     type: "ADVANCE_DAYS",
-    days: 15,
+    days: 3,
   });
+  assert.equal(state.day, 9, "D+9 report arrives before the first release");
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(state.day, 10);
   assert.equal(state.phase, "release-edit");
   assert.ok(state.releaseSlate);
   return state;
@@ -154,27 +148,12 @@ test("ranking prefers requested support, then power, then stable id", () => {
   assert.equal(selectionIds[3], strongestUnrequested.id);
 });
 
-test("legacy releases select exactly one new theme and two supports", () => {
+test("a malformed regular slate without generics is not auto-submitted", () => {
   const state = openFirstRelease(91_005);
-  state.genericReleaseStartDay = null;
   state.releaseSlate!.options = state.releaseSlate!.options.filter(
     (option) => option.kind !== "generic",
   );
 
   const selections = getAutomaticReleaseSelections(state);
-  assert.equal(selections.length, 3);
-  assert.ok(selections.every((selection) => selection.powerAdjustment === 0));
-  const options = selectedOptions(
-    state,
-    selections.map((selection) => selection.optionId),
-  );
-  assert.equal(options.filter((option) => option.kind === "new-theme").length, 1);
-  assert.equal(options.filter((option) => option.kind === "support").length, 2);
-
-  const submitted = reduceGame(state, {
-    type: "SUBMIT_RELEASE",
-    selections,
-  });
-  assert.equal(submitted.phase, "running");
-  assert.equal(submitted.releaseHistory.at(-1)?.products.length, 3);
+  assert.deepEqual(selections, []);
 });

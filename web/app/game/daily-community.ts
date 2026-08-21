@@ -22,10 +22,10 @@ import {
   BEGINNER_CAMP_COPY,
   COLLECTOR_FAIR_COPY,
   getAnimationPromotionCopy,
+  LENDING_EXCHANGE_NETWORK_COPY,
   LOCAL_LEAGUE_COPY,
   PACK_ODDS_DETECTED_COPY,
   PACK_ODDS_RUMOR_COPY,
-  REPRINT_CAMPAIGN_COPY,
   STORE_TOUR_COPY,
   TOURNAMENT_BACKLASH_COPY,
   TOURNAMENT_SUCCESS_COPY,
@@ -98,7 +98,7 @@ const BUSINESS_CONTEXT_QUOTA = {
   "store-tour": [8, 6, 4, 2],
   "beginner-camp": [8, 6, 4, 2],
   "local-league": [8, 6, 4, 2],
-  "reprint-campaign": [8, 6, 4, 2],
+  "lending-exchange-network": [8, 6, 4, 2],
   "collector-fair": [8, 6, 4, 2],
 } as const;
 
@@ -1111,7 +1111,9 @@ const REPRINT_ART_COPY = [
 ] as const;
 
 const EMERGING_THEME_OFFICIAL_SAMPLE_DAYS = PLACEMENT_WINDOW_DAYS;
-const EMERGING_THEME_PERFORMANCE_SAMPLE_DAYS = 7;
+// With a seven-day official window, use the opening three days as the early
+// read so the completed weekly sample can still confirm or reverse it.
+const EMERGING_THEME_PERFORMANCE_SAMPLE_DAYS = 3;
 
 const EMERGING_THEME_CAUTION_COPY = [
   "{theme} 나온 지 {elapsed}밖에 안 됐는데 벌써 결론 내리는 건 너무 빠르다",
@@ -3214,8 +3216,10 @@ type ReprintReactionContext = {
 };
 
 function assertCommunityDay(state: GameState, day: number): void {
-  if (!Number.isInteger(day) || day < 1 || day > state.day) {
-    throw new RangeError(`Community day must be an integer from 1 to ${state.day}.`);
+  if (!Number.isInteger(day) || day < FIRST_BAN_DAY || day > state.day) {
+    throw new RangeError(
+      `Community day must be an integer from ${FIRST_BAN_DAY} to ${state.day}.`,
+    );
   }
 }
 
@@ -6299,7 +6303,7 @@ export function getCommunityHeat(state: GameState, day: number): number {
           return 62;
         case "local-league":
           return 68;
-        case "reprint-campaign":
+        case "lending-exchange-network":
           return 64;
         case "collector-fair":
           return 66;
@@ -6458,7 +6462,7 @@ function businessCommunityContexts(
       record.type === "store-tour" ||
       record.type === "beginner-camp" ||
       record.type === "local-league" ||
-      record.type === "reprint-campaign" ||
+      record.type === "lending-exchange-network" ||
       record.type === "collector-fair"
     ) {
       if (record.outcome === "backlash" && record.resolvedDay !== undefined) {
@@ -6498,7 +6502,7 @@ function businessCommunityContexts(
     "store-tour": 10,
     "beginner-camp": 11,
     "local-league": 12,
-    "reprint-campaign": 13,
+    "lending-exchange-network": 13,
     "collector-fair": 14,
   };
   return contexts.sort(
@@ -6553,8 +6557,8 @@ function businessCommunityPool(
       return BEGINNER_CAMP_COPY;
     case "local-league":
       return LOCAL_LEAGUE_COPY;
-    case "reprint-campaign":
-      return REPRINT_CAMPAIGN_COPY;
+    case "lending-exchange-network":
+      return LENDING_EXCHANGE_NETWORK_COPY;
     case "collector-fair":
       return COLLECTOR_FAIR_COPY;
   }
@@ -6614,7 +6618,10 @@ function makeBusinessCommunityPosts(
       const category: CommunityCategory = context.kind === "local-league"
         ? "meta"
         : context.kind.startsWith("venture")
-        ? context.ventureAction === "season-overhaul" ? "meta" : "finance"
+        ? context.ventureAction === "season-overhaul" ||
+            context.ventureAction === "organized-play-platform"
+          ? "meta"
+          : "finance"
         : context.kind.startsWith("pack")
           ? "finance"
           : context.kind === "campaign-backlash"
@@ -6690,7 +6697,11 @@ function templateFor(seed: number, day: number, index: number): DailyTemplate {
     )
   ];
   const slot = (day - 1) * POSTS_PER_DAY + index;
-  return DAILY_TEMPLATES[(offset + slot * step) % DAILY_TEMPLATES.length];
+  const templateIndex =
+    ((offset + slot * step) % DAILY_TEMPLATES.length +
+      DAILY_TEMPLATES.length) %
+    DAILY_TEMPLATES.length;
+  return DAILY_TEMPLATES[templateIndex];
 }
 
 function fillTemplate(
@@ -6774,7 +6785,7 @@ function isHighIllustrationMarketPart(
     return false;
   }
   const quote = getThemeCardMarketQuoteAtDay(
-    state,
+    communityMarketStateAtDay(state, themeId, day),
     themeId,
     part.id,
     day,
@@ -6786,6 +6797,57 @@ function isHighIllustrationMarketPart(
       quote.price >= HIGH_ILLUSTRATION_MARKET_PRICE &&
       quote.collectorDemandScore >= HIGH_ILLUSTRATION_COLLECTOR_DEMAND,
   );
+}
+
+/**
+ * Community archives must not rewrite old price copy after later releases and
+ * user migration mutate the live runtime. History rows do not store the full
+ * audience split or per-card stats, so historical boards use the campaign's
+ * fixed opening audience mix and authored card defaults alongside the saved
+ * share/win-rate snapshot.
+ */
+function communityMarketStateAtDay(
+  state: GameState,
+  themeId: ThemeId,
+  day: number,
+): GameState {
+  if (day >= state.day) return state;
+  const snapshot = historyAtOrBefore(state, day);
+  const runtime = state.themes[themeId];
+  const content = THEME_BY_ID[themeId];
+  if (!snapshot || !runtime || !content) return state;
+  const totalUsers = Math.max(0, Math.round(snapshot.totalUsers));
+  const tier = Math.round(totalUsers * 0.35);
+  const casual = Math.round(totalUsers * 0.45);
+  return {
+    ...state,
+    day,
+    users: {
+      tier,
+      casual,
+      collector: Math.max(0, totalUsers - tier - casual),
+    },
+    themes: {
+      ...state.themes,
+      [themeId]: {
+        ...runtime,
+        share: snapshot.shares[themeId] ?? runtime.share,
+        previousWeekShare: snapshot.shares[themeId] ?? runtime.previousWeekShare,
+        winRate: snapshot.winRates?.[themeId] ?? 0.5,
+        partStats: Object.fromEntries(
+          content.parts
+            .filter((part) => runtime.releasedPartIds.includes(part.id))
+            .map((part) => [
+              part.id,
+              {
+                usageRate: part.inclusion,
+                averageCopies: part.averageCopies,
+              },
+            ]),
+        ),
+      },
+    },
+  };
 }
 
 type HighIllustrationMarketSelection = { part: PartContent | null };
@@ -6900,7 +6962,7 @@ function fillReactionCopy(
   const oldCard = oldPart?.name ?? fallbackPart.name;
   const marketQuote = preferredPart
     ? getThemeCardMarketQuoteAtDay(
-        state,
+        communityMarketStateAtDay(state, product.themeId, day),
         product.themeId,
         preferredPart.id,
         day,
@@ -7245,7 +7307,7 @@ export function getDailyCommunityPosts(
 ): CommunityEvent[] {
   assertCommunityDay(state, day);
 
-  // DAY 1–45 is a fixed authored handover. Once the first restriction list
+  // DAY 0–7 is a fixed authored handover. Once the first restriction list
   // mints a random mandate seed, historical prologue boards must not be
   // silently reshuffled when the player looks back at them.
   if (day <= FIRST_BAN_DAY && state.seed !== PROLOGUE_SEED) {

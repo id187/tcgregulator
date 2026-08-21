@@ -1,5 +1,6 @@
 import { BUSINESS_ACTION_BY_TYPE } from "./business-actions.ts";
 import { BUSINESS_EVENT_BY_TYPE } from "./business-events.ts";
+import { FIRST_BAN_DAY } from "./campaign.ts";
 import { getThemeCardMarketQuoteAtDay } from "./card-market.ts";
 import { getMostLikedCommunityPost } from "./community-engagement.ts";
 import { THEME_BY_ID } from "./content.ts";
@@ -60,6 +61,7 @@ function primaryCause(state: GameState, day: number): {
   chainId: string;
   reason: string;
   releasePower?: "weak" | "balanced" | "strong";
+  releaseKind?: "regular" | "reprint";
 } {
   const release = [...state.releaseHistory]
     .reverse()
@@ -68,14 +70,16 @@ function primaryCause(state: GameState, day: number): {
         !isInitialGenericReleaseBatch(batch) &&
         batch.day <= day &&
         day - batch.day <= 2,
-    );
+  );
   if (release) {
+    const releaseKind = release.releaseKind === "reprint" ? "reprint" : "regular";
     const averagePower = release.products.reduce(
       (sum, product) => sum + product.powerAdjustment,
       0,
     ) / Math.max(1, release.products.length);
     return {
       chainId: `release-${release.day}`,
+      releaseKind,
       releasePower:
         averagePower <= -1
           ? "weak"
@@ -83,7 +87,9 @@ function primaryCause(state: GameState, day: number): {
             ? "strong"
             : "balanced",
       reason:
-        averagePower <= -1
+        releaseKind === "reprint"
+          ? "재판팩이 풀리며 카드 접근성과 중고 시세가 함께 움직이고 있습니다."
+          : averagePower <= -1
           ? "유저들은 신규 팩이 너무 약하다는 반응입니다."
           : averagePower >= 1
             ? "강한 신상품이 주목받는 한편, 기존 카드 가치에 대한 우려도 커지고 있습니다."
@@ -133,7 +139,32 @@ function releaseMetricReason(
   power: "weak" | "balanced" | "strong",
   kind: "users" | "revenue" | "environment" | "trust" | "sentiment",
   delta: number,
+  releaseKind: "regular" | "reprint" = "regular",
 ): string {
+  if (releaseKind === "reprint") {
+    switch (kind) {
+      case "users":
+        return delta >= 0
+          ? "필요한 카드를 구하기 쉬워지며 복귀·입문 유저가 늘었습니다."
+          : "재판 수요가 기대보다 작아 접속 흐름까지 이어지지 못했습니다.";
+      case "revenue":
+        return delta >= 0
+          ? "구하기 어려웠던 카드를 찾는 구매가 재판팩에 몰렸습니다."
+          : "중고 시세 하락에 비해 재판팩 구매 반응은 약했습니다.";
+      case "environment":
+        return delta >= 0
+          ? "핵심 카드 접근성이 좋아지며 대회 덱 구성이 넓어졌습니다."
+          : "재판 카드가 기존 강세 덱에 집중되며 입상 구도가 더 굳어졌습니다.";
+      case "trust":
+        return delta >= 0
+          ? "고가 카드의 공급이 늘어 구매 접근성에 대한 신뢰가 회복됐습니다."
+          : "재판 대상 선정이 실제 수요를 비껴갔다는 평가가 나오고 있습니다.";
+      case "sentiment":
+        return delta >= 0
+          ? "커뮤니티에서는 필요한 카드를 다시 구할 수 있다는 반응이 퍼지고 있습니다."
+          : "커뮤니티에서는 재판 대상이 아쉽다는 반응이 커지고 있습니다.";
+    }
+  }
   if (power === "weak") {
     switch (kind) {
       case "users":
@@ -319,6 +350,11 @@ function releaseProductName(
   if (product.kind === "generic") {
     return getGenericCard(product.genericCardId)?.name ?? "범용 카드";
   }
+  if (product.kind === "reprint") {
+    return THEME_BY_ID[product.themeId]?.parts.find(
+      (part) => part.id === product.cardId,
+    )?.name ?? "재판 카드";
+  }
   return THEME_BY_ID[product.themeId]?.shortName ?? "신규 테마";
 }
 
@@ -346,7 +382,12 @@ function metricDrafts(state: GameState, day: number): NewsDraft[] {
       tone: userDelta >= 0 ? "positive" : "negative",
       headline: userDelta >= 0 ? "활성 유저가 크게 늘었습니다" : "활성 유저 이탈이 감지됐습니다",
       reason: cause.releasePower
-        ? releaseMetricReason(cause.releasePower, "users", userDelta)
+        ? releaseMetricReason(
+            cause.releasePower,
+            "users",
+            userDelta,
+            cause.releaseKind,
+          )
         : cause.reason,
       detail: `${formatSigned(userDelta, 0)}명 · 전일 대비 ${formatSigned(userRate)}%`,
       priority: Math.min(100, 60 + Math.abs(userRate) * 5),
@@ -367,7 +408,12 @@ function metricDrafts(state: GameState, day: number): NewsDraft[] {
       tone: revenueDelta >= 0 ? "positive" : "negative",
       headline: revenueDelta >= 0 ? "일매출이 급등했습니다" : "일매출이 급락했습니다",
       reason: cause.releasePower
-        ? releaseMetricReason(cause.releasePower, "revenue", revenueDelta)
+        ? releaseMetricReason(
+            cause.releasePower,
+            "revenue",
+            revenueDelta,
+            cause.releaseKind,
+          )
         : cause.reason,
       detail: `₩${Math.abs(revenueDelta).toFixed(2)}억 ${revenueDelta >= 0 ? "증가" : "감소"} · ${formatSigned(revenueRate)}%`,
       priority: Math.min(100, 58 + Math.abs(revenueRate)),
@@ -391,7 +437,12 @@ function metricDrafts(state: GameState, day: number): NewsDraft[] {
         reason:
           environmentChangeReason(state, previous, current, delta) ??
           (cause.releasePower
-            ? releaseMetricReason(cause.releasePower, "environment", delta)
+            ? releaseMetricReason(
+                cause.releasePower,
+                "environment",
+                delta,
+                cause.releaseKind,
+              )
             : cause.reason),
         detail: `${Math.round(current.environmentHealth)}점 · ${formatSigned(delta)}점`,
         priority: Math.min(100, 62 + Math.abs(delta) * 4),
@@ -414,7 +465,12 @@ function metricDrafts(state: GameState, day: number): NewsDraft[] {
         tone: delta >= 0 ? "positive" : "negative",
         headline: delta >= 0 ? "구매 신뢰가 회복됐습니다" : "구매 신뢰가 크게 떨어졌습니다",
         reason: cause.releasePower
-          ? releaseMetricReason(cause.releasePower, "trust", delta)
+          ? releaseMetricReason(
+              cause.releasePower,
+              "trust",
+              delta,
+              cause.releaseKind,
+            )
           : cause.reason,
         detail: `${Math.round(current.purchaseTrust)}점 · ${formatSigned(delta)}점`,
         priority: Math.min(100, 66 + Math.abs(delta) * 5),
@@ -439,7 +495,12 @@ function metricDrafts(state: GameState, day: number): NewsDraft[] {
         reason:
           strongestCommunityReaction(state, day) ??
           (cause.releasePower
-            ? releaseMetricReason(cause.releasePower, "sentiment", delta)
+            ? releaseMetricReason(
+                cause.releasePower,
+                "sentiment",
+                delta,
+                cause.releaseKind,
+              )
             : cause.reason),
         detail: `${Math.round(current.communitySentiment)}점 · ${formatSigned(delta)}점`,
         priority: Math.min(100, 60 + Math.abs(delta) * 3),
@@ -491,8 +552,12 @@ function eventDrafts(state: GameState, day: number): NewsDraft[] {
       day,
       kind: "release",
       tone: "info",
-      headline: `정기 카드팩 ${release.products.length}종이 발매됐습니다`,
-      reason: "신규 팩을 본 유저들이 덱을 바꾸고 구매를 시작했습니다.",
+      headline: release.releaseKind === "reprint"
+        ? `재판 카드팩 ${release.products.length}종이 발매됐습니다`
+        : `정규 카드팩 ${release.products.length}종이 발매됐습니다`,
+      reason: release.releaseKind === "reprint"
+        ? "재판 대상이 풀리며 유저들이 보유 카드와 구매 계획을 다시 점검하고 있습니다."
+        : "신규 팩을 본 유저들이 덱을 바꾸고 구매를 시작했습니다.",
       detail: release.products.map(releaseProductName).join(" · "),
       priority: 82,
       chainId: `release-${day}`,
@@ -585,7 +650,7 @@ function communityDraft(state: GameState, day: number): NewsDraft | null {
 }
 
 export function getDailyNews(state: GameState, day: number): DailyNewsItem[] {
-  if (!Number.isInteger(day) || day < 1 || day > state.day) return [];
+  if (!Number.isInteger(day) || day < FIRST_BAN_DAY || day > state.day) return [];
   const popular = communityDraft(state, day);
   const drafts = [
     ...eventDrafts(state, day),
@@ -604,7 +669,7 @@ export function getDailyNewsRange(
   startDayExclusive: number,
   endDayInclusive: number,
 ): DailyNewsItem[] {
-  const start = Math.max(0, Math.floor(startDayExclusive));
+  const start = Math.max(FIRST_BAN_DAY - 1, Math.floor(startDayExclusive));
   const end = Math.min(state.day, Math.floor(endDayInclusive));
   if (end <= start) return [];
   const result: DailyNewsItem[] = [];

@@ -13,9 +13,11 @@ import {
   BAN_INTERVAL,
   CAMPAIGN_END_DAY,
   FIRST_BAN_DAY,
+  getNextRegularReleaseDay,
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
-  RELEASE_INTERVAL,
+  RESTRICTION_REPORT_DELAY_DAYS,
+  TUTORIAL_END_DAY,
 } from "./campaign.ts";
 import { OPERATING_CASH_MARGIN } from "./finance.ts";
 import {
@@ -30,6 +32,7 @@ import {
   isBusinessChallengeDecisionDay,
   isChallengeBusinessAction,
 } from "./business-challenges.ts";
+import { HANDOVER_TAB_UNLOCK_DAY } from "./handover.ts";
 
 export type BusinessActionFamily = "media" | "community" | "product";
 
@@ -125,16 +128,16 @@ export const BUSINESS_ACTIONS = [
     saturationFamily: "community",
   },
   {
-    type: "reprint-campaign",
-    kicker: "ACCESSIBILITY",
-    title: "수요 카드 긴급 재판",
+    type: "lending-exchange-network",
+    kicker: "ACCESS NETWORK",
+    title: "매장 덱 대여·교환망",
     cost: 0.55,
     duration: 30,
     cooldown: 45,
     tone: "safe",
-    summary: "품귀 핵심 파츠를 재판하고 매장 교환 지원을 함께 여는 공급 대책",
-    effect: "30일간 재판 상품 매출 + 구매 신뢰 회복",
-    saturationFamily: "product",
+    summary: "공인 매장에 체험 덱 대여와 유저 간 카드 교환 데스크를 지원",
+    effect: "30일간 대여·참가 매출 + 캐주얼·경쟁층 유입과 구매 신뢰 회복",
+    saturationFamily: "community",
   },
   {
     type: "collector-fair",
@@ -184,30 +187,56 @@ export const BUSINESS_ACTIONS = [
     tone: "danger",
     summary: "번역·물류·해외 리그를 묶어 신규 시장을 여는 확장 프로젝트",
     effect: "21일 중 14일간 구매 신뢰 72 이상 유지 · 달성 시 ₩5.2억 회수와 해외 유입",
-    minimumDay: 180,
+    minimumDay: 170,
     resolutionDelay: 21,
     successReturn: 5.2,
     oncePerCampaign: true,
   },
   {
-    type: "first-print-expansion",
-    kicker: "SUPPLY BET",
-    title: "대표 세트 초판 증산",
-    cost: 1.5,
-    duration: 30,
+    type: "organized-play-platform",
+    kicker: "PLAY INFRASTRUCTURE",
+    title: "통합 대회 플랫폼 구축",
+    cost: 2.2,
+    duration: 75,
     cooldown: 500,
     tone: "danger",
-    summary: "막 공개한 정기 세트의 초판 물량을 수요 예측보다 크게 잡는 승부수",
-    effect: "발매일에만 집행 · 7일 중 5일간 발매 품질 68 이상이면 ₩4.0억 회수",
+    summary: "공인 매장·대진·랭킹·중계를 하나의 장기 운영망으로 묶는 인프라 투자",
+    effect: "21일 중 14일간 환경 건강도 62 이상 유지 · 달성 시 ₩4.8억 회수와 장기 대회 유입",
     minimumDay: 90,
-    resolutionDelay: 7,
-    successReturn: 4,
+    resolutionDelay: 21,
+    successReturn: 4.8,
     oncePerCampaign: true,
   },
 ] as const satisfies readonly BusinessActionDefinition[];
 
+/**
+ * Low-stakes actions introduced with the DAY 4 operations desk. The guided
+ * handover intentionally withholds covert monetization, challenges and
+ * long-horizon projects until the player receives full control.
+ */
+export const HANDOVER_STARTER_BUSINESS_ACTION_TYPES = [
+  "tv-cm",
+  "store-tour",
+  "beginner-camp",
+  "local-league",
+] as const satisfies readonly BusinessActionType[];
+
+export type HandoverStarterBusinessActionType =
+  (typeof HANDOVER_STARTER_BUSINESS_ACTION_TYPES)[number];
+
+export function isHandoverStarterBusinessAction(
+  type: BusinessActionType,
+): type is HandoverStarterBusinessActionType {
+  return (
+    HANDOVER_STARTER_BUSINESS_ACTION_TYPES as readonly BusinessActionType[]
+  ).includes(type);
+}
+
 export const BUSINESS_ACTION_BY_TYPE = Object.fromEntries(
-  BUSINESS_ACTIONS.map((action) => [action.type, action]),
+  BUSINESS_ACTIONS.map((action) => [
+    action.type,
+    action,
+  ]),
 ) as Record<BusinessActionType, BusinessActionDefinition>;
 
 export const PROBABILISTIC_BUSINESS_ACTION_TYPES = [
@@ -216,7 +245,7 @@ export const PROBABILISTIC_BUSINESS_ACTION_TYPES = [
   "store-tour",
   "beginner-camp",
   "local-league",
-  "reprint-campaign",
+  "lending-exchange-network",
   "collector-fair",
 ] as const satisfies readonly BusinessActionType[];
 
@@ -240,7 +269,7 @@ const PROBABILISTIC_ACTION_BASE_SUCCESS = {
   "store-tour": 0.78,
   "beginner-camp": 0.8,
   "local-league": 0.72,
-  "reprint-campaign": 0.76,
+  "lending-exchange-network": 0.78,
   "collector-fair": 0.7,
 } as const satisfies Record<ProbabilisticBusinessActionType, number>;
 
@@ -361,7 +390,7 @@ export function getProbabilisticBusinessActionEffectMultiplier(
 export const STRATEGIC_BUSINESS_ACTION_TYPES = [
   "season-overhaul",
   "global-launch",
-  "first-print-expansion",
+  "organized-play-platform",
 ] as const satisfies readonly BusinessActionType[];
 
 export type StrategicBusinessActionType =
@@ -449,12 +478,12 @@ export const STRATEGIC_SUCCESS_BENEFIT_BY_TYPE = {
     grossRevenuePerUserWon: 130,
     grossRevenuePerCollectorWon: 300,
   },
-  "first-print-expansion": {
-    userRates: { tier: 0.00002, casual: 0.00005, collector: 0.0001 },
-    buyerRate: 0.007,
-    trustPerDay: 0.002,
-    grossRevenuePerUserWon: 160,
-    grossRevenuePerCollectorWon: 250,
+  "organized-play-platform": {
+    userRates: { tier: 0.00014, casual: 0.00008, collector: 0.00003 },
+    buyerRate: 0.002,
+    trustPerDay: 0.004,
+    grossRevenuePerUserWon: 200,
+    grossRevenuePerCollectorWon: 0,
   },
 } as const satisfies Record<
   StrategicBusinessActionType,
@@ -553,8 +582,9 @@ export function getBusinessActionDailyGrossRevenue(
     case "local-league":
       revenueWon = totalUsers * 250 + state.users.tier * 1_600;
       break;
-    case "reprint-campaign":
-      revenueWon = totalUsers * 650;
+    case "lending-exchange-network":
+      revenueWon =
+        totalUsers * 250 + state.users.casual * 900 + state.users.tier * 300;
       break;
     case "collector-fair":
       revenueWon = totalUsers * 300 + state.users.collector * 7_000;
@@ -564,7 +594,7 @@ export function getBusinessActionDailyGrossRevenue(
     case "pack-odds":
     case "season-overhaul":
     case "global-launch":
-    case "first-print-expansion":
+    case "organized-play-platform":
       break;
   }
 
@@ -743,7 +773,7 @@ function getRecentPolicyQuality(
   return getPublishedRestrictionPolicyProfile(state, latestDay).quality;
 }
 
-const RESTRICTION_OUTCOME_FOLLOWUP_DAYS = 4;
+const RESTRICTION_OUTCOME_FOLLOWUP_DAYS = RESTRICTION_REPORT_DELAY_DAYS;
 const RESTRICTION_OUTCOME_RISK_WINDOW_DAYS = 30;
 
 type RestrictionOutcomeRiskEffect = {
@@ -942,18 +972,18 @@ export function getStrategicProjectRiskProfile(
     ? context.policyQuality === "balanced" ? -0.05 : context.policyQuality === "incomplete" ? 0.06 : context.policyQuality === "narrow" ? 0.14 : 0.1
     : type === "global-launch"
       ? context.policyQuality === "balanced" ? -0.03 : context.policyQuality === "incomplete" ? 0.03 : context.policyQuality === "narrow" ? 0.07 : 0.05
-      : 0;
+      : context.policyQuality === "balanced" ? -0.03 : context.policyQuality === "incomplete" ? 0.04 : context.policyQuality === "narrow" ? 0.08 : 0.06;
   const lateAdjustment = context.timing === "late"
-    ? type === "first-print-expansion" ? 0.04 : 0.08
+    ? type === "organized-play-platform" ? 0.06 : 0.08
     : 0;
   const risk = (type === "season-overhaul"
     ? 0.2 + Math.max(0, 70 - health) * 0.008 + Math.max(0, 72 - trust) * 0.007 + policyAdjustment + Math.max(0, 65 - releaseQuality) * 0.004 + lateAdjustment
     : type === "global-launch"
       ? 0.22 + Math.max(0, 62 - health) * 0.004 + Math.max(0, 75 - trust) * 0.01 + policyAdjustment + Math.max(0, 70 - releaseQuality) * 0.006 + lateAdjustment
-      : 0.2 + Math.max(0, 60 - health) * 0.003 + Math.max(0, 68 - trust) * 0.006 + Math.max(0, 72 - releaseQuality) * 0.01 + lateAdjustment) +
+      : 0.21 + Math.max(0, 66 - health) * 0.007 + Math.max(0, 70 - trust) * 0.006 + policyAdjustment + Math.max(0, 64 - releaseQuality) * 0.003 + lateAdjustment) +
     restrictionOutcomeEffect.riskAdjustment;
   const minimum = type === "season-overhaul" ? 0.15 : type === "global-launch" ? 0.18 : 0.16;
-  const maximum = type === "season-overhaul" ? 0.85 : type === "global-launch" ? 0.88 : 0.82;
+  const maximum = type === "season-overhaul" ? 0.85 : type === "global-launch" ? 0.88 : 0.84;
   return { risk: round(clamp(risk, minimum, maximum), 4), context };
 }
 
@@ -963,18 +993,33 @@ export function getBusinessActionScheduledEndDay(
 ): number {
   const definition = BUSINESS_ACTION_BY_TYPE[type];
   if (type === "pack-odds") {
-    const releaseDay =
-      (Math.floor(startedDay / RELEASE_INTERVAL) + 1) * RELEASE_INTERVAL;
+    const releaseDay = getNextRegularReleaseDay(startedDay);
     return releaseDay + definition.duration - 1;
   }
   return startedDay + definition.duration;
 }
 
 export function getBusinessEnvironmentHealth(state: GameState): number {
-  return getEnvironmentHealthBreakdown(state).score;
+  return getBusinessEnvironmentHealthBreakdown(state).score;
 }
 
-export { getEnvironmentHealthBreakdown as getBusinessEnvironmentHealthBreakdown };
+/** Keeps cumulative history intact while limiting competitive reports to this season. */
+export function getCompetitiveSeasonHistory(
+  state: Pick<GameState, "history" | "operations">,
+): GameState["history"] {
+  return state.history.filter(
+    (entry) => entry.day >= state.operations.season.startedDay,
+  );
+}
+
+export function getBusinessEnvironmentHealthBreakdown(state: GameState) {
+  const competitiveHistory = getCompetitiveSeasonHistory(state);
+  return getEnvironmentHealthBreakdown(
+    competitiveHistory === state.history
+      ? state
+      : { ...state, history: competitiveHistory },
+  );
+}
 
 export function getChampionshipBacklashRisk(state: GameState): number {
   const health = getBusinessEnvironmentHealth(state);
@@ -1066,6 +1111,14 @@ export function getBusinessActionAvailability(
     reason = "도착한 돌발 경영 이벤트의 방향을 먼저 결정해야 합니다.";
   } else if (state.phase !== "running") {
     reason = "의사결정을 먼저 마쳐야 합니다.";
+  } else if (
+    !state.handoverComplete &&
+    (state.day < HANDOVER_TAB_UNLOCK_DAY.operations ||
+      !isHandoverStarterBusinessAction(type))
+  ) {
+    reason = state.day < HANDOVER_TAB_UNLOCK_DAY.operations
+      ? `사업 운영 데스크는 DAY ${HANDOVER_TAB_UNLOCK_DAY.operations} 인수인계에서 개방됩니다.`
+      : `긴급 인수인계 중에는 기본 대응 ${HANDOVER_STARTER_BUSINESS_ACTION_TYPES.length}종만 집행할 수 있습니다. 나머지는 DAY ${TUTORIAL_END_DAY}부터 검토하십시오.`;
   } else if (state.day >= LAST_DECISION_DAY) {
     reason = "결산 기간에는 새 사업 액션을 시작할 수 없습니다.";
   } else if (
@@ -1094,14 +1147,6 @@ export function getBusinessActionAvailability(
       ? "남은 임기에는 위험 챌린지를 시작할 의사결정일이 없습니다."
       : `위험 챌린지는 발매·금제 결정을 마친 날에만 시작할 수 있습니다. 다음 가능일은 DAY ${nextEligibleDay}입니다.`;
   } else if (
-    type === "first-print-expansion" &&
-    !state.releaseHistory.some(
-      (batch) =>
-        batch.day === state.day && !isInitialGenericReleaseBatch(batch),
-    )
-  ) {
-    reason = "정기 발매 심사를 마친 당일에만 초판 증산을 결정할 수 있습니다.";
-  } else if (
     state.operations.records.some((record) => record.startedDay === state.day)
   ) {
     reason = "오늘은 이미 사업 액션을 집행했습니다.";
@@ -1118,8 +1163,7 @@ export function getBusinessActionAvailability(
     reason = "다음 발매에 적용할 조정이 이미 예약되어 있습니다.";
   } else if (
     type === "pack-odds" &&
-    (Math.floor(state.day / RELEASE_INTERVAL) + 1) * RELEASE_INTERVAL >
-      LAST_RELEASE_DAY
+    getNextRegularReleaseDay(state.day) > LAST_RELEASE_DAY
   ) {
     reason = "남은 캠페인에 적용할 정기 발매가 없습니다.";
   } else if (

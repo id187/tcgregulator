@@ -3,6 +3,7 @@ import {
   type GenericCardId,
 } from "./generic-card-catalog.ts";
 import type {
+  BaselineReleaseBatch,
   ExpectedTier,
   ReleaseBatch,
 } from "./types.ts";
@@ -11,7 +12,8 @@ import type {
  * The three evergreen generics already on shelves when the mandate begins.
  * They form a deliberately moderate tutorial pool: one stable enabler, one
  * defensive disruption card, and one recovery card with different adoption
- * speeds. That makes the DAY 15 list useful without pre-solving every deck.
+ * speeds. That makes the emergency DAY 0 list useful without pre-solving
+ * every deck.
  */
 export const INITIAL_GENERIC_CARD_IDS = Object.freeze([
   "generic-consistency-enabler",
@@ -19,7 +21,7 @@ export const INITIAL_GENERIC_CARD_IDS = Object.freeze([
   "generic-resilience-recovery",
 ] as const satisfies readonly GenericCardId[]);
 
-export const INITIAL_GENERIC_RELEASE_DAY = 1;
+export const INITIAL_GENERIC_RELEASE_DAY = 0;
 
 function expectedTierForPower(power: number): ExpectedTier {
   if (power >= 80) return "Tier 0";
@@ -35,10 +37,10 @@ export function isInitialGenericCardId(
 }
 
 /** Returns a fresh mutable batch for a new GameState. */
-export function createInitialGenericReleaseBatch(): ReleaseBatch {
+export function createInitialGenericReleaseBatch(): BaselineReleaseBatch {
   return {
     day: INITIAL_GENERIC_RELEASE_DAY,
-    baseline: true,
+    releaseKind: "baseline",
     products: INITIAL_GENERIC_CARD_IDS.map((genericCardId, index) => {
       const card = getGenericCard(genericCardId);
       if (!card) {
@@ -56,11 +58,11 @@ export function createInitialGenericReleaseBatch(): ReleaseBatch {
 }
 
 export function isInitialGenericReleaseBatch(
-  batch: Pick<ReleaseBatch, "day" | "baseline" | "products">,
-): boolean {
+  batch: ReleaseBatch,
+): batch is BaselineReleaseBatch {
   return (
     batch.day === INITIAL_GENERIC_RELEASE_DAY &&
-    batch.baseline === true &&
+    batch.releaseKind === "baseline" &&
     batch.products.length === INITIAL_GENERIC_CARD_IDS.length &&
     INITIAL_GENERIC_CARD_IDS.every((genericCardId) =>
       batch.products.some(

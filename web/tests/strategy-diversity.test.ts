@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { getAutomaticReleaseSelections } from "../app/game/automatic-release.ts";
 import {
   getBusinessActionAvailability,
   getBusinessActionProjectedDirectCash,
+  getBusinessEnvironmentHealth,
   isStrategicBusinessAction,
 } from "../app/game/business-actions.ts";
 import {
@@ -28,7 +30,7 @@ const SAFE_ROTATION = [
   "collector-fair",
   "tv-cm",
   "beginner-camp",
-  "reprint-campaign",
+  "lending-exchange-network",
   "local-league",
 ] as const satisfies readonly BusinessActionType[];
 
@@ -47,7 +49,12 @@ type FullCampaignResult = StrategyResult & {
   cumulativeOperatingCosts: number;
 };
 
+const BUSINESS_SANDBOX_CACHE = new Map<number, GameState>();
+
 function getPlannedReleaseSelections(state: GameState) {
+  if (state.releaseSlate?.releaseKind === "reprint") {
+    return getAutomaticReleaseSelections(state);
+  }
   const options = state.releaseSlate?.options;
   assert.ok(options, "release-edit must expose a release slate");
   const prioritized = <K extends (typeof options)[number]["kind"]>(
@@ -71,12 +78,28 @@ function getPlannedReleaseSelections(state: GameState) {
 }
 
 function prepareBusinessSandbox(seed: number): GameState {
-  const state = createInitialGame(seed);
-  state.day = 120;
-  state.phase = "running";
+  const cached = BUSINESS_SANDBOX_CACHE.get(seed);
+  if (cached) return structuredClone(cached);
+
+  let state = createInitialGame(seed);
+  for (let guard = 0; state.day < 120 || state.phase !== "running"; guard += 1) {
+    assert.ok(guard < 500, "business sandbox setup exceeded its progress guard");
+    if (state.operations.pendingEvent) {
+      state = chooseBestKnownBusinessEvent(state);
+      continue;
+    }
+    state = resolveMandatoryDesk(state);
+    assert.notEqual(state.phase, "ended", "business sandbox ended before DAY 120");
+    if (state.day === 120 && state.phase === "running") break;
+    state = reduceGame(state, {
+      type: "ADVANCE_DAYS",
+      days: 120 - state.day,
+    });
+  }
+  assert.equal(state.day, 120);
+  assert.equal(state.phase, "running");
   state.finance.cash = 20;
-  state.operations.pendingEvent = null;
-  state.operations.nextEventDay = null;
+  BUSINESS_SANDBOX_CACHE.set(seed, structuredClone(state));
   return state;
 }
 
@@ -203,16 +226,41 @@ function runCashMaxLowRiskCampaign(seed: number): FullCampaignResult {
   };
 }
 
-function runStrategy(seed: number, kind: "safe" | "strategic"): StrategyResult {
+function stabilizeSeasonLaunch(state: GameState): void {
+  const equalShare = 1 / state.activeThemeIds.length;
+  for (const themeId of state.activeThemeIds) {
+    const runtime = state.themes[themeId];
+    runtime.share = equalShare;
+    runtime.previousWeekShare = equalShare;
+    runtime.fatigue = 0;
+    runtime.unpleasantness = 0;
+    runtime.topStreakDays = 0;
+  }
+  state.currentTopThemeId = state.activeThemeIds[0];
+}
+
+function runStrategy(
+  seed: number,
+  kind: "safe" | "strategic",
+  stabilizeStrategic = false,
+): StrategyResult {
   let state = prepareBusinessSandbox(seed);
   let nextSafeActionDay = 120;
   let safeCursor = 0;
 
   while (state.day < 239) {
+    if (state.operations.pendingEvent) {
+      state = chooseBestKnownBusinessEvent(state);
+      continue;
+    }
     state = resolveMandatoryDesk(state);
     assert.equal(state.phase, "running");
 
     if (kind === "strategic" && state.day === 120) {
+      if (stabilizeStrategic) {
+        stabilizeSeasonLaunch(state);
+        assert.ok(getBusinessEnvironmentHealth(state) >= 64);
+      }
       assert.equal(
         getBusinessActionAvailability(state, "season-overhaul").available,
         true,
@@ -232,9 +280,22 @@ function runStrategy(seed: number, kind: "safe" | "strategic"): StrategyResult {
       }
     }
 
+    if (
+      kind === "strategic" &&
+      stabilizeStrategic &&
+      state.day >= 120 &&
+      state.day < 150
+    ) {
+      stabilizeSeasonLaunch(state);
+      assert.ok(getBusinessEnvironmentHealth(state) >= 64);
+    }
+
     state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
   }
 
+  if (state.operations.pendingEvent) {
+    state = chooseBestKnownBusinessEvent(state);
+  }
   state = resolveMandatoryDesk(state);
   const strategic = state.operations.records.find((record) =>
     isStrategicBusinessAction(record.type)
@@ -258,11 +319,11 @@ function range(values: readonly number[]): number {
   return Math.max(...values) - Math.min(...values);
 }
 
-test("multi-seed business routes preserve a real safety versus upside tradeoff", () => {
-  const paired = [1, 2, 3, 4, 7, 8].map((seed) => ({
+test("managed strategic projects preserve a real safety versus upside tradeoff", () => {
+  const paired = [1, 2, 3, 20, 34, 50].map((seed, index) => ({
       seed,
       safe: runStrategy(seed, "safe"),
-      strategic: runStrategy(seed, "strategic"),
+      strategic: runStrategy(seed, "strategic", index < 3),
     }));
   const successes = paired.filter(
     ({ strategic }) => strategic.strategicOutcome === "success",

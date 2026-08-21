@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { getAutomaticReleaseSelections } from "../app/game/automatic-release.ts";
 import { THEME_BY_ID } from "../app/game/content.ts";
 import {
   SUPPORT_DIRECTION_MATCHUP_LOGIT_CAP,
   createCampaignStart,
-  getPrologueRestrictionChanges,
+  createInitialGame,
   getCurrentPairWinProbability,
   getEffectiveThemePlayKeywords,
   getProspectiveSupportKeyword,
@@ -22,24 +23,39 @@ import type {
   ThemeId,
 } from "../app/game/types.ts";
 
+function advanceThroughCalendar(state: GameState, targetDay: number): GameState {
+  let next = state;
+  for (let guard = 0; next.day < targetDay && guard < 100; guard += 1) {
+    if (next.operations.pendingEvent) {
+      next = reduceGame(next, {
+        type: "CHOOSE_BUSINESS_EVENT",
+        eventId: next.operations.pendingEvent.id,
+        choice: "a",
+      });
+    } else if (next.phase === "release-edit") {
+      next = reduceGame(next, {
+        type: "SUBMIT_RELEASE",
+        selections: getAutomaticReleaseSelections(next),
+      });
+    } else if (next.phase === "ban-edit") {
+      next = reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
+    } else {
+      next = reduceGame(next, {
+        type: "ADVANCE_DAYS",
+        days: targetDay - next.day,
+      });
+    }
+  }
+  assert.equal(next.day, targetDay);
+  return next;
+}
+
 function reachFreshTheme(seed = 70_091): {
   state: GameState;
   themeId: ThemeId;
 } {
-  let state = reduceGame(createCampaignStart(seed), {
-    type: "ADVANCE_DAYS",
-    days: 14,
-  });
-  assert.equal(state.day, 15);
-  assert.equal(state.phase, "ban-edit");
-  state = reduceGame(state, {
-    type: "SUBMIT_BAN",
-    changes: getPrologueRestrictionChanges(state),
-  });
-  state = reduceGame(state, {
-    type: "ADVANCE_DAYS",
-    days: 15,
-  });
+  let state = advanceThroughCalendar(createInitialGame(seed), 10);
+  assert.equal(state.day, 10);
   assert.equal(state.phase, "release-edit");
   const newThemeOptions = state.releaseSlate?.options.filter(
     (option) => option.kind === "new-theme",
@@ -65,6 +81,7 @@ function reachFreshTheme(seed = 70_091): {
   const themeId = newThemeOptions![0].themeId;
   state = reduceGame(state, { type: "SUBMIT_RELEASE", selections });
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(state.day, 11);
   assert.ok(state.themes[themeId]);
   return { state, themeId };
 }
@@ -89,16 +106,23 @@ function withAppliedSupports(
   ownerId: ThemeId,
   leaderId: ThemeId,
 ): GameState {
-  const state = createCampaignStart(80_017);
-  state.history[0].topThemeId = leaderId;
-  state.releaseHistory.push({
-    day: 1,
-    products: directions.map((direction, index) =>
-      supportProduct(ownerId, direction, index),
-    ),
+  const review = advanceThroughCalendar(createInitialGame(80_017), 10);
+  const state = reduceGame(review, {
+    type: "SUBMIT_RELEASE",
+    selections: getAutomaticReleaseSelections(review),
   });
+  const releaseDay = state.history.find((entry) => entry.day === 10);
+  assert.ok(releaseDay);
+  releaseDay.topThemeId = leaderId;
+  const batch = state.releaseHistory.find(
+    (candidate) => candidate.day === 10,
+  );
+  assert.ok(batch);
+  batch.products = directions.map((direction, index) =>
+    supportProduct(ownerId, direction, index),
+  );
   // Release selections apply on the following day.
-  state.day = 2;
+  state.day = 11;
   return state;
 }
 
@@ -114,7 +138,7 @@ test("new themes rise deterministically as authored optimization completes", () 
 
   const { state, themeId } = reachFreshTheme();
   const fresh = getThemeOptimizationStatus(state, themeId);
-  assert.equal(fresh.debutDay, 31);
+  assert.equal(fresh.debutDay, 11);
   assert.equal(fresh.phase, "learning");
   assert.equal(fresh.progress, 0);
   assert.ok(fresh.powerPenalty >= 4);
@@ -149,10 +173,10 @@ test("new themes rise deterministically as authored optimization completes", () 
   );
 
   const discoveryWindow = Math.ceil(fresh.effectiveOptimizationDays * 0.7);
-  const discovered = reduceGame(state, {
-    type: "ADVANCE_DAYS",
-    days: discoveryWindow,
-  });
+  const discovered = advanceThroughCalendar(
+    state,
+    state.day + discoveryWindow,
+  );
   assert.ok(
     discovered.community.some(
       (event) =>
@@ -181,7 +205,7 @@ test("optimization and support reconstruction survive a save/replay boundary", (
 
 test("each applied support grants one previewable unique keyword up to six", () => {
   const ownerId = "cycle";
-  const state = createCampaignStart(80_017);
+  const state = advanceThroughCalendar(createInitialGame(80_017), 10);
   const base = getEffectiveThemePlayKeywords(state, ownerId);
   assert.equal(base.length, 3);
   assert.ok(Object.isFrozen(base));
@@ -193,10 +217,13 @@ test("each applied support grants one previewable unique keyword up to six", () 
   assert.ok(!base.includes(preview));
 
   state.releaseHistory.push({
-    day: 1,
+    day: 10,
+    releaseKind: "regular",
     products: [supportProduct(ownerId, firstDirection)],
   });
-  state.day = 2;
+  state.day = 11;
+  state.phase = "running";
+  state.releaseSlate = null;
   const afterFirst = getEffectiveThemePlayKeywords(state, ownerId);
   assert.equal(afterFirst.length, 4);
   assert.equal(afterFirst[3], preview);
@@ -209,23 +236,25 @@ test("each applied support grants one previewable unique keyword up to six", () 
   );
   assert.ok(secondPreview);
   state.releaseHistory.push({
-    day: 2,
+    day: 30,
+    releaseKind: "regular",
     products: [supportProduct(ownerId, secondDirection, 1)],
   });
-  state.day = 3;
+  state.day = 31;
   const afterSecond = getEffectiveThemePlayKeywords(state, ownerId);
   assert.equal(afterSecond.length, 5);
   assert.equal(afterSecond[4], secondPreview);
   assert.equal(new Set(afterSecond).size, afterSecond.length);
 
   state.releaseHistory.push({
-    day: 3,
+    day: 70,
+    releaseKind: "regular",
     products: [
       supportProduct(ownerId, "recovery", 2),
       supportProduct(ownerId, "consistency", 3),
     ],
   });
-  state.day = 4;
+  state.day = 71;
   const capped = getEffectiveThemePlayKeywords(state, ownerId);
   assert.equal(capped.length, 6);
   assert.equal(new Set(capped).size, 6);
@@ -234,7 +263,7 @@ test("each applied support grants one previewable unique keyword up to six", () 
 
 test("prospective keywords reserve a confirmed current-day support", () => {
   const ownerId = "cycle";
-  const state = createCampaignStart(80_017);
+  const state = advanceThroughCalendar(createInitialGame(80_017), 10);
   const firstPreview = getProspectiveSupportKeyword(
     state,
     ownerId,
@@ -244,6 +273,7 @@ test("prospective keywords reserve a confirmed current-day support", () => {
 
   state.releaseHistory.push({
     day: state.day,
+    releaseKind: "regular",
     products: [supportProduct(ownerId, "consistency")],
   });
   assert.equal(

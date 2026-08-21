@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   CONTEXTUAL_TUTORIALS,
   CONTEXTUAL_TUTORIAL_TOPIC_IDS,
+  FIRST_REPRINT_TUTORIAL_DAY,
   TAB_TUTORIALS,
   TAB_TUTORIAL_TAB_IDS,
   createContextualTutorialVisitState,
@@ -15,13 +18,21 @@ import {
   getTabTutorialPages,
   isTabTutorialSeriesComplete,
   isContextualTutorialTriggered,
-  isTabTutorialGuidanceActive,
   markContextualTutorialVisited,
   markTabTutorialVisited,
   shouldOpenContextualTutorial,
   shouldOpenTabTutorial,
   type TabTutorialTabId,
 } from "../app/game/tab-tutorial.ts";
+
+const pageSource = readFileSync(
+  fileURLToPath(new URL("../app/page.tsx", import.meta.url)),
+  "utf8",
+);
+const titleScreenSource = readFileSync(
+  fileURLToPath(new URL("../app/components/TitleScreen.tsx", import.meta.url)),
+  "utf8",
+);
 
 function tutorialText(tab: TabTutorialTabId): string {
   return getTabTutorialPages(tab)
@@ -32,6 +43,19 @@ function tutorialText(tab: TabTutorialTabId): string {
     ])
     .join("\n");
 }
+
+test("new mandates retain player-wide first-visit completion", () => {
+  assert.doesNotMatch(pageSource, /tabTutorial\.reset\(\)/);
+  assert.match(pageSource, /Onboarding is player-wide/);
+});
+
+test("settings offer an explicit tutorial replay instead of an on-off switch", () => {
+  assert.doesNotMatch(pageSource, /tutorialGuidanceEnabled/);
+  assert.doesNotMatch(titleScreenSource, /tutorialGuidanceEnabled/);
+  assert.match(pageSource, /onTutorialReset=\{tabTutorial\.reset\}/);
+  assert.match(pageSource, /안내 처음부터 다시 보기/);
+  assert.match(titleScreenSource, /안내 처음부터 다시 보기/);
+});
 
 test("tab tutorials cover every primary game tab in navigation order", () => {
   assert.deepEqual(TAB_TUTORIAL_TAB_IDS, [
@@ -210,7 +234,7 @@ test("first-visit state is immutable and tracked independently for each tab", ()
     finance: false,
   });
 
-  const context = { guidanceEnabled: true } as const;
+  const context = {} as const;
   assert.equal(shouldOpenTabTutorial("distribution", initial, context), true);
   assert.equal(
     getFirstVisitTabTutorial("distribution", initial, context),
@@ -242,16 +266,17 @@ test("first-visit state is immutable and tracked independently for each tab", ()
   assert.equal(restored.finance, false);
 });
 
-test("the help series completes only after seven tabs and both first decisions", () => {
+test("the help series completes only after seven tabs and all three first decisions", () => {
   const allTabs = createTabTutorialVisitState(TAB_TUTORIAL_TAB_IDS);
-  const bothDecisions = createContextualTutorialVisitState([
+  const allDecisions = createContextualTutorialVisitState([
     "first-restriction",
     "first-release",
+    "first-reprint",
   ]);
 
   assert.equal(
     TAB_TUTORIAL_TAB_IDS.length + CONTEXTUAL_TUTORIAL_TOPIC_IDS.length,
-    9,
+    10,
   );
 
   for (const missingTab of TAB_TUTORIAL_TAB_IDS) {
@@ -259,7 +284,7 @@ test("the help series completes only after seven tabs and both first decisions",
       TAB_TUTORIAL_TAB_IDS.filter((tab) => tab !== missingTab),
     );
     assert.equal(
-      isTabTutorialSeriesComplete(tabsExceptOne, bothDecisions),
+      isTabTutorialSeriesComplete(tabsExceptOne, allDecisions),
       false,
       `series must remain incomplete without ${missingTab}`,
     );
@@ -278,50 +303,55 @@ test("the help series completes only after seven tabs and both first decisions",
     );
   }
 
-  assert.equal(isTabTutorialSeriesComplete(allTabs, bothDecisions), true);
+  assert.equal(isTabTutorialSeriesComplete(allTabs, allDecisions), true);
 });
 
-test("tab help is date-independent and follows only guidance and completion", () => {
+test("tab help follows visit progress and campaign unlock days", () => {
   const visits = createTabTutorialVisitState();
-  assert.equal(isTabTutorialGuidanceActive({ guidanceEnabled: true }), true);
+  assert.equal(shouldOpenTabTutorial("finance", visits, {}), true);
   assert.equal(
-    isTabTutorialGuidanceActive({ guidanceEnabled: false }),
+    shouldOpenTabTutorial("finance", visits, {
+      day: 2,
+      handoverComplete: false,
+    }),
     false,
+    "a locked tab must not enqueue an invisible popup",
   );
   assert.equal(
-    shouldOpenTabTutorial("finance", visits, { guidanceEnabled: true }),
+    shouldOpenTabTutorial("finance", visits, {
+      day: 4,
+      handoverComplete: false,
+    }),
     true,
-  );
-  assert.equal(
-    shouldOpenTabTutorial("finance", visits, { guidanceEnabled: false }),
-    false,
   );
 
   const completed = markTabTutorialVisited(visits, "finance");
   assert.equal(
-    shouldOpenTabTutorial("finance", completed, { guidanceEnabled: true }),
+    shouldOpenTabTutorial("finance", completed, {}),
     false,
-    "turning guidance back on must not reopen a completed tab",
+    "a completed tab must not reopen until progress is explicitly reset",
   );
   assert.equal(
     shouldOpenTabTutorial(
       "finance",
       createTabTutorialVisitState(),
-      { guidanceEnabled: true },
+      {},
     ),
     true,
-    "a new campaign resets first-visit completion",
+    "an explicit replay reset restores first-visit help",
   );
 });
 
-test("restriction and release help are separate contextual topics", () => {
+test("restriction, regular release, and reprint help are separate contextual topics", () => {
   assert.deepEqual(CONTEXTUAL_TUTORIAL_TOPIC_IDS, [
     "first-restriction",
     "first-release",
+    "first-reprint",
   ]);
   assert.deepEqual(Object.keys(CONTEXTUAL_TUTORIALS), [
     "first-restriction",
     "first-release",
+    "first-reprint",
   ]);
 
   const contextualPageIds = new Set<string>();
@@ -330,9 +360,9 @@ test("restriction and release help are separate contextual topics", () => {
     assert.equal(tutorial.topic, topic);
     assert.equal(
       tutorial.tab,
-      topic === "first-restriction" ? "cards" : "releases",
+      topic === "first-restriction" ? "distribution" : "releases",
     );
-    assert.ok(tutorial.pages.length >= 2);
+    assert.ok(tutorial.pages.length >= (topic === "first-restriction" ? 3 : 2));
     for (const page of tutorial.pages) {
       assert.match(page.id, new RegExp(`^${topic}-`));
       assert.equal(contextualPageIds.has(page.id), false);
@@ -347,18 +377,25 @@ test("restriction and release help are separate contextual topics", () => {
       ...(page.terms ?? []).flatMap((term) => [term.label, term.description]),
     ])
     .join("\n");
+  assert.deepEqual(
+    getContextualTutorialPages("first-restriction").map(
+      (page) => page.targetTab,
+    ),
+    ["distribution", "distribution", "cards"],
+  );
   for (const phrase of [
-    "입상표",
+    "긴급 투입",
+    "오늘 안에 첫 금제안",
+    "입상 점유율",
+    "조사 신호",
+    "채용률",
+    "평균 매수",
     "시세",
-    "구매 신뢰",
-    "0 · 금지",
-    "1 · 제한",
-    "2 · 준제한",
-    "3 · 무제한",
-    "절반",
-    "초기화",
-    "금제안 제출",
-    "변경 없음",
+    "단독 증거",
+    "3은 유지",
+    "2는 준제한",
+    "1은 제한",
+    "0은 금지",
   ]) {
     assert.ok(restrictionText.includes(phrase), phrase);
   }
@@ -378,7 +415,6 @@ test("restriction and release help are separate contextual topics", () => {
     "지원",
     "범용",
     "4종",
-    "예약 재판",
     "-3",
     "0",
     "+3",
@@ -386,7 +422,26 @@ test("restriction and release help are separate contextual topics", () => {
   ]) {
     assert.ok(releaseText.includes(phrase), phrase);
   }
+  assert.equal(releaseText.includes("예약 재판"), false);
   assert.equal(releaseText.includes("이미 결정"), false);
+
+  const reprintText = getContextualTutorialPages("first-reprint")
+    .flatMap((page) => [
+      page.title,
+      page.body,
+      ...(page.terms ?? []).flatMap((term) => [term.label, term.description]),
+    ])
+    .join("\n");
+  for (const phrase of [
+    "후보 9종 / 선택 3종",
+    "현재가",
+    "접근성",
+    "수집가 반발",
+    "출시 후 30일",
+    "정규팩과 분리",
+  ]) {
+    assert.ok(reprintText.includes(phrase), phrase);
+  }
 
   assert.equal(tutorialText("cards").includes("0 · 금지"), false);
   assert.equal(tutorialText("cards").includes("금제안 제출"), false);
@@ -399,16 +454,15 @@ test("contextual topics trigger once at their decision states", () => {
   assert.deepEqual(initial, {
     "first-restriction": false,
     "first-release": false,
+    "first-reprint": false,
   });
 
   const banContext = {
-    guidanceEnabled: true,
-    day: 15,
+    day: 0,
     phase: "ban-edit",
   } as const;
   const releaseContext = {
-    guidanceEnabled: true,
-    day: 30,
+    day: 10,
     phase: "release-edit",
   } as const;
 
@@ -428,6 +482,19 @@ test("contextual topics trigger once at their decision states", () => {
     shouldOpenContextualTutorial("first-release", initial, releaseContext),
     true,
   );
+  const reprintContext = {
+    day: FIRST_REPRINT_TUTORIAL_DAY,
+    phase: "release-edit",
+  } as const;
+  assert.equal(FIRST_REPRINT_TUTORIAL_DAY, 50);
+  assert.equal(
+    isContextualTutorialTriggered("first-reprint", reprintContext),
+    true,
+  );
+  assert.equal(
+    shouldOpenContextualTutorial("first-reprint", initial, reprintContext),
+    true,
+  );
 
   assert.equal(
     isContextualTutorialTriggered("first-restriction", {
@@ -436,14 +503,6 @@ test("contextual topics trigger once at their decision states", () => {
     }),
     false,
   );
-  assert.equal(
-    isContextualTutorialTriggered("first-release", {
-      ...releaseContext,
-      guidanceEnabled: false,
-    }),
-    false,
-  );
-
   const afterRestriction = markContextualTutorialVisited(
     initial,
     "first-restriction",
@@ -465,42 +524,45 @@ test("contextual topics trigger once at their decision states", () => {
   );
 });
 
-test("a tab overview is queued before a pending contextual topic", () => {
+test("a live decision suppresses the ordinary tab overview and takes priority", () => {
   const freshTabs = createTabTutorialVisitState();
   const freshContexts = createContextualTutorialVisitState();
   const banContext = {
-    guidanceEnabled: true,
-    day: 15,
+    day: 0,
     phase: "ban-edit",
   } as const;
 
   assert.deepEqual(
-    getPendingTutorialPopups("cards", freshTabs, freshContexts, banContext).map(
-      (popup) => [popup.kind, popup.id],
-    ),
-    [
-      ["tab", "cards"],
-      ["contextual", "first-restriction"],
-    ],
-  );
-
-  const cardsRead = markTabTutorialVisited(freshTabs, "cards");
-  assert.deepEqual(
-    getPendingTutorialPopups("cards", cardsRead, freshContexts, banContext).map(
+    getPendingTutorialPopups("distribution", freshTabs, freshContexts, banContext).map(
       (popup) => [popup.kind, popup.id],
     ),
     [["contextual", "first-restriction"]],
-    "the decision topic must still open after the tab overview was completed",
+  );
+  assert.deepEqual(
+    getPendingTutorialPopups("cards", freshTabs, freshContexts, banContext).map(
+      (popup) => [popup.kind, popup.id],
+    ),
+    [["contextual", "first-restriction"]],
+    "the emergency popup must stay mounted when its final page reveals Cards",
+  );
+
+  const distributionRead = markTabTutorialVisited(freshTabs, "distribution");
+  assert.deepEqual(
+    getPendingTutorialPopups("distribution", distributionRead, freshContexts, banContext).map(
+      (popup) => [popup.kind, popup.id],
+    ),
+    [["contextual", "first-restriction"]],
+    "the emergency topic must still open even if the tab reference was read",
   );
 
   const restrictionRead = markContextualTutorialVisited(
     freshContexts,
-    "first-restriction",
+      "first-restriction",
   );
   assert.deepEqual(
     getPendingTutorialPopups(
-      "cards",
-      cardsRead,
+      "distribution",
+      distributionRead,
       restrictionRead,
       banContext,
     ),
@@ -513,8 +575,8 @@ test("a tab overview is queued before a pending contextual topic", () => {
   assert.equal(duplicateRestrictionRead, restrictionRead);
   assert.deepEqual(
     getPendingTutorialPopups(
-      "cards",
-      cardsRead,
+      "distribution",
+      distributionRead,
       duplicateRestrictionRead,
       banContext,
     ),
@@ -523,8 +585,7 @@ test("a tab overview is queued before a pending contextual topic", () => {
   );
 
   const releaseContext = {
-    guidanceEnabled: true,
-    day: 30,
+    day: 10,
     phase: "release-edit",
   } as const;
   assert.deepEqual(
@@ -534,10 +595,7 @@ test("a tab overview is queued before a pending contextual topic", () => {
       freshContexts,
       releaseContext,
     ).map((popup) => [popup.kind, popup.id]),
-    [
-      ["tab", "releases"],
-      ["contextual", "first-release"],
-    ],
+    [["contextual", "first-release"]],
   );
 
   assert.deepEqual(
@@ -547,17 +605,7 @@ test("a tab overview is queued before a pending contextual topic", () => {
       freshContexts,
       banContext,
     ).map((popup) => [popup.kind, popup.id]),
-    [["tab", "releases"]],
-    "a contextual topic must only queue on its own tab",
-  );
-  assert.deepEqual(
-    getPendingTutorialPopups(
-      "cards",
-      freshTabs,
-      freshContexts,
-      { ...banContext, guidanceEnabled: false },
-    ),
     [],
-    "disabled guidance must suppress both tab and contextual popups",
+    "a locked tab must not queue either ordinary or contextual help",
   );
 });

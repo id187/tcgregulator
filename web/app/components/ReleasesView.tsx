@@ -1,4 +1,5 @@
 import { isInitialGenericReleaseBatch } from "../game/initial-generic-cards.ts";
+import { getReleaseSlateKind } from "../game/release-kind.ts";
 import type {
   GameState,
   ReleaseSelection,
@@ -22,6 +23,9 @@ export function ReleasesView({
   const releaseBatches = [...game.releaseHistory]
     .filter((batch) => !isInitialGenericReleaseBatch(batch))
     .reverse();
+  const isReprintReview = Boolean(
+    game.releaseSlate && getReleaseSlateKind(game.releaseSlate) === "reprint",
+  );
 
   return (
     <section
@@ -36,7 +40,9 @@ export function ReleasesView({
           <h1>{game.phase === "release-edit" ? "발매 심의" : "발매"}</h1>
           <p>
             {game.phase === "release-edit"
-              ? "후보 카드의 조합과 파워를 확정하고 새로운 환경을 공표합니다."
+              ? isReprintReview
+                ? "후보 9종의 시세와 수요를 비교해 접근성을 회복할 재판 카드 3종을 확정합니다."
+                : "후보 카드의 조합과 파워를 확정하고 새로운 환경을 공표합니다."
               : "출시일, 카드팩, 신테마 상징을 중심으로 발매 기록을 확인합니다."}
           </p>
         </div>
@@ -52,7 +58,11 @@ export function ReleasesView({
           <DecisionEventHero
             currentStep={releaseDraft.length > 0 ? 2 : 1}
             day={game.day}
-            description="오늘 승인한 카드가 내일부터 매출과 입상 환경, 커뮤니티의 언어를 바꿉니다."
+            description={
+              isReprintReview
+                ? "오늘 고른 3종의 공급 충격이 내일부터 시세, 접근성, 콜렉터 신뢰를 바꿉니다."
+                : "오늘 승인한 카드가 내일부터 매출과 입상 환경, 커뮤니티의 언어를 바꿉니다."
+            }
             kind="release"
             metrics={[
               {
@@ -62,8 +72,10 @@ export function ReleasesView({
               { label: "선택 완료", value: `${releaseDraft.length}종` },
               { label: "효과 관측", value: `DAY ${game.day + 1}` },
             ]}
-            steps={["후보 검토", "팩 구성", "공식 공표"]}
-            title="신규 카드팩 최종 심의"
+            steps={isReprintReview
+              ? ["시세 검토", "3종 선정", "재판 공표"]
+              : ["후보 검토", "팩 구성", "공식 공표"]}
+            title={isReprintReview ? "재판팩 긴급 심의" : "신규 카드팩 최종 심의"}
           />
           <ReleaseDecisionPanel
             game={game}

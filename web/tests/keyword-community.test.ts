@@ -56,6 +56,7 @@ test("counterplay support produces a qualitative clue about its release-day targ
   });
   state.releaseHistory.push({
     day: RELEASE_INTERVAL * 2,
+    releaseKind: "regular",
     products: [
       {
         optionId: "counterplay-community-fixture",

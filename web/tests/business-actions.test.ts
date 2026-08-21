@@ -2,22 +2,34 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BUSINESS_ACTION_BY_TYPE,
+  BUSINESS_ACTIONS,
   BUSINESS_ACTION_FAMILY_SATURATION_FLOOR,
   BUSINESS_ACTION_FAMILY_SATURATION_WINDOW_DAYS,
   BUSINESS_ACTION_PORTFOLIO_SATURATION_WINDOW_DAYS,
   PROBABILISTIC_BUSINESS_ACTION_TYPES,
   RISKY_CHALLENGE_ACTION_TYPES,
+  getBusinessActionAvailability,
   getBusinessActionDailyGrossRevenue,
   getBusinessActionProjectedDirectGrossRevenue,
+  getBusinessActionScheduledEndDay,
   getBusinessActionSaturationMultiplier,
   getBusinessActionSuccessProbability,
+  getCompetitiveSeasonHistory,
   getProbabilisticBusinessActionOutcome,
   getProbabilisticBusinessActionSuccessProfile,
   getStrategicSuccessBenefits,
 } from "../app/game/business-actions.ts";
-import { getBusinessUserRateModifiers } from "../app/game/business-runtime.ts";
+import {
+  applyCompetitiveSeasonBoundary,
+  getBusinessTrustRecovery,
+  getBusinessUserRateModifiers,
+  getCurrentCompetitiveSeason,
+  updateBusinessLifecycle,
+} from "../app/game/business-runtime.ts";
 import {
   createCampaignStart,
+  createInitialGame,
   getPrologueReleaseSelections,
   reduceGame,
 } from "../app/game/engine.ts";
@@ -55,10 +67,22 @@ function completedAction(
   };
 }
 
-function submitFirstRestriction(state: GameState): GameState {
-  assert.equal(state.day, 15);
-  assert.equal(state.phase, "ban-edit");
-  return reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
+function historyRow(
+  state: GameState,
+  day: number,
+): GameState["history"][number] {
+  return {
+    day,
+    totalUsers: state.users.tier + state.users.casual + state.users.collector,
+    revenue: day / 100,
+    topThemeId: state.currentTopThemeId,
+    shares: Object.fromEntries(
+      state.activeThemeIds.map((themeId) => [
+        themeId,
+        state.themes[themeId].share,
+      ]),
+    ),
+  };
 }
 
 test("low-risk action families saturate for a quarter and recover after it", () => {
@@ -134,7 +158,7 @@ test("rotating low-risk families still consumes shared campaign bandwidth", () =
   assert.equal(
     getBusinessActionSaturationMultiplier(
       rotatedPortfolio,
-      "reprint-campaign",
+      "lending-exchange-network",
       200,
     ),
     0.5832,
@@ -180,14 +204,14 @@ test("ordinary actions expose bounded state-based chances while challenges do no
     "store-tour",
     "beginner-camp",
     "local-league",
-    "reprint-campaign",
+    "lending-exchange-network",
     "collector-fair",
   ]);
   assert.deepEqual(RISKY_CHALLENGE_ACTION_TYPES, [
     "championship",
     "season-overhaul",
     "global-launch",
-    "first-print-expansion",
+    "organized-play-platform",
   ]);
   for (const type of PROBABILISTIC_BUSINESS_ACTION_TYPES) {
     const probability = getBusinessActionSuccessProbability(state, type);
@@ -249,7 +273,7 @@ test("ordinary actions expose bounded state-based chances while challenges do no
 
 test("the engine applies family saturation to audience acquisition", () => {
   const prepare = (withPriorMedia: boolean): GameState => {
-    let state = createCampaignStart(21_097);
+    let state = createInitialGame(21_097);
     state.finance.cash = 100;
     if (withPriorMedia) {
       state = reduceGame(state, {
@@ -257,14 +281,25 @@ test("the engine applies family saturation to audience acquisition", () => {
         action: "tv-cm",
       });
     }
-    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
-    state = submitFirstRestriction(state);
-    state = reduceGame(state, { type: "ADVANCE_DAYS", days: 15 });
+    while (state.day < 10) {
+      state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+    }
     state = reduceGame(state, {
       type: "SUBMIT_RELEASE",
       selections: getPrologueReleaseSelections(state),
     });
-    return reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+    while (state.day < 29) {
+      if (state.operations.pendingEvent) {
+        state = reduceGame(state, {
+          type: "CHOOSE_BUSINESS_EVENT",
+          eventId: state.operations.pendingEvent.id,
+          choice: "a",
+        });
+        continue;
+      }
+      state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+    }
+    return state;
   };
 
   const fresh = prepare(false);
@@ -288,12 +323,8 @@ test("the engine applies family saturation to audience acquisition", () => {
 });
 
 test("ordinary D+1 outcomes are deterministic and chunk-independent", () => {
-  let state = createCampaignStart(21_098);
+  const state = createInitialGame(21_098);
   state.finance.cash = 100;
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
-  state = submitFirstRestriction(state);
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 7 });
-  assert.equal(state.day, 22);
   const launched = reduceGame(state, {
     type: "RUN_BUSINESS_ACTION",
     action: "tv-cm",
@@ -301,9 +332,9 @@ test("ordinary D+1 outcomes are deterministic and chunk-independent", () => {
   assert.equal(launched.operations.records[0].outcome, "active");
   assert.ok(launched.operations.records[0].risk !== undefined);
 
-  const jumped = reduceGame(launched, { type: "ADVANCE_DAYS", days: 7 });
+  const jumped = reduceGame(launched, { type: "ADVANCE_DAYS", days: 2 });
   let stepped = launched;
-  for (let day = 0; day < 7; day += 1) {
+  for (let day = 0; day < 2; day += 1) {
     stepped = reduceGame(stepped, { type: "ADVANCE_DAYS", days: 1 });
   }
   assert.deepEqual(jumped, stepped);
@@ -311,7 +342,7 @@ test("ordinary D+1 outcomes are deterministic and chunk-independent", () => {
     jumped.operations.records[0].outcome === "success" ||
       jumped.operations.records[0].outcome === "backlash",
   );
-  assert.equal(jumped.operations.records[0].resolvedDay, 23);
+  assert.equal(jumped.operations.records[0].resolvedDay, 8);
 });
 
 test("successful strategic infrastructure has distinct benefits through the end of the mandate", () => {
@@ -344,4 +375,185 @@ test("successful strategic infrastructure has distinct benefits through the end 
     trustPerDay: 0,
     dailyGrossRevenue: 0,
   });
+});
+
+test("the tournament platform is a distinct long-term infrastructure project", () => {
+  const handover = createCampaignStart(21_098);
+  handover.phase = "running";
+  assert.equal(
+    getBusinessActionAvailability(handover, "tv-cm").available,
+    false,
+  );
+  assert.match(
+    getBusinessActionAvailability(handover, "tv-cm").reason ?? "",
+    /DAY 7|인수인계/,
+  );
+
+  assert.ok(
+    BUSINESS_ACTIONS.some((action) =>
+      action.type === "organized-play-platform"
+    ),
+  );
+  assert.deepEqual(
+    {
+      title: BUSINESS_ACTION_BY_TYPE["organized-play-platform"].title,
+      duration: BUSINESS_ACTION_BY_TYPE["organized-play-platform"].duration,
+      minimumDay:
+        BUSINESS_ACTION_BY_TYPE["organized-play-platform"].minimumDay,
+      resolutionDelay:
+        BUSINESS_ACTION_BY_TYPE["organized-play-platform"].resolutionDelay,
+    },
+    {
+      title: "통합 대회 플랫폼 구축",
+      duration: 75,
+      minimumDay: 90,
+      resolutionDelay: 21,
+    },
+  );
+  const state = createCampaignStart(21_099);
+  state.day = 90;
+  state.phase = "running";
+  state.handoverComplete = true;
+  state.finance.cash = 100;
+  assert.equal(
+    getBusinessActionAvailability(state, "organized-play-platform").available,
+    true,
+  );
+  assert.equal(
+    getBusinessActionScheduledEndDay(30, "pack-odds"),
+    99,
+    "DAY 50 is a dedicated reprint pack, so pack odds targets DAY 70",
+  );
+});
+
+test("the lending and exchange network improves access without printing cards", () => {
+  assert.equal(
+    BUSINESS_ACTION_BY_TYPE["lending-exchange-network"].title,
+    "매장 덱 대여·교환망",
+  );
+  assert.equal(
+    BUSINESS_ACTION_BY_TYPE["lending-exchange-network"].saturationFamily,
+    "community",
+  );
+  assert.doesNotMatch(
+    `${BUSINESS_ACTION_BY_TYPE["lending-exchange-network"].summary} ${
+      BUSINESS_ACTION_BY_TYPE["lending-exchange-network"].effect
+    }`,
+    /재판|재록|인쇄|생산/,
+  );
+
+  const state = createCampaignStart(21_102);
+  state.day = 8;
+  state.operations.records = [
+    {
+      id: "business-action-1",
+      type: "lending-exchange-network",
+      startedDay: 7,
+      endsDay: 37,
+      cost: 0.55,
+      outcome: "success",
+      risk: 0.2,
+      resolvedDay: 8,
+    },
+  ];
+  const rates = getBusinessUserRateModifiers(state);
+  assert.ok(rates.casual > rates.collector);
+  assert.ok(rates.tier > rates.collector);
+  assert.ok(getBusinessTrustRecovery(state) > 0);
+  assert.ok(
+    getBusinessActionDailyGrossRevenue(state, "lending-exchange-network") > 0,
+  );
+});
+
+test("a successful season overhaul creates a competitive boundary without erasing operating history", () => {
+  const state = createCampaignStart(21_100);
+  state.day = 150;
+  state.phase = "running";
+  state.history = [
+    historyRow(state, 140),
+    historyRow(state, 149),
+    historyRow(state, 150),
+  ];
+  const originalHistory = structuredClone(state.history);
+  for (const themeId of state.activeThemeIds) {
+    const runtime = state.themes[themeId];
+    runtime.previousWeekShare = Math.max(0, runtime.share - 0.02);
+    runtime.fatigue = 70;
+    runtime.topStreakDays = 44;
+  }
+
+  assert.deepEqual(getCurrentCompetitiveSeason(state), {
+    currentSeasonNumber: 1,
+    startedDay: 0,
+    boundaries: [],
+  });
+  applyCompetitiveSeasonBoundary(state, "business-action-1");
+
+  assert.deepEqual(state.operations.season, {
+    currentSeasonNumber: 2,
+    startedDay: 150,
+    boundaries: [
+      {
+        seasonNumber: 2,
+        startedDay: 150,
+        sourceActionId: "business-action-1",
+      },
+    ],
+  });
+  assert.deepEqual(state.history, originalHistory);
+  assert.deepEqual(
+    getCompetitiveSeasonHistory(state).map((entry) => entry.day),
+    [150],
+  );
+  for (const themeId of state.activeThemeIds) {
+    const runtime = state.themes[themeId];
+    assert.equal(runtime.previousWeekShare, runtime.share);
+    assert.equal(runtime.fatigue, 0);
+    assert.equal(runtime.topStreakDays, 0);
+  }
+
+  applyCompetitiveSeasonBoundary(state, "business-action-1");
+  assert.equal(state.operations.season.boundaries.length, 1);
+  assert.equal(state.operations.season.currentSeasonNumber, 2);
+});
+
+test("season-overhaul success resolves the boundary through the business lifecycle", () => {
+  const state = createCampaignStart(21_101);
+  state.day = 150;
+  state.phase = "running";
+  state.finance.cash = 10;
+  state.history = [historyRow(state, 149)];
+  const originalHistory = structuredClone(state.history);
+  state.operations.nextActionId = 2;
+  state.operations.records = [
+    {
+      id: "business-action-1",
+      type: "season-overhaul",
+      startedDay: 120,
+      endsDay: 210,
+      cost: 3.5,
+      outcome: "active",
+      risk: 0,
+      challenge: {
+        metric: "environment-health",
+        threshold: 64,
+        requiredQualifyingDays: 20,
+        qualifyingDays: 19,
+        observedDays: 29,
+        deadlineDay: 150,
+        lastEvaluatedDay: 149,
+        lastValue: 100,
+      },
+    },
+  ];
+
+  updateBusinessLifecycle(state);
+
+  const record = state.operations.records[0];
+  assert.equal(record.outcome, "success");
+  assert.equal(record.resolvedDay, 150);
+  assert.equal(record.cashReturn, 6.5);
+  assert.equal(state.finance.cash, 16.5);
+  assert.equal(state.operations.season?.currentSeasonNumber, 2);
+  assert.deepEqual(state.history, originalHistory);
 });

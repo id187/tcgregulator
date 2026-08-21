@@ -9,16 +9,15 @@ import type {
 import {
   BAN_INTERVAL,
   FIRST_BAN_DAY,
+  isScheduledReleaseDay,
   LAST_DECISION_DAY,
-  LAST_RELEASE_DAY,
-  RELEASE_INTERVAL,
 } from "./campaign.ts";
 
 export const CHALLENGE_BUSINESS_ACTION_TYPES = [
   "championship",
   "season-overhaul",
   "global-launch",
-  "first-print-expansion",
+  "organized-play-platform",
 ] as const satisfies readonly BusinessActionType[];
 
 export type ChallengeBusinessActionType =
@@ -32,10 +31,7 @@ export type ChallengeBusinessActionType =
  */
 export function isBusinessChallengeDecisionDay(day: number): boolean {
   if (!Number.isInteger(day)) return false;
-  const releaseDay =
-    day >= RELEASE_INTERVAL &&
-    day <= LAST_RELEASE_DAY &&
-    day % RELEASE_INTERVAL === 0;
+  const releaseDay = isScheduledReleaseDay(day);
   const restrictionDay =
     day >= FIRST_BAN_DAY &&
     day <= LAST_DECISION_DAY &&
@@ -83,11 +79,11 @@ export const BUSINESS_CHALLENGE_BY_TYPE = {
     requiredQualifyingDays: 14,
     deadlineOffset: 21,
   },
-  "first-print-expansion": {
-    metric: "release-quality",
-    threshold: 68,
-    requiredQualifyingDays: 5,
-    deadlineOffset: 7,
+  "organized-play-platform": {
+    metric: "environment-health",
+    threshold: 62,
+    requiredQualifyingDays: 14,
+    deadlineOffset: 21,
   },
 } as const satisfies Record<
   ChallengeBusinessActionType,
@@ -140,14 +136,14 @@ const OUTCOME_EFFECTS = {
       trustDelta: -14,
     },
   },
-  "first-print-expansion": {
+  "organized-play-platform": {
     success: {
-      userMultipliers: { tier: 0.02, casual: 0.05, collector: 0.12 },
-      trustDelta: 5,
+      userMultipliers: { tier: 0.12, casual: 0.08, collector: 0.04 },
+      trustDelta: 6,
     },
     backlash: {
-      userMultipliers: { tier: -0.02, casual: -0.04, collector: -0.1 },
-      trustDelta: -10,
+      userMultipliers: { tier: -0.1, casual: -0.07, collector: -0.04 },
+      trustDelta: -12,
     },
   },
 } as const satisfies Record<

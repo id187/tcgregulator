@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { getAutomaticReleaseSelections } from "../app/game/automatic-release.ts";
+import { BUSINESS_EVENT_BY_TYPE } from "../app/game/business-events.ts";
 import { getCollectorCardProfile } from "../app/game/card-collectibles.ts";
 import { getThemeCardMarketQuote } from "../app/game/card-market.ts";
 import { THEME_BY_ID } from "../app/game/content.ts";
 import {
-  createCampaignStart,
+  createInitialGame,
   getPrologueRestrictionChanges,
   reduceGame,
 } from "../app/game/engine.ts";
@@ -18,22 +19,51 @@ import {
   getReprintCandidates,
   getReprintImpactPreview,
 } from "../app/game/release-requests.ts";
-import { parseGameState, SaveSchemaError } from "../app/game/save-schema.ts";
+import { parseGameState } from "../app/game/save-schema.ts";
 import type { GameState } from "../app/game/types.ts";
 
+function reachReleaseDay(state: GameState, targetDay: number): GameState {
+  let next = state;
+  for (let guard = 0; guard < 1_000; guard += 1) {
+    if (next.day === targetDay && next.phase === "release-edit") return next;
+    if (next.operations.pendingEvent) {
+      const pending = next.operations.pendingEvent;
+      const choice = BUSINESS_EVENT_BY_TYPE[pending.type].choices.find(
+        (candidate) => candidate.cost <= next.finance.cash + 1e-9,
+      );
+      assert.ok(choice, "the campaign needs an affordable event choice");
+      next = reduceGame(next, {
+        type: "CHOOSE_BUSINESS_EVENT",
+        eventId: pending.id,
+        choice: choice.id,
+      });
+    } else if (next.phase === "ban-edit") {
+      next = reduceGame(next, {
+        type: "SUBMIT_BAN",
+        changes: next.day === 0 ? getPrologueRestrictionChanges(next) : {},
+      });
+    } else if (next.phase === "release-edit") {
+      const selections = getAutomaticReleaseSelections(next);
+      assert.ok(selections.length > 0);
+      next = reduceGame(next, { type: "SUBMIT_RELEASE", selections });
+    } else if (!next.handoverComplete && next.day === 7) {
+      next = reduceGame(next, { type: "COMPLETE_HANDOVER" });
+    } else {
+      next = reduceGame(next, {
+        type: "ADVANCE_DAYS",
+        days: Math.max(1, targetDay - next.day),
+      });
+    }
+  }
+  throw new Error(`Release review on DAY ${targetDay} did not appear.`);
+}
+
 function reachFirstRelease(state: GameState): GameState {
-  let next = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
-  assert.equal(next.day, 15);
-  assert.equal(next.phase, "ban-edit");
-  next = reduceGame(next, {
-    type: "SUBMIT_BAN",
-    changes: getPrologueRestrictionChanges(next),
-  });
-  next = reduceGame(next, { type: "ADVANCE_DAYS", days: 15 });
-  assert.equal(next.day, 30);
-  assert.equal(next.phase, "release-edit");
-  assert.ok(next.releaseSlate);
-  return next;
+  return reachReleaseDay(state, 10);
+}
+
+function reachFirstReprint(state: GameState): GameState {
+  return reachReleaseDay(state, 50);
 }
 
 function jsonRoundTrip(state: GameState): GameState {
@@ -41,7 +71,7 @@ function jsonRoundTrip(state: GameState): GameState {
 }
 
 test("request lanes replace and cancel independently", () => {
-  let state = createCampaignStart(81_001);
+  let state = createInitialGame(81_001);
   const themes = state.activeThemeIds;
   const reprintCard = state.themes[themes[0]].releasedPartIds[0];
 
@@ -96,7 +126,7 @@ test("request lanes replace and cancel independently", () => {
 });
 
 test("indirect and environment requests derive deterministic generic pools", () => {
-  const state = createCampaignStart(81_002);
+  const state = createInitialGame(81_002);
   const themeId = state.activeThemeIds[0];
   const keywords = THEME_BY_ID[themeId].playKeywords;
   const indirect = getIndirectSupportGenericPool(state, themeId);
@@ -137,7 +167,7 @@ test("indirect and environment requests derive deterministic generic pools", () 
 });
 
 test("save parsing rejects a reprint request for a known but unreleased card", () => {
-  let state = createCampaignStart(81_006);
+  let state = createInitialGame(81_006);
   const themeId = state.activeThemeIds[0];
   state = reduceGame(state, {
     type: "SET_RELEASE_REQUEST",
@@ -154,8 +184,8 @@ test("save parsing rejects a reprint request for a known but unreleased card", (
   );
 });
 
-test("locked reprint adds the fourth product while the player submits three core picks", () => {
-  let state = createCampaignStart(81_003);
+test("reprint requests wait for a dedicated reprint pack", () => {
+  let state = createInitialGame(81_003);
   const themeId = state.activeThemeIds[0];
   const reprintCard = state.themes[themeId].releasedPartIds[0];
   state = reduceGame(state, {
@@ -172,12 +202,9 @@ test("locked reprint adds the fourth product while the player submits three core
   });
   state = reachFirstRelease(state);
 
-  assert.equal(state.releaseSlate!.options.length, 10);
-  const locked = state.releaseSlate!.options.find(
-    (option) => option.kind === "reprint",
-  );
-  assert.ok(locked && locked.kind === "reprint" && locked.locked);
-  assert.equal(locked.requested, true);
+  assert.equal(state.releaseSlate!.releaseKind, "regular");
+  assert.equal(state.releaseSlate!.options.length, 9);
+  assert.ok(state.releaseSlate!.options.every((option) => option.kind !== "reprint"));
   const requestedGeneric = state.releaseSlate!.options.find(
     (option) => option.kind === "generic" && option.requested,
   );
@@ -187,70 +214,60 @@ test("locked reprint adds the fourth product while the player submits three core
   );
 
   const selections = getAutomaticReleaseSelections(state);
-  assert.equal(selections.length, 3);
-  assert.deepEqual(
-    selections
-      .map((selection) =>
-        state.releaseSlate!.options.find(
-          (option) => option.id === selection.optionId,
-        )!.kind,
-      )
-      .sort(),
-    ["generic", "new-theme", "support"],
+  assert.equal(selections.length, 4);
+  const selectedKinds = selections.map((selection) =>
+    state.releaseSlate!.options.find(
+      (option) => option.id === selection.optionId,
+    )!.kind
   );
-  assert.ok(selections.every((selection) => selection.optionId !== locked.id));
-  const lockedNewThemes = state.releaseSlate!.options.filter(
-    (option) => option.kind === "new-theme",
-  );
-  const lockedGeneric = state.releaseSlate!.options.find(
-    (option) => option.kind === "generic",
-  );
-  assert.ok(lockedNewThemes.length >= 2 && lockedGeneric);
-  assert.throws(
-    () =>
-      reduceGame(state, {
-        type: "SUBMIT_RELEASE",
-        selections: [
-          ...lockedNewThemes.slice(0, 2),
-          lockedGeneric,
-        ].map((option) => ({
-          optionId: option.id,
-          powerAdjustment: 0,
-        })),
-      }),
-    /at least one new theme, support, and generic card/,
-  );
-  assert.throws(
-    () =>
-      reduceGame(state, {
-        type: "SUBMIT_RELEASE",
-        selections: [...selections, { optionId: locked.id, powerAdjustment: 0 }],
-      }),
-    /Exactly 3 release options|included automatically/,
-  );
+  assert.equal(selectedKinds.length, 4);
+  assert.ok(["new-theme", "support", "generic"].every(
+    (kind) => selectedKinds.includes(kind as (typeof selectedKinds)[number]),
+  ));
+  assert.ok(!selectedKinds.includes("reprint"));
 
-  const released = reduceGame(state, { type: "SUBMIT_RELEASE", selections });
-  assert.deepEqual(
-    released.releaseHistory.at(-1)!.products.map((product) => product.kind).sort(),
-    ["generic", "new-theme", "reprint", "support"],
+  let released = reduceGame(state, { type: "SUBMIT_RELEASE", selections });
+  const releasedKinds = released.releaseHistory.at(-1)!.products.map(
+    (product) => product.kind,
   );
+  assert.ok(["new-theme", "support", "generic"].every(
+    (kind) => releasedKinds.includes(kind as (typeof releasedKinds)[number]),
+  ));
+  assert.ok(!releasedKinds.includes("reprint"));
   assert.equal(released.releaseHistory.at(-1)!.products.length, 4);
-  assert.ok(
-    released.supportRequests.every((request) => request.status === "released"),
+  const queuedReprint = released.supportRequests.find(
+    (request) => request.kind === "reprint",
   );
-  jsonRoundTrip(released);
+  assert.ok(queuedReprint);
+  assert.equal(queuedReprint.status, "queued");
+  assert.equal(queuedReprint.eligibleReleaseDay, 50);
 
-  const forged = structuredClone(state);
-  const forgedLocked = forged.releaseSlate!.options.find(
-    (option) => option.kind === "reprint",
+  released = reachFirstReprint(released);
+  assert.equal(released.releaseSlate!.releaseKind, "reprint");
+  assert.equal(released.releaseSlate!.options.length, 9);
+  assert.ok(
+    released.releaseSlate!.options.some(
+      (option) => option.kind === "reprint" && option.cardId === reprintCard && option.requested,
+    ),
   );
-  assert.ok(forgedLocked && forgedLocked.kind === "reprint");
-  forgedLocked.requestId = "missing-request";
-  assert.throws(() => parseGameState(forged), SaveSchemaError);
+  const reprinted = reduceGame(released, {
+    type: "SUBMIT_RELEASE",
+    selections: getAutomaticReleaseSelections(released),
+  });
+  assert.ok(
+    reprinted.releaseHistory.at(-1)!.products.some(
+      (product) => product.kind === "reprint" && product.cardId === reprintCard,
+    ),
+  );
+  assert.equal(
+    reprinted.supportRequests.find((request) => request.kind === "reprint")?.status,
+    "released",
+  );
+  jsonRoundTrip(reprinted);
 });
 
 test("reprints raise release-day sales then cause deterministic D+1 price and trust shocks", () => {
-  let state = createCampaignStart(81_004);
+  let state = createInitialGame(81_004);
   const candidate = getReprintCandidates(state).find(
     (entry) => entry.cardKind === "theme-part" && entry.collectorLabel === null,
   );
@@ -259,7 +276,7 @@ test("reprints raise release-day sales then cause deterministic D+1 price and tr
     type: "SET_RELEASE_REQUEST",
     request: { kind: "reprint", cardId: candidate.cardId },
   });
-  state = reachFirstRelease(state);
+  state = reachFirstReprint(state);
   const beforeQuote = getThemeCardMarketQuote(
     state,
     candidate.themeId,
@@ -301,12 +318,12 @@ test("high-illustration reprints keep their authored collector floor", () => {
   const cardId = "white-night-saint";
   const profile = getCollectorCardProfile(cardId);
   assert.ok(profile);
-  let state = createCampaignStart(81_005);
+  let state = createInitialGame(81_005);
   state = reduceGame(state, {
     type: "SET_RELEASE_REQUEST",
     request: { kind: "reprint", cardId },
   });
-  state = reachFirstRelease(state);
+  state = reachFirstReprint(state);
   state = reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: getAutomaticReleaseSelections(state),

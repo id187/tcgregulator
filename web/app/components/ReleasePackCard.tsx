@@ -1,6 +1,7 @@
 import { THEME_BY_ID } from "../game/content.ts";
 import { getGenericCard } from "../game/generic-card-catalog.ts";
 import { getReleasePackName } from "../game/release-pack-name.ts";
+import { getReleaseBatchKind } from "../game/release-kind.ts";
 import type { ReleaseBatch } from "../game/types.ts";
 import { ThemeEmblem } from "./ThemeEmblem.tsx";
 
@@ -19,7 +20,8 @@ function productLabel(product: ReleaseBatch["products"][number]): string {
 }
 
 export function ReleasePackCard({ batch }: { batch: ReleaseBatch }) {
-  const packName = getReleasePackName(batch.day);
+  const releaseKind = getReleaseBatchKind(batch);
+  const packName = getReleasePackName(batch.day, releaseKind);
   const newThemeProduct = batch.products.find(
     (product) => product.kind === "new-theme",
   );
@@ -28,7 +30,7 @@ export function ReleasePackCard({ batch }: { batch: ReleaseBatch }) {
     : null;
 
   return (
-    <article className="release-pack-card">
+    <article className={`release-pack-card release-pack-${releaseKind}`}>
       <div
         aria-label={`${packName}, DAY ${batch.day} 발매${newTheme ? `, 신규 테마 ${newTheme.name}` : ""}`}
         className="release-pack-art"
@@ -39,7 +41,9 @@ export function ReleasePackCard({ batch }: { batch: ReleaseBatch }) {
         }
       >
         <span aria-hidden="true" className="release-pack-seal" />
-        <span className="release-pack-brand">TCG</span>
+        <span className="release-pack-brand">
+          {releaseKind === "reprint" ? "TCG · REPRINT" : "TCG"}
+        </span>
         {newTheme ? (
           <span className="release-pack-emblem">
             <ThemeEmblem
@@ -56,15 +60,16 @@ export function ReleasePackCard({ batch }: { batch: ReleaseBatch }) {
         <small>DAY {batch.day}</small>
       </div>
       <div className="release-pack-copy">
-        <span>RELEASE · DAY {batch.day}</span>
+        <span>{releaseKind === "reprint" ? "REPRINT" : "RELEASE"} · DAY {batch.day}</span>
         <h3>{packName}</h3>
         <ul>
           {batch.products.map((product) => (
             <li key={product.optionId}>
               <strong>{productLabel(product)}</strong>
               <span>
-                {product.powerAdjustment > 0 ? "+" : ""}
-                {product.powerAdjustment}
+                {product.kind === "reprint"
+                  ? "재록"
+                  : `${product.powerAdjustment > 0 ? "+" : ""}${product.powerAdjustment}`}
               </span>
             </li>
           ))}

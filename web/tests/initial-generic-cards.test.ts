@@ -23,12 +23,21 @@ function roundTrip(state: GameState): GameState {
   return parseGameState(JSON.parse(JSON.stringify(state)) as unknown);
 }
 
-test("DAY 1 starts with exactly three live, market-visible generic cards", () => {
+function completeHandover(state: GameState): GameState {
+  let next = reduceGame(state, {
+    type: "SUBMIT_BAN",
+    changes: getPrologueRestrictionChanges(state),
+  });
+  next = reduceGame(next, { type: "ADVANCE_DAYS", days: 7 });
+  return reduceGame(next, { type: "COMPLETE_HANDOVER" });
+}
+
+test("DAY 0 starts with exactly three live, market-visible generic cards", () => {
   const state = createCampaignStart(0x1a2b3c4d);
   const expectedIds = [...INITIAL_GENERIC_CARD_IDS].sort();
   const baseline = state.releaseHistory[0];
 
-  assert.equal(state.day, 1);
+  assert.equal(state.day, 0);
   assert.equal(state.nextReleaseOptionId, 1);
   assert.equal(state.releaseHistory.length, 1);
   assert.ok(isInitialGenericReleaseBatch(baseline));
@@ -39,7 +48,7 @@ test("DAY 1 starts with exactly three live, market-visible generic cards", () =>
 
   const meta = getCurrentGenericMetaModel(state);
   assert.deepEqual(meta.cards.map((entry) => entry.cardId).sort(), expectedIds);
-  assert.ok(meta.cards.every((entry) => entry.releaseDay === 1));
+  assert.ok(meta.cards.every((entry) => entry.releaseDay === 0));
   for (const entry of meta.cards) {
     const quote = getGenericCardMarketQuote(
       state,
@@ -47,8 +56,8 @@ test("DAY 1 starts with exactly three live, market-visible generic cards", () =>
       entry.releaseDay,
       entry,
     );
-    assert.equal(quote.asOfDay, 1);
-    assert.equal(quote.comparisonDay, 1);
+    assert.equal(quote.asOfDay, 0);
+    assert.equal(quote.comparisonDay, 0);
     assert.ok(quote.price > 0);
   }
 
@@ -56,35 +65,30 @@ test("DAY 1 starts with exactly three live, market-visible generic cards", () =>
   assert.ok(INITIAL_GENERIC_CARD_IDS.every((cardId) => pool.includes(cardId)));
 });
 
-test("DAY 1 generics survive save/load and remain visible on DAY 15", () => {
+test("DAY 0 generics survive save/load and remain visible on DAY 10", () => {
   const restored = roundTrip(createCampaignStart(0x55667788));
-  const day15 = reduceGame(restored, { type: "ADVANCE_DAYS", days: 14 });
+  const handedOver = completeHandover(restored);
+  const day9 = reduceGame(handedOver, { type: "ADVANCE_DAYS", days: 3 });
+  const day10 = reduceGame(day9, { type: "ADVANCE_DAYS", days: 1 });
 
-  assert.equal(day15.day, 15);
+  assert.equal(day10.day, 10);
+  assert.equal(day10.phase, "release-edit");
   assert.deepEqual(
-    getCurrentGenericMetaModel(day15).cards.map((entry) => entry.cardId).sort(),
+    getCurrentGenericMetaModel(day10).cards.map((entry) => entry.cardId).sort(),
     [...INITIAL_GENERIC_CARD_IDS].sort(),
   );
-  assert.ok(isInitialGenericReleaseBatch(day15.releaseHistory[0]));
+  assert.ok(isInitialGenericReleaseBatch(day10.releaseHistory[0]));
 });
 
-test("the DAY 30 slate never reoffers baseline cards or consumes Vol.1 ids", () => {
-  let state = reduceGame(createCampaignStart(0x31415926), {
-    type: "ADVANCE_DAYS",
-    days: 14,
-  });
-  assert.equal(state.day, 15);
-  assert.equal(state.phase, "ban-edit");
-  state = reduceGame(state, {
-    type: "SUBMIT_BAN",
-    changes: getPrologueRestrictionChanges(state),
-  });
+test("the DAY 10 slate never reoffers baseline cards or consumes Vol.1 ids", () => {
+  let state = completeHandover(createCampaignStart(0x31415926));
   state = reduceGame(state, {
     type: "ADVANCE_DAYS",
-    days: 15,
+    days: 3,
   });
+  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
 
-  assert.equal(state.day, 30);
+  assert.equal(state.day, 10);
   assert.equal(state.phase, "release-edit");
   assert.ok(state.releaseSlate);
   assert.deepEqual(
@@ -105,7 +109,7 @@ test("the DAY 30 slate never reoffers baseline cards or consumes Vol.1 ids", () 
   );
 });
 
-test("schema rejects forged baselines but keeps old schema-v8 saves compatible", () => {
+test("schema rejects forged or missing DAY 0 baselines", () => {
   const source = createCampaignStart(0x0badc0de);
 
   const missingLimit = structuredClone(source);
@@ -118,14 +122,7 @@ test("schema rejects forged baselines but keeps old schema-v8 saves compatible",
   firstProduct.genericCardId = "generic-rush-enabler";
   assert.throws(() => roundTrip(wrongBaseline), SaveSchemaError);
 
-  const legacyV8 = structuredClone(source);
-  legacyV8.releaseHistory = [];
-  legacyV8.genericLimits = {};
-  const restoredLegacy = roundTrip(legacyV8);
-  assert.equal(restoredLegacy.releaseHistory.length, 1);
-  assert.ok(isInitialGenericReleaseBatch(restoredLegacy.releaseHistory[0]));
-  assert.deepEqual(
-    Object.keys(restoredLegacy.genericLimits).sort(),
-    [...INITIAL_GENERIC_CARD_IDS].sort(),
-  );
+  const missingBaseline = structuredClone(source);
+  missingBaseline.releaseHistory = [];
+  assert.throws(() => roundTrip(missingBaseline), SaveSchemaError);
 });

@@ -3,6 +3,19 @@ import test from "node:test";
 
 import { getNextCampaignMilestone } from "../app/game/campaign-milestone.ts";
 
+test("the guided handover advances one briefing day at a time", () => {
+  assert.deepEqual(
+    getNextCampaignMilestone({
+      day: 2,
+      handoverComplete: false,
+      nextBanDay: 40,
+      nextReleaseDay: 10,
+      phase: "running",
+    }),
+    { days: 1, label: "다음 인수인계" },
+  );
+});
+
 test("the nearest release is selected after the guided handover", () => {
   assert.deepEqual(
     getNextCampaignMilestone({ day: 31, nextBanDay: 75, nextReleaseDay: 60, phase: "running" }),

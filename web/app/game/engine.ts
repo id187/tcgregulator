@@ -26,6 +26,7 @@ import {
   BUSINESS_ACTION_BY_TYPE,
   getBusinessActionScheduledEndDay,
   getBusinessEnvironmentHealth,
+  getCompetitiveSeasonHistory,
   getProbabilisticBusinessActionOutcome,
   isProbabilisticBusinessAction,
 } from "./business-actions.ts";
@@ -61,9 +62,21 @@ import {
 import {
   BAN_INTERVAL,
   CAMPAIGN_END_DAY,
+  FIRST_RELEASE_DAY,
   FIRST_BAN_DAY,
+  getNextRegularReleaseDay,
+  getNextReprintReleaseDay,
+  getNextScheduledReleaseDay,
+  isRegularReleaseDay,
+  isReprintReleaseDay,
+  isScheduledReleaseDay,
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
+  REPRINT_MINIMUM_AGE_DAYS,
+  REPRINT_PACK_CANDIDATE_COUNT,
+  REPRINT_PACK_PRODUCT_COUNT,
+  RELEASE_REPORT_DELAY_DAYS,
+  RESTRICTION_REPORT_DELAY_DAYS,
   RELEASE_INTERVAL,
   TUTORIAL_END_DAY,
 } from "./campaign.ts";
@@ -77,6 +90,7 @@ import {
 import { withKoreanParticle } from "./korean-particles.ts";
 import { getStableThemeRandomIdentifier } from "./future-theme-id-migration.ts";
 import { getDailyCommunitySentiment } from "./community-sentiment.ts";
+import { getEmergentNarrativesForDay } from "./emergent-narratives.ts";
 import { ENVIRONMENT_HEALTH_MODEL } from "./environment-health.ts";
 import { getSupportNeglectPressure } from "./support-continuity.ts";
 import {
@@ -108,10 +122,13 @@ import {
   getPendingReleaseRequest,
   getReleaseRequestKind,
   getReleaseRequestLane,
+  getReprintCandidates,
   getReprintImpactPreview,
   getRequestGenericPool,
+  type ReprintImpactPreview,
   type ReleaseRequestInput,
 } from "./release-requests.ts";
+import { getReleaseSlateKind } from "./release-kind.ts";
 import type {
   BusinessActionType,
   CommunityEvent,
@@ -152,7 +169,9 @@ const INITIAL_OPERATING_CASH = 2.5;
 const CATALOG_DAILY_SPEND_PER_USER = 350;
 const PACK_ODDS_REVENUE_MULTIPLIER = 1.25;
 const BALANCED_RELEASE_TRUST_RECOVERY = 0.18;
-const RESTRICTION_OUTCOME_FOLLOWUP_DAYS = 4;
+const RESTRICTION_OUTCOME_FOLLOWUP_DAYS = RESTRICTION_REPORT_DELAY_DAYS;
+/** Mandatory reprint packs should hurt confidence without making trust unrecoverable. */
+const REPRINT_PACK_TRUST_LOSS_CAP = 4;
 const STARTING_THEME_IDS = [
   "cycle",
   "white-night",
@@ -192,7 +211,7 @@ const PACK_DEMAND_BY_META_TIER: Record<MetaTier, number> = {
 };
 const GENERIC_RELEASE_OPTION_COUNT = 3;
 const STANDARD_RELEASE_PRODUCT_COUNT = 4;
-const LEGACY_RELEASE_PRODUCT_COUNT = 3;
+const RELEASE_SHELF_PRODUCT_BASELINE = 3;
 
 export interface PrologueReleasePlan {
   /** Canonical reducer payload. Preserve this order for replay identity. */
@@ -201,10 +220,6 @@ export interface PrologueReleasePlan {
   selectedOptionIds: string[];
   /** Fixed slider values keyed by direct option id. */
   powerAdjustmentByOptionId: Record<string, PowerAdjustment>;
-  /** The reducer appends this requested reprint; it is never a direct pick. */
-  lockedReprintOptionId: string | null;
-  /** Direct selections plus an optional locked reprint. */
-  totalProductCount: number;
 }
 
 function compareReleaseOptionIds(
@@ -220,23 +235,26 @@ function compareReleaseOptionIds(
 }
 
 /**
- * Resolves the fixed tutorial choices against the actual DAY 30 slate.
+ * Resolves the fixed tutorial choices against the first DAY 10 regular slate.
  *
  * The tutorial intentionally submits ordinary reducer commands. Keeping the
- * option ids derived from the live slate means an in-progress DAY 30 save can
+ * option ids derived from the live slate means an in-progress DAY 10 save can
  * be restored without storing a second, tutorial-only copy of the release.
  */
 export function getPrologueReleaseSelections(
   state: GameState,
 ): ReleaseSelection[] {
   if (
-    state.day !== 30 ||
+    state.day !== FIRST_RELEASE_DAY ||
     state.phase !== "release-edit" ||
     !state.releaseSlate ||
     state.releaseSlate.day !== state.day ||
-    ![6, 9, 10].includes(state.releaseSlate.options.length)
+    state.releaseSlate.releaseKind !== "regular" ||
+    state.releaseSlate.options.length !== 9
   ) {
-    throw new Error("Prologue release choices are only available at the DAY 30 review.");
+    throw new Error(
+      `Prologue release choices are only available at the DAY ${FIRST_RELEASE_DAY} review.`,
+    );
   }
 
   const newThemeCount = state.releaseSlate.options.filter(
@@ -248,22 +266,15 @@ export function getPrologueReleaseSelections(
   const genericCount = state.releaseSlate.options.filter(
     (option) => option.kind === "generic",
   ).length;
-  const usesGenericRules = genericCount > 0;
   if (
     newThemeCount !== 3 ||
     supportCount !== 3 ||
-    (usesGenericRules ? genericCount !== 3 : genericCount !== 0)
+    genericCount !== 3
   ) {
     throw new Error("The prologue release review has an invalid option mix.");
   }
 
   const options = state.releaseSlate.options;
-  if (!usesGenericRules) {
-    return options.slice(0, LEGACY_RELEASE_PRODUCT_COUNT).map((option) => ({
-      optionId: option.id,
-      powerAdjustment: 3 as PowerAdjustment,
-    }));
-  }
   const newThemes = options
     .filter((option) => option.kind === "new-theme")
     .sort(compareReleaseOptionIds);
@@ -275,13 +286,6 @@ export function getPrologueReleaseSelections(
     .sort(compareReleaseOptionIds)[0];
   if (newThemes.length < 2 || !support || !generic) {
     throw new Error("Missing a guided prologue release category.");
-  }
-  if (options.some((option) => option.kind === "reprint" && option.locked)) {
-    return [
-      { optionId: newThemes[0].id, powerAdjustment: 3 },
-      { optionId: support.id, powerAdjustment: 3 },
-      { optionId: generic.id, powerAdjustment: 0 },
-    ];
   }
   return [
     { optionId: newThemes[0].id, powerAdjustment: 3 },
@@ -296,9 +300,6 @@ export function getPrologueReleaseSelections(
 /** Read model shared by the guided selection screen and skip replay. */
 export function getPrologueReleasePlan(state: GameState): PrologueReleasePlan {
   const selections = getPrologueReleaseSelections(state);
-  const lockedReprint = state.releaseSlate?.options.find(
-    (option) => option.kind === "reprint" && option.locked,
-  );
   return {
     selections: selections.map((selection) => ({ ...selection })),
     selectedOptionIds: selections.map((selection) => selection.optionId),
@@ -308,8 +309,6 @@ export function getPrologueReleasePlan(state: GameState): PrologueReleasePlan {
         selection.powerAdjustment,
       ]),
     ),
-    lockedReprintOptionId: lockedReprint?.id ?? null,
-    totalProductCount: selections.length + (lockedReprint ? 1 : 0),
   };
 }
 
@@ -343,7 +342,7 @@ export function isPrologueReleaseSubmission(
   }
 }
 
-/** Returns whether one release choice is one of the guided DAY 30 choices. */
+/** Returns whether one release choice is one of the guided DAY 10 choices. */
 export function isPrologueReleaseSelection(
   state: GameState,
   selection: ReleaseSelection,
@@ -916,7 +915,7 @@ export function canProposeSupport(
   if (getCommittedSupportCount(state, themeId) >= MAX_THEME_SUPPORTS) {
     return false;
   }
-  return getNextReleaseDay(state.day) <= LAST_RELEASE_DAY;
+  return getNextRegularReleaseDay(state.day) <= LAST_RELEASE_DAY;
 }
 
 function totalUsers(state: GameState): number {
@@ -962,6 +961,12 @@ function cloneState(state: GameState): GameState {
         ...record,
       })),
       strategy: { ...state.operations.strategy },
+      season: {
+        ...state.operations.season,
+        boundaries: state.operations.season.boundaries.map((boundary) => ({
+          ...boundary,
+        })),
+      },
     },
     community: state.community.map((event) => ({ ...event })),
     activeThemeIds: [...state.activeThemeIds],
@@ -990,12 +995,7 @@ function cloneState(state: GameState): GameState {
 }
 
 export function isReleaseDay(day: number): boolean {
-  return (
-    Number.isInteger(day) &&
-    day > 0 &&
-    day <= LAST_RELEASE_DAY &&
-    day % RELEASE_INTERVAL === 0
-  );
+  return isScheduledReleaseDay(day);
 }
 
 export function isBanDay(day: number): boolean {
@@ -1007,19 +1007,9 @@ export function isBanDay(day: number): boolean {
   );
 }
 
-/** Former v0.2.0 calendar gate, accepted only to finish an in-progress save. */
-function isLegacyRestrictionDay(day: number): boolean {
-  return (
-    Number.isInteger(day) &&
-    day >= 45 &&
-    day <= 465 &&
-    (day - 45) % BAN_INTERVAL === 0
-  );
-}
-
 /** Returns the first release strictly after day. */
 export function getNextReleaseDay(day: number): number {
-  return (Math.floor(day / RELEASE_INTERVAL) + 1) * RELEASE_INTERVAL;
+  return getNextScheduledReleaseDay(day);
 }
 
 /** Returns the first regular restriction date strictly after day. */
@@ -1472,8 +1462,11 @@ function projectWithBounds(
 
 function findWeekSnapshot(state: GameState): GameState["history"][number] | undefined {
   const targetDay = state.day - 7;
-  for (let index = state.history.length - 1; index >= 0; index -= 1) {
-    if (state.history[index].day <= targetDay) return state.history[index];
+  const competitiveHistory = getCompetitiveSeasonHistory(state);
+  for (let index = competitiveHistory.length - 1; index >= 0; index -= 1) {
+    if (competitiveHistory[index].day <= targetDay) {
+      return competitiveHistory[index];
+    }
   }
   return undefined;
 }
@@ -1640,6 +1633,27 @@ function appendCommunity(
   complete.body = formatCommunityEvent(complete, state);
   state.nextCommunityId += 1;
   state.community.push(complete);
+  if (state.community.length > COMMUNITY_LIMIT) {
+    state.community.splice(0, state.community.length - COMMUNITY_LIMIT);
+  }
+}
+
+function appendEmergentNarrativesForCurrentDay(state: GameState): void {
+  for (const narrative of getEmergentNarrativesForDay(state, state.day)) {
+    if (
+      state.community.some(
+        (event) =>
+          event.day === state.day && event.body === narrative.event.body,
+      )
+    ) {
+      continue;
+    }
+    state.community.push({
+      ...narrative.event,
+      id: `community-${state.nextCommunityId}`,
+    });
+    state.nextCommunityId += 1;
+  }
   if (state.community.length > COMMUNITY_LIMIT) {
     state.community.splice(0, state.community.length - COMMUNITY_LIMIT);
   }
@@ -2041,8 +2055,7 @@ function updateUsers(state: GameState): void {
         (batch) =>
           !isInitialGenericReleaseBatch(batch) && state.day - batch.day <= 90,
       )
-      .reduce((sum, batch) => sum + batch.products.length, 0) /
-      (usesGenericReleaseRules(state) ? 12 : 9),
+      .reduce((sum, batch) => sum + batch.products.length, 0) / 18,
     0,
     1,
   );
@@ -2116,10 +2129,14 @@ function salesCurve(age: number): number {
 }
 
 function newThemePowerCreep(releaseDay: number): number {
-  const releaseSteps = Math.max(
-    0,
-    Math.floor((releaseDay - 30) / RELEASE_INTERVAL),
-  );
+  let releaseSteps = 0;
+  for (
+    let candidate = FIRST_RELEASE_DAY;
+    candidate < releaseDay;
+    candidate += RELEASE_INTERVAL
+  ) {
+    if (isRegularReleaseDay(candidate)) releaseSteps += 1;
+  }
   return round(releaseSteps * NEW_THEME_POWER_CREEP_PER_RELEASE, 4);
 }
 
@@ -2164,10 +2181,11 @@ function releaseTargetShare(
 
 function updateFinance(state: GameState): void {
   const activeUsers = totalUsers(state);
+  const competitiveHistory = getCompetitiveSeasonHistory(state);
   const placementReport = getRecentPlacementReport(
-    state.history,
+    competitiveHistory,
     state.seed,
-    state.history.at(-1)?.day ?? state.day,
+    competitiveHistory.at(-1)?.day ?? state.day,
   );
   let revenue =
     (activeUsers * CATALOG_DAILY_SPEND_PER_USER) / 100_000_000 +
@@ -2275,9 +2293,9 @@ function updateFinance(state: GameState): void {
         (activeUsers * buyerRate * averageSpend) / 100_000_000;
       batchRevenue += potential * salesCurve(age);
     }
-    // Four products share the old three-product shelf and marketing budget.
+    // Four products share the established three-product shelf and marketing budget.
     // A fourth neutral product therefore creates no automatic 4/3 windfall.
-    batchRevenue *= LEGACY_RELEASE_PRODUCT_COUNT / batch.products.length;
+    batchRevenue *= RELEASE_SHELF_PRODUCT_BASELINE / batch.products.length;
     batchRevenue += reprintRevenueBoost;
     if (hasPackOddsAdjustmentForRelease(state, batch.day)) {
       batchRevenue *= PACK_ODDS_REVENUE_MULTIPLIER;
@@ -2371,8 +2389,66 @@ function makeReleaseOption(
   return complete;
 }
 
+function generateReprintReleaseSlate(state: GameState): void {
+  const queuedRequest = state.supportRequests
+    .filter(
+      (request): request is Extract<SupportRequest, { kind: "reprint" }> =>
+        request.kind === "reprint" &&
+        request.status === "queued" &&
+        request.eligibleReleaseDay <= state.day,
+    )
+    .sort((left, right) => left.proposedDay - right.proposedDay)[0];
+  const urgency = (candidate: ReprintImpactPreview): number =>
+    candidate.referencePrice *
+    (0.55 + candidate.playDemandScore / 100) *
+    (1 + Math.min(1, candidate.ageDays / 180) * 0.2);
+  const eligible: ReprintImpactPreview[] = getReprintCandidates(state)
+    .filter((candidate) => candidate.ageDays >= REPRINT_MINIMUM_AGE_DAYS)
+    .sort((left, right) => {
+      const leftRequested = Number(left.cardId === queuedRequest?.cardId);
+      const rightRequested = Number(right.cardId === queuedRequest?.cardId);
+      return (
+        rightRequested - leftRequested ||
+        urgency(right) - urgency(left) ||
+        left.cardId.localeCompare(right.cardId)
+      );
+    })
+    .slice(0, REPRINT_PACK_CANDIDATE_COUNT);
+
+  if (eligible.length < REPRINT_PACK_CANDIDATE_COUNT) {
+    throw new Error(
+      `Every reprint review requires ${REPRINT_PACK_CANDIDATE_COUNT} eligible cards.`,
+    );
+  }
+
+  const options = eligible.map((candidate) =>
+    makeReleaseOption(state, {
+      kind: "reprint",
+      cardId: candidate.cardId,
+      themeId: candidate.themeId ?? state.currentTopThemeId,
+      expectedPower: 50,
+      requested: candidate.cardId === queuedRequest?.cardId,
+      ...(candidate.cardId === queuedRequest?.cardId && queuedRequest
+        ? { requestId: queuedRequest.id }
+        : {}),
+    })
+  );
+  if (queuedRequest && options.some((option) => option.requested)) {
+    queuedRequest.status = "offered";
+  }
+  state.releaseSlate = {
+    day: state.day,
+    releaseKind: "reprint",
+    options,
+  };
+}
+
 function generateReleaseSlate(state: GameState): void {
   if (!isReleaseDay(state.day) || state.releaseSlate) return;
+  if (isReprintReleaseDay(state.day)) {
+    generateReprintReleaseSlate(state);
+    return;
+  }
 
   const inactiveThemes = THEMES.filter(
     (content) => !state.themes[content.id],
@@ -2555,47 +2631,18 @@ function generateReleaseSlate(state: GameState): void {
       )
     : [];
 
-  const queuedReprintRequest = state.supportRequests
-    .filter(
-      (request): request is Extract<SupportRequest, { kind: "reprint" }> =>
-        request.kind === "reprint" &&
-        request.status === "queued" &&
-        request.eligibleReleaseDay <= state.day,
-    )
-    .sort((left, right) => left.proposedDay - right.proposedDay)[0];
-  const reprintImpact = queuedReprintRequest
-    ? getReprintImpactPreview(state, queuedReprintRequest.cardId)
-    : null;
-  const reprintOptions = genericRules && queuedReprintRequest && reprintImpact
-    ? [
-        makeReleaseOption(state, {
-          kind: "reprint",
-          cardId: queuedReprintRequest.cardId,
-          themeId: reprintImpact.themeId ?? state.currentTopThemeId,
-          expectedPower: 50,
-          requested: true,
-          requestId: queuedReprintRequest.id,
-          locked: true,
-        }),
-      ]
-    : [];
-  if (reprintOptions.length > 0 && queuedReprintRequest) {
-    queuedReprintRequest.status = "offered";
-  }
-
   const options = [
     ...newThemeOptions,
     ...supportOptions,
     ...genericOptions,
-    ...reprintOptions,
   ];
-  const expectedOptionCount = genericRules ? 9 + reprintOptions.length : 6;
+  const expectedOptionCount = genericRules ? 9 : 6;
   if (options.length !== expectedOptionCount) {
     throw new Error(
       `Every release review requires exactly ${expectedOptionCount} eligible options.`,
     );
   }
-  state.releaseSlate = { day: state.day, options };
+  state.releaseSlate = { day: state.day, releaseKind: "regular", options };
 }
 
 function createThemeRuntime(
@@ -2780,6 +2827,72 @@ function applySupportRelease(
   );
 }
 
+function submitReprintRelease(
+  state: GameState,
+  selections: ReleaseSelection[],
+): void {
+  const slate = state.releaseSlate;
+  if (!slate || getReleaseSlateKind(slate) !== "reprint") {
+    throw new Error("A reprint pack can only be submitted from a reprint review.");
+  }
+  if (selections.length !== REPRINT_PACK_PRODUCT_COUNT) {
+    throw new Error(
+      `Exactly ${REPRINT_PACK_PRODUCT_COUNT} reprint cards must be selected.`,
+    );
+  }
+  const selectionIds = new Set(selections.map((selection) => selection.optionId));
+  if (selectionIds.size !== selections.length) {
+    throw new Error("Reprint selections must be unique.");
+  }
+  const optionsById = new Map(slate.options.map((option) => [option.id, option]));
+  const products: ReleasedProduct[] = selections.map((selection) => {
+    if (selection.powerAdjustment !== 0) {
+      throw new Error("Reprint cards cannot receive a power adjustment.");
+    }
+    const option = optionsById.get(selection.optionId);
+    if (!option || option.kind !== "reprint") {
+      throw new Error(`Unknown reprint option: ${selection.optionId}`);
+    }
+    const impact = getReprintImpactPreview(state, option.cardId);
+    if (!impact || impact.ageDays < REPRINT_MINIMUM_AGE_DAYS) {
+      throw new Error(`The reprint card is no longer eligible: ${option.cardId}`);
+    }
+    return {
+      optionId: option.id,
+      kind: "reprint" as const,
+      cardId: option.cardId,
+      themeId: option.themeId,
+      ...(option.requestId ? { requestId: option.requestId } : {}),
+      expectedTier: option.expectedTier,
+      powerAdjustment: 0 as const,
+      referencePrice: impact.referencePrice,
+      trustDelta: impact.trustDelta,
+      accessibilityUserGain: impact.accessibilityUserGain,
+      collectorUserLoss: impact.collectorUserLoss,
+      releaseRevenueBoost: impact.releaseRevenueBoost,
+    };
+  });
+
+  for (const option of slate.options) {
+    if (option.kind !== "reprint" || !option.requestId) continue;
+    const request = state.supportRequests.find(
+      (candidate) => candidate.id === option.requestId,
+    );
+    if (!request) continue;
+    request.status = selectionIds.has(option.id) ? "released" : "skipped";
+    request.releasedDay = selectionIds.has(option.id) ? state.day : null;
+  }
+
+  state.releaseHistory.push({
+    day: state.day,
+    releaseKind: "reprint",
+    products,
+  });
+  state.releaseSlate = null;
+  state.phase = "running";
+  settleDecisionDay(state);
+}
+
 function submitRelease(
   state: GameState,
   selections: ReleaseSelection[],
@@ -2791,18 +2904,11 @@ function submitRelease(
   ) {
     throw new Error("Releases can only be submitted during a release review.");
   }
-  const genericRules = state.releaseSlate.options.some(
-    (option) => option.kind === "generic",
-  );
-  const lockedReprint = state.releaseSlate.options.find(
-    (option): option is Extract<ReleaseOption, { kind: "reprint" }> =>
-      option.kind === "reprint" && option.locked,
-  );
-  const expectedSelectionCount = genericRules
-    ? lockedReprint
-      ? STANDARD_RELEASE_PRODUCT_COUNT - 1
-      : STANDARD_RELEASE_PRODUCT_COUNT
-    : LEGACY_RELEASE_PRODUCT_COUNT;
+  if (getReleaseSlateKind(state.releaseSlate) === "reprint") {
+    submitReprintRelease(state, selections);
+    return;
+  }
+  const expectedSelectionCount = STANDARD_RELEASE_PRODUCT_COUNT;
   if (selections.length !== expectedSelectionCount) {
     throw new Error(
       `Exactly ${expectedSelectionCount} release options must be selected.`,
@@ -2812,22 +2918,17 @@ function submitRelease(
   if (selectionIds.size !== selections.length) {
     throw new Error("Release selections must be unique.");
   }
-  if (lockedReprint && selectionIds.has(lockedReprint.id)) {
-    throw new Error("The locked reprint is included automatically and cannot be selected.");
-  }
   const optionsById = new Map(
     state.releaseSlate.options.map((option) => [option.id, option]),
   );
-  if (genericRules) {
-    const selectedOptions = selections.map((selection) =>
-      optionsById.get(selection.optionId),
-    );
-    for (const kind of ["new-theme", "support", "generic"] as const) {
-      if (!selectedOptions.some((option) => option?.kind === kind)) {
-        throw new Error(
-          "Direct release selections require at least one new theme, support, and generic card.",
-        );
-      }
+  const selectedOptions = selections.map((selection) =>
+    optionsById.get(selection.optionId),
+  );
+  for (const kind of ["new-theme", "support", "generic"] as const) {
+    if (!selectedOptions.some((option) => option?.kind === kind)) {
+      throw new Error(
+        "Direct release selections require at least one new theme, support, and generic card.",
+      );
     }
   }
   const products: ReleasedProduct[] = [];
@@ -2843,7 +2944,7 @@ function submitRelease(
     const option = optionsById.get(selection.optionId);
     if (!option) throw new Error(`Unknown release option: ${selection.optionId}`);
     if (option.kind === "reprint") {
-      throw new Error("The locked reprint is included automatically.");
+      throw new Error("Reprints can only be selected in a dedicated reprint pack.");
     }
     if (
       option.kind === "support" &&
@@ -2892,30 +2993,9 @@ function submitRelease(
     }
   }
 
-  if (lockedReprint) {
-    const impact = getReprintImpactPreview(state, lockedReprint.cardId);
-    if (!impact) {
-      throw new Error(`The locked reprint card is no longer released: ${lockedReprint.cardId}`);
-    }
-    products.push({
-      optionId: lockedReprint.id,
-      kind: "reprint",
-      cardId: lockedReprint.cardId,
-      themeId: lockedReprint.themeId,
-      requestId: lockedReprint.requestId,
-      expectedTier: lockedReprint.expectedTier,
-      powerAdjustment: 0,
-      referencePrice: impact.referencePrice,
-      trustDelta: impact.trustDelta,
-      accessibilityUserGain: impact.accessibilityUserGain,
-      collectorUserLoss: impact.collectorUserLoss,
-      releaseRevenueBoost: impact.releaseRevenueBoost,
-    });
-  }
-
   for (const option of state.releaseSlate.options) {
     if (
-      (option.kind !== "support" && option.kind !== "generic" && option.kind !== "reprint") ||
+      (option.kind !== "support" && option.kind !== "generic") ||
       !option.requestId
     ) {
       continue;
@@ -2924,7 +3004,7 @@ function submitRelease(
       (candidate) => candidate.id === option.requestId,
     );
     if (!request) continue;
-    if (selectionIds.has(option.id) || option.kind === "reprint") {
+    if (selectionIds.has(option.id)) {
       request.status = "released";
       request.releasedDay = state.day;
     } else {
@@ -2932,7 +3012,11 @@ function submitRelease(
     }
   }
 
-  state.releaseHistory.push({ day: state.day, products });
+  state.releaseHistory.push({
+    day: state.day,
+    releaseKind: "regular",
+    products,
+  });
   applyPendingPackOddsToCurrentRelease(state);
   state.releaseSlate = null;
   state.phase = "running";
@@ -3023,8 +3107,13 @@ function applyReleaseEffectsForCurrentDay(state: GameState): void {
       trustDelta += BALANCED_RELEASE_TRUST_RECOVERY;
     }
   }
+  const appliedTrustDelta = batch.products.every(
+    (product) => product.kind === "reprint",
+  )
+    ? Math.max(-REPRINT_PACK_TRUST_LOSS_CAP, trustDelta)
+    : trustDelta;
   state.purchaseTrust = round(
-    clamp(state.purchaseTrust + trustDelta, 0, 100),
+    clamp(state.purchaseTrust + appliedTrustDelta, 0, 100),
     4,
   );
 }
@@ -3127,31 +3216,16 @@ function isRestrictionDecisionEvent(event: CommunityEvent): boolean {
   );
 }
 
-/** Whether the redesigned DAY 31 handover has shown every core loop once. */
+/** Whether the seven-day emergency handover has completed its first ruling. */
 export function isHandoverReady(state: GameState): boolean {
   const firstBanPublished = state.community.some(
     (event) =>
       event.day === FIRST_BAN_DAY && isRestrictionDecisionEvent(event),
   );
-  const firstReleasePublished = state.releaseHistory.some(
-    (batch) => batch.day === RELEASE_INTERVAL && !batch.baseline,
-  );
-  const redesignedHandoverReady =
+  return (
     state.day >= TUTORIAL_END_DAY &&
     state.phase === "running" &&
-    firstBanPublished &&
-    firstReleasePublished;
-  return redesignedHandoverReady || isLegacyDay46HandoverReady(state);
-}
-
-/** Loads completed saves made by the former DAY 45→46 handover calendar. */
-function isLegacyDay46HandoverReady(state: GameState): boolean {
-  return (
-    state.day >= 46 &&
-    state.phase !== "ended" &&
-    state.community.some(
-      (event) => event.day === 45 && isRestrictionDecisionEvent(event),
-    )
+    firstBanPublished
   );
 }
 
@@ -3215,7 +3289,7 @@ function restrictionOutcomeTrustDelta(
   return streak <= 1 ? 0 : -Math.min(3, 0.75 * streak);
 }
 
-/** Applies the deterministic D+4 ownership-confidence result exactly once. */
+/** Applies the deterministic D+9 ownership-confidence result exactly once. */
 function applyRestrictionOutcomeForCurrentDay(state: GameState): void {
   const decisionDay = state.day - RESTRICTION_OUTCOME_FOLLOWUP_DAYS;
   if (
@@ -3265,8 +3339,8 @@ function assignMandateSeed(state: GameState, campaignSeed: number): void {
 
   state.seed = campaignSeed >>> 0;
 
-  // No surprise event can have appeared before the first guided review, so its
-  // first date and type can safely move to the newly minted mandate timeline.
+  // The guaranteed DAY 20 dilemma has not appeared before the first guided
+  // review, so its seeded type can safely move to the minted mandate timeline.
   if (
     state.operations.nextEventId === 1 &&
     state.operations.eventRecords.length === 0 &&
@@ -3289,7 +3363,7 @@ function assignMandateSeed(state: GameState, campaignSeed: number): void {
 }
 
 function assertState(state: GameState): void {
-  if (state.schemaVersion !== 8) {
+  if (state.schemaVersion !== 9) {
     throw new Error(`Unsupported game-state schema: ${state.schemaVersion}.`);
   }
   if (
@@ -3299,7 +3373,7 @@ function assertState(state: GameState): void {
     throw new Error("Generic release rules must begin on a regular release day.");
   }
   const baselineBatches = state.releaseHistory.filter(
-    (batch) => batch.baseline === true,
+    (batch) => batch.releaseKind === "baseline",
   );
   if (
     baselineBatches.length > 1 ||
@@ -3307,7 +3381,7 @@ function assertState(state: GameState): void {
       (state.releaseHistory[0] !== baselineBatches[0] ||
         !isInitialGenericReleaseBatch(baselineBatches[0])))
   ) {
-    throw new Error("Invalid DAY 1 baseline generic release batch.");
+    throw new Error("Invalid baseline generic release batch.");
   }
   if (
     baselineBatches.length === 1 &&
@@ -3338,10 +3412,12 @@ function assertState(state: GameState): void {
   }
   if (
     !Number.isInteger(state.day) ||
-    state.day < 1 ||
+    state.day < FIRST_BAN_DAY ||
     state.day > CAMPAIGN_END_DAY
   ) {
-    throw new Error(`Campaign day must be between 1 and ${CAMPAIGN_END_DAY}.`);
+    throw new Error(
+      `Campaign day must be between ${FIRST_BAN_DAY} and ${CAMPAIGN_END_DAY}.`,
+    );
   }
   if (state.day === CAMPAIGN_END_DAY && state.phase !== "ended") {
     throw new Error(`The campaign must be ended on DAY ${CAMPAIGN_END_DAY}.`);
@@ -3514,7 +3590,7 @@ function assertState(state: GameState): void {
       case "store-tour":
       case "beginner-camp":
       case "local-league":
-      case "reprint-campaign":
+      case "lending-exchange-network":
       case "collector-fair":
         if (
           record.environmentHealth !== undefined ||
@@ -3526,34 +3602,28 @@ function assertState(state: GameState): void {
           throw new Error(`Unexpected duration-action metadata: ${record.id}.`);
         }
         if (record.risk === undefined) {
+          throw new Error(`Missing probabilistic action risk: ${record.id}.`);
+        }
+        if (!isProbabilisticBusinessAction(record.type)) {
+          throw new Error(`Invalid probabilistic action type: ${record.id}.`);
+        }
+        if (record.outcome === "active") {
+          if (record.resolvedDay !== undefined || state.day !== record.startedDay) {
+            throw new Error(`Overdue probabilistic action: ${record.id}.`);
+          }
+        } else if (
+          record.outcome === "success" ||
+          record.outcome === "backlash"
+        ) {
           if (
-            (record.outcome !== "active" && record.outcome !== "completed") ||
-            record.resolvedDay !== undefined
+            record.resolvedDay !== record.startedDay + 1 ||
+            record.outcome !==
+              getProbabilisticBusinessActionOutcome(record)
           ) {
-            throw new Error(`Invalid legacy duration action: ${record.id}.`);
+            throw new Error(`Invalid probabilistic action result: ${record.id}.`);
           }
         } else {
-          if (!isProbabilisticBusinessAction(record.type)) {
-            throw new Error(`Invalid probabilistic action type: ${record.id}.`);
-          }
-          if (record.outcome === "active") {
-            if (record.resolvedDay !== undefined || state.day !== record.startedDay) {
-              throw new Error(`Overdue probabilistic action: ${record.id}.`);
-            }
-          } else if (
-            record.outcome === "success" ||
-            record.outcome === "backlash"
-          ) {
-            if (
-              record.resolvedDay !== record.startedDay + 1 ||
-              record.outcome !==
-                getProbabilisticBusinessActionOutcome(record)
-            ) {
-              throw new Error(`Invalid probabilistic action result: ${record.id}.`);
-            }
-          } else {
-            throw new Error(`Invalid probabilistic action outcome: ${record.id}.`);
-          }
+          throw new Error(`Invalid probabilistic action outcome: ${record.id}.`);
         }
         break;
       case "championship":
@@ -3584,7 +3654,7 @@ function assertState(state: GameState): void {
         break;
       case "season-overhaul":
       case "global-launch":
-      case "first-print-expansion": {
+      case "organized-play-platform": {
         strategicProjectCount += 1;
         const resolutionDelay = definition.resolutionDelay;
         const context = record.riskContext;
@@ -3620,13 +3690,6 @@ function assertState(state: GameState): void {
           throw new Error(`Invalid strategic-project risk context: ${record.id}.`);
         }
         const resolutionDay = record.startedDay + resolutionDelay;
-        if (
-          record.type === "first-print-expansion" &&
-          (record.startedDay % RELEASE_INTERVAL !== 0 ||
-            !state.releaseHistory.some((batch) => batch.day === record.startedDay))
-        ) {
-          throw new Error(`First-print expansion did not follow a release: ${record.id}.`);
-        }
         if (resolutionDay > LAST_DECISION_DAY) {
           throw new Error(`Strategic project resolves after the mandate: ${record.id}.`);
         }
@@ -3733,7 +3796,7 @@ function assertState(state: GameState): void {
 
   let eventSpend = 0;
   let expectedStrategy = { audience: 0, product: 0, posture: 0 };
-  let expectedEventDay: number | null = null;
+  let expectedEventDay: number | null = getInitialBusinessEventDay(state.seed);
   let previousEventDay = -1;
   for (const [index, record] of state.operations.eventRecords.entries()) {
     const eventNumber = index + 1;
@@ -3745,7 +3808,7 @@ function assertState(state: GameState): void {
       record.id !== expectedId ||
       record.type !== expectedType ||
       !Number.isInteger(record.appearedDay) ||
-      record.appearedDay < 52 ||
+      record.appearedDay < getInitialBusinessEventDay(state.seed) ||
       record.appearedDay >= LAST_DECISION_DAY ||
       record.appearedDay > state.day ||
       record.appearedDay <= previousEventDay ||
@@ -3917,12 +3980,31 @@ function resolveCurrentDay(state: GameState): void {
   updateFinance(state);
   recordHistory(state);
   applyRestrictionOutcomeForCurrentDay(state);
+  appendEmergentNarrativesForCurrentDay(state);
 
   if (state.day >= CAMPAIGN_END_DAY || totalUsers(state) <= 0) {
     state.phase = "ended";
     state.operations.nextEventDay = null;
   }
   assertState(state);
+}
+
+function hasFormalReportArrivingToday(state: GameState): boolean {
+  const restrictionDecisionDay =
+    state.day - RESTRICTION_REPORT_DELAY_DAYS;
+  const restrictionReport =
+    isBanDay(restrictionDecisionDay) &&
+    state.community.some(
+      (event) =>
+        event.day === restrictionDecisionDay &&
+        isRestrictionDecisionEvent(event),
+    );
+  const releaseDecisionDay = state.day - RELEASE_REPORT_DELAY_DAYS;
+  const releaseReport = state.releaseHistory.some(
+    (batch) =>
+      batch.day === releaseDecisionDay && batch.releaseKind !== "baseline",
+  );
+  return restrictionReport || releaseReport;
 }
 
 function advanceDays(state: GameState, days: number): void {
@@ -3956,6 +4038,11 @@ function advanceDays(state: GameState, days: number): void {
     openBusinessEvent(state);
     resolveCurrentDay(state);
     if (state.operations.pendingEvent) break;
+    // The emergency handover is a real campaign gate. Stop on DAY 7 so the
+    // UI and API callers can acknowledge it before the first DAY 10 product
+    // review instead of silently skipping straight into release-edit.
+    if (!state.handoverComplete && isHandoverReady(state)) break;
+    if (hasFormalReportArrivingToday(state)) break;
   }
 }
 
@@ -4016,7 +4103,7 @@ function submitBan(
 ): void {
   if (
     state.phase !== "ban-edit" ||
-    (!isBanDay(state.day) && !isLegacyRestrictionDay(state.day))
+    !isBanDay(state.day)
   ) {
     throw new Error("Restrictions can only be submitted on a regular restriction day.");
   }
@@ -4182,7 +4269,10 @@ function submitBan(
   settleDecisionDay(state);
 }
 
-function assertReleaseRequestContext(state: GameState): number {
+function assertReleaseRequestContext(
+  state: GameState,
+  lane: ReleaseRequestLane,
+): number {
   if (state.phase === "ended") {
     throw new Error("Release requests are unavailable after the campaign ends.");
   }
@@ -4192,7 +4282,9 @@ function assertReleaseRequestContext(state: GameState): number {
   if (state.phase !== "running") {
     throw new Error("Release requests are only available during normal operations.");
   }
-  const eligibleReleaseDay = getNextReleaseDay(state.day);
+  const eligibleReleaseDay = lane === "reprint"
+    ? getNextReprintReleaseDay(state.day)
+    : getNextRegularReleaseDay(state.day);
   if (eligibleReleaseDay > LAST_RELEASE_DAY) {
     throw new Error("There is no release slot left in this campaign.");
   }
@@ -4203,8 +4295,8 @@ function setReleaseRequest(
   state: GameState,
   input: ReleaseRequestInput,
 ): void {
-  const eligibleReleaseDay = assertReleaseRequestContext(state);
   const lane = getReleaseRequestLane(input.kind);
+  const eligibleReleaseDay = assertReleaseRequestContext(state, lane);
   const existing = getPendingReleaseRequest(state, lane);
 
   if (input.kind === "support") {
@@ -4278,7 +4370,7 @@ function cancelReleaseRequest(
   state: GameState,
   lane: ReleaseRequestLane,
 ): void {
-  assertReleaseRequestContext(state);
+  assertReleaseRequestContext(state, lane);
   const request = getPendingReleaseRequest(state, lane);
   if (!request || request.status !== "queued") {
     throw new Error(`There is no queued ${lane} release request to cancel.`);
@@ -4420,10 +4512,10 @@ export function createCampaignStart(seed = 0x5eed1234): GameState {
   themes[currentTopThemeId].topStreakDays = 1;
 
   const state: GameState = {
-    schemaVersion: 8,
+    schemaVersion: 9,
     seed: seed >>> 0,
-    day: 1,
-    phase: "running",
+    day: FIRST_BAN_DAY,
+    phase: "ban-edit",
     activeThemeIds: ids,
     themes,
     users: {
@@ -4447,6 +4539,11 @@ export function createCampaignStart(seed = 0x5eed1234): GameState {
       pendingEvent: null,
       eventRecords: [],
       strategy: { audience: 0, product: 0, posture: 0 },
+      season: {
+        currentSeasonNumber: 1,
+        startedDay: FIRST_BAN_DAY,
+        boundaries: [],
+      },
     },
     community: [],
     supportRequests: [],
@@ -4455,7 +4552,7 @@ export function createCampaignStart(seed = 0x5eed1234): GameState {
     genericLimits: Object.fromEntries(
       INITIAL_GENERIC_CARD_IDS.map((genericCardId) => [genericCardId, 3]),
     ),
-    genericReleaseStartDay: 30,
+    genericReleaseStartDay: FIRST_RELEASE_DAY,
     history: [],
     recentRevenue: [],
     lastSupportProposalDay: null,
@@ -4469,18 +4566,13 @@ export function createCampaignStart(seed = 0x5eed1234): GameState {
   refreshThemeBases(state);
   computeWinRates(state);
   updateFinance(state);
-  recordHistory(state);
   assertState(state);
   return state;
 }
 
 /** Replays the fixed onboarding up to the player's first restriction list. */
 export function createFirstBanGame(seed = 0x5eed1234): GameState {
-  let state = createCampaignStart(seed);
-  state = reduceGame(state, {
-    type: "ADVANCE_DAYS",
-    days: FIRST_BAN_DAY - 1,
-  });
+  const state = createCampaignStart(seed);
   if (state.day !== FIRST_BAN_DAY || state.phase !== "ban-edit") {
     throw new Error("The prologue must stop at the first restriction review.");
   }
@@ -4489,7 +4581,8 @@ export function createFirstBanGame(seed = 0x5eed1234): GameState {
 
 /**
  * Deterministic convenience state used by engine tests and simulations.
- * The actual UI lets the player author both decisions before DAY 31.
+ * The actual UI lets the player author the emergency restriction and observe
+ * its first seven days before regular product reviews begin.
  */
 export function createInitialGame(seed = 0x5eed1234): GameState {
   let state = createFirstBanGame(seed);
@@ -4497,14 +4590,10 @@ export function createInitialGame(seed = 0x5eed1234): GameState {
     type: "SUBMIT_BAN",
     changes: getPrologueRestrictionChanges(state),
   });
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 7 });
   state = reduceGame(state, {
-    type: "RUN_BUSINESS_ACTION",
-    action: "tv-cm",
+    type: "ADVANCE_DAYS",
+    days: TUTORIAL_END_DAY - FIRST_BAN_DAY,
   });
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 8 });
-  state = reduceGame(state, getPrologueReleaseCommand(state));
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
   if (state.day !== TUTORIAL_END_DAY || state.phase !== "running") {
     throw new Error(
       `The prologue must hand control over on DAY ${TUTORIAL_END_DAY}.`,
@@ -4550,7 +4639,7 @@ export function reduceGame(state: GameState, command: GameCommand): GameState {
           !isHandoverReady(next)
         ) {
           throw new Error(
-            `The handover requires the DAY ${FIRST_BAN_DAY} restriction, DAY ${RELEASE_INTERVAL} release, and DAY ${TUTORIAL_END_DAY} impact review.`,
+            `The handover requires the DAY ${FIRST_BAN_DAY} emergency restriction and observation through DAY ${TUTORIAL_END_DAY}.`,
           );
         }
         next.handoverComplete = true;

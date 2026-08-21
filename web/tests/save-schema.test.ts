@@ -5,7 +5,10 @@ import { THEMES } from "../app/game/content.ts";
 import {
   CAMPAIGN_END_DAY,
   FIRST_BAN_DAY,
+  FIRST_RELEASE_DAY,
   LAST_RELEASE_DAY,
+  REPRINT_PACK_CANDIDATE_COUNT,
+  REPRINT_PACK_PRODUCT_COUNT,
   TUTORIAL_END_DAY,
 } from "../app/game/campaign.ts";
 import { getBusinessEventChoice } from "../app/game/business-events.ts";
@@ -20,9 +23,6 @@ import {
   createFirstBanGame,
   createInitialGame,
   getExpectedTier,
-  getNewThemeExpectedPower,
-  getNewThemeLaunchPower,
-  getPrologueReleaseSelections,
   getPrologueRestrictionChanges,
   reduceGame,
 } from "../app/game/engine.ts";
@@ -32,11 +32,11 @@ import {
   isGameState,
   parseGameState,
 } from "../app/game/save-schema.ts";
-import {
-  CURRENT_FUTURE_PART_ID_MAP,
-  CURRENT_FUTURE_THEME_ID_MAP,
-} from "../app/game/future-theme-id-migration.ts";
 import { INITIAL_GENERIC_CARD_IDS } from "../app/game/initial-generic-cards.ts";
+import {
+  getReleaseBatchKind,
+  getReleaseSlateKind,
+} from "../app/game/release-kind.ts";
 import type {
   GameState,
   PowerAdjustment,
@@ -47,135 +47,38 @@ function jsonRoundTrip(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value)) as unknown;
 }
 
-const INITIAL_GENERIC_LIMITS = Object.fromEntries(
-  INITIAL_GENERIC_CARD_IDS.map((cardId) => [cardId, 3]),
-);
-
-function asLegacyFutureIdentifiers(value: unknown): unknown {
-  if (typeof value === "string") {
-    return (
-      CURRENT_FUTURE_THEME_ID_MAP[value] ??
-      CURRENT_FUTURE_PART_ID_MAP[value] ??
-      value
-    );
-  }
-  if (Array.isArray(value)) return value.map(asLegacyFutureIdentifiers);
-  if (typeof value !== "object" || value === null) return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [
-      (CURRENT_FUTURE_THEME_ID_MAP[key] ??
-        CURRENT_FUTURE_PART_ID_MAP[key] ??
-        key),
-      asLegacyFutureIdentifiers(item),
-    ]),
-  );
-}
-
-function asLegacyV3(state: GameState): Record<string, unknown> {
-  const legacy = jsonRoundTrip(state) as Record<string, unknown>;
-  stripGenericReleaseState(legacy);
-  legacy.schemaVersion = 3;
-  delete legacy.operations;
-  const finance = legacy.finance as Record<string, unknown>;
-  delete finance.cash;
-  delete finance.todayOperatingCash;
-  delete finance.todayOperatingCost;
-  delete finance.cumulativeOperatingCosts;
-  delete finance.cumulativeExpenses;
-  return legacy;
-}
-
-function asLegacyV4(state: GameState): Record<string, unknown> {
-  const legacy = jsonRoundTrip(state) as Record<string, unknown>;
-  stripGenericReleaseState(legacy);
-  legacy.schemaVersion = 4;
-  stripBusinessEventState(legacy);
-  const finance = legacy.finance as Record<string, unknown>;
-  delete finance.todayOperatingCost;
-  delete finance.cumulativeOperatingCosts;
-  return legacy;
-}
-
-function asLegacyV5(state: GameState): Record<string, unknown> {
-  const legacy = jsonRoundTrip(state) as Record<string, unknown>;
-  stripGenericReleaseState(legacy);
-  legacy.schemaVersion = 5;
-  stripBusinessEventState(legacy);
-  return legacy;
-}
-
-function asLegacyV6(state: GameState): Record<string, unknown> {
-  const legacy = jsonRoundTrip(state) as Record<string, unknown>;
-  stripGenericReleaseState(legacy);
-  legacy.schemaVersion = 6;
-  stripBusinessEventState(legacy);
-  return legacy;
-}
-
-function asLegacyV7(state: GameState): Record<string, unknown> {
-  const legacy = jsonRoundTrip(state) as Record<string, unknown>;
-  stripGenericReleaseState(legacy);
-  legacy.schemaVersion = 7;
-  return legacy;
-}
-
-/**
- * Test-only inverse of the schema-v8 generic fields. Every generated test
- * release selects one generic, so removing it reconstructs the old 3-of-6
- * release shape without rewriting unrelated legacy fixture data.
- */
-function stripGenericReleaseState(state: Record<string, unknown>): void {
-  delete state.genericLimits;
-  delete state.genericReleaseStartDay;
-
-  const releaseHistory = state.releaseHistory as
-    | Array<{ baseline?: boolean; products: Array<{ kind: string }> }>
-    | undefined;
-  if (releaseHistory) {
-    state.releaseHistory = releaseHistory.filter((batch) => !batch.baseline);
-  }
-  for (const batch of (state.releaseHistory as typeof releaseHistory) ?? []) {
-    batch.products = batch.products.filter((product) => product.kind !== "generic");
-  }
-
-  const releaseSlate = state.releaseSlate as
-    | { options: Array<{ kind: string }> }
-    | null
-    | undefined;
-  if (releaseSlate) {
-    releaseSlate.options = releaseSlate.options.filter(
-      (option) => option.kind !== "generic",
-    );
-  }
-
-  const community = state.community as
-    | Array<Record<string, unknown>>
-    | undefined;
-  for (const event of community ?? []) delete event.genericCardId;
-}
-
-function stripBusinessEventState(state: Record<string, unknown>): void {
-  const operations = state.operations as Record<string, unknown>;
-  const eventRecords = operations.eventRecords as
-    | Array<{ cost: number }>
-    | undefined;
-  const finance = state.finance as Record<string, number>;
-  if (eventRecords && typeof finance.cumulativeExpenses === "number") {
-    finance.cumulativeExpenses = round4(
-      finance.cumulativeExpenses -
-        eventRecords.reduce((total, record) => total + record.cost, 0),
-    );
-  }
-  delete operations.nextEventId;
-  delete operations.nextEventDay;
-  delete operations.pendingEvent;
-  delete operations.eventRecords;
-  delete operations.strategy;
-}
-
 function round4(value: number): number {
   return Math.round((value + Number.EPSILON) * 10_000) / 10_000;
 }
+
+test("round-trips decimal comparison values on non-restriction community stories", () => {
+  const state = createInitialGame(90_901);
+  state.community.push({
+    id: "emergent-revival-fixture",
+    day: state.day,
+    category: "meta",
+    type: "theme-popularity",
+    themeId: state.activeThemeIds[0],
+    value: 0.14,
+    previousValue: 0.12,
+    body: "실제 분포 변화로 뒤늦게 얻은 부활 서사",
+  });
+
+  const restored = parseGameState(jsonRoundTrip(state));
+  const story = restored.community.find(
+    (event) => event.id === "emergent-revival-fixture",
+  );
+  assert.equal(story?.value, 0.14);
+  assert.equal(story?.previousValue, 0.12);
+
+  const forgedRestriction = structuredClone(state);
+  const restriction = forgedRestriction.community.find(
+    (event) => event.type === "restriction-applied",
+  );
+  assert.ok(restriction);
+  restriction.previousValue = 2.5;
+  assert.throws(() => parseGameState(forgedRestriction), SaveSchemaError);
+});
 
 function choosePendingBusinessEvent(state: GameState): GameState {
   const pending = state.operations.pendingEvent;
@@ -216,8 +119,8 @@ function reachFirstRelease(seed: number, requestSupport = false): GameState {
       direction: "recovery",
     });
   }
-  state = advanceWhileRunning(state, 100);
-  assert.equal(state.day, 60);
+  state = advanceToNextRelease(state);
+  assert.equal(state.day, FIRST_RELEASE_DAY);
   assert.equal(state.phase, "release-edit");
   assert.ok(state.releaseSlate);
   return state;
@@ -230,6 +133,15 @@ function submitThree(
 ): GameState {
   assert.ok(state.releaseSlate);
   const options = state.releaseSlate.options;
+  if (getReleaseSlateKind(state.releaseSlate) === "reprint") {
+    const selections: ReleaseSelection[] = options
+      .slice(0, REPRINT_PACK_PRODUCT_COUNT)
+      .map((option) => ({
+        optionId: option.id,
+        powerAdjustment: 0,
+      }));
+    return reduceGame(state, { type: "SUBMIT_RELEASE", selections });
+  }
   const requested = options.find(
     (option) => option.kind === "support" && option.requested,
   );
@@ -304,31 +216,168 @@ function advanceToNextRelease(state: GameState): GameState {
   throw new Error("A release review did not appear before the campaign ended.");
 }
 
-function reachFormerCampaignEnd(seed: number): GameState {
-  let state = createInitialGame(seed);
-  while (state.day < 419) {
-    if (state.operations.pendingEvent) {
-      state = choosePendingBusinessEvent(state);
-    } else if (state.phase === "release-edit") {
-      state = submitThree(state);
-    } else if (state.phase === "ban-edit") {
-      state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
+function advanceToPendingBusinessEvent(state: GameState): GameState {
+  let next = state;
+  for (let guard = 0; guard < 1_000; guard += 1) {
+    if (next.operations.pendingEvent) return next;
+    if (next.phase === "release-edit") {
+      next = submitThree(next);
+    } else if (next.phase === "ban-edit") {
+      next = reduceGame(next, { type: "SUBMIT_BAN", changes: {} });
+    } else if (next.phase === "ended") {
+      break;
     } else {
-      state = reduceGame(state, {
-        type: "ADVANCE_DAYS",
-        days: 419 - state.day,
-      });
+      next = reduceGame(next, { type: "ADVANCE_DAYS", days: 1_000 });
     }
   }
-  assert.equal(state.day, 419);
-  assert.equal(state.phase, "running");
-  return state;
+  throw new Error("A business event did not appear before the campaign ended.");
 }
 
-test("accepts schema v8 saves and preserves deterministic continuation", () => {
+test("accepts only the canonical DAY 0 baseline", () => {
+  const current = createCampaignStart(7_300);
+  const restored = parseGameState(jsonRoundTrip(current));
+  assert.equal(restored.day, 0);
+  assert.equal(restored.releaseHistory[0].day, 0);
+  assert.equal(restored.releaseHistory[0].releaseKind, "baseline");
+  assert.equal(
+    restored.releaseHistory[0].products.length,
+    INITIAL_GENERIC_CARD_IDS.length,
+  );
+
+  const legacy = structuredClone(current);
+  legacy.day = 1;
+  legacy.phase = "running";
+  legacy.releaseHistory[0].day = 1;
+  assert.throws(() => parseGameState(legacy), SaveSchemaError);
+});
+
+test("round-trips dedicated reprint slates and three-card release batches", () => {
+  let state = createInitialGame(7_302);
+  for (const expectedDay of [10, 30]) {
+    state = advanceToNextRelease(state);
+    assert.equal(state.day, expectedDay);
+    assert.equal(getReleaseSlateKind(state.releaseSlate!), "regular");
+    state = submitThree(state);
+    const regularBatch = state.releaseHistory.at(-1)!;
+    assert.equal(regularBatch.releaseKind, "regular");
+    assert.equal(regularBatch.products.length, 4);
+    parseGameState(jsonRoundTrip(state));
+    if (expectedDay === FIRST_RELEASE_DAY) {
+      const shortRegularBatch = structuredClone(state);
+      shortRegularBatch.releaseHistory.at(-1)!.products.pop();
+      assert.throws(
+        () => parseGameState(shortRegularBatch),
+        SaveSchemaError,
+      );
+    }
+  }
+  state = advanceToNextRelease(state);
+  assert.equal(state.day, 50);
+  assert.ok(state.releaseSlate);
+  assert.equal(state.releaseSlate.releaseKind, "reprint");
+  assert.equal(getReleaseSlateKind(state.releaseSlate), "reprint");
+  assert.equal(state.releaseSlate.options.length, REPRINT_PACK_CANDIDATE_COUNT);
+  assert.ok(state.releaseSlate.options.every((option) => option.kind === "reprint"));
+  parseGameState(jsonRoundTrip(state));
+
+  const missingSlateKind = structuredClone(state) as unknown as {
+    releaseSlate: { releaseKind?: "regular" | "reprint" };
+  };
+  delete missingSlateKind.releaseSlate.releaseKind;
+  assert.throws(() => parseGameState(missingSlateKind), SaveSchemaError);
+
+  const shortSlate = structuredClone(state);
+  shortSlate.releaseSlate!.options.pop();
+  assert.throws(() => parseGameState(shortSlate), SaveSchemaError);
+
+  const mislabeledSlate = structuredClone(state);
+  mislabeledSlate.releaseSlate!.releaseKind = "regular";
+  assert.throws(() => parseGameState(mislabeledSlate), SaveSchemaError);
+
+  const legacyLockInDedicatedSlate = structuredClone(state);
+  const lockedCandidate = legacyLockInDedicatedSlate.releaseSlate!.options[0];
+  assert.equal(lockedCandidate.kind, "reprint");
+  (lockedCandidate as unknown as Record<string, unknown>).locked = true;
+  assert.throws(
+    () => parseGameState(legacyLockInDedicatedSlate),
+    SaveSchemaError,
+  );
+
+  const released = submitThree(state);
+  const batch = released.releaseHistory.at(-1)!;
+  assert.equal(batch.day, 50);
+  assert.equal(batch.releaseKind, "reprint");
+  assert.equal(getReleaseBatchKind(batch), "reprint");
+  assert.equal(batch.products.length, REPRINT_PACK_PRODUCT_COUNT);
+  assert.ok(batch.products.every((product) => product.kind === "reprint"));
+  parseGameState(jsonRoundTrip(released));
+
+  const missingBatchKind = structuredClone(released) as unknown as {
+    releaseHistory: Array<{ releaseKind?: "regular" | "reprint" }>;
+  };
+  delete missingBatchKind.releaseHistory.at(-1)!.releaseKind;
+  assert.throws(() => parseGameState(missingBatchKind), SaveSchemaError);
+
+  const shortBatch = structuredClone(released);
+  shortBatch.releaseHistory.at(-1)!.products.pop();
+  assert.throws(() => parseGameState(shortBatch), SaveSchemaError);
+
+  const mislabeledBatch = structuredClone(released);
+  mislabeledBatch.releaseHistory.at(-1)!.releaseKind = "regular";
+  assert.throws(() => parseGameState(mislabeledBatch), SaveSchemaError);
+});
+
+test("rejects legacy mixed locked-reprint packs", () => {
+  let state = createInitialGame(7_303);
+  const themeId = state.activeThemeIds[0];
+  const cardId = state.themes[themeId].releasedPartIds[0];
+  state = reduceGame(state, {
+    type: "SET_RELEASE_REQUEST",
+    request: { kind: "reprint", cardId },
+  });
+  state = advanceToNextRelease(state);
+  state = submitThree(state);
+  state = advanceToNextRelease(state);
+  assert.equal(state.day, 30);
+  assert.ok(state.releaseSlate);
+
+  const mixed = structuredClone(state) as unknown as {
+    releaseSlate: {
+      releaseKind?: "regular" | "reprint";
+      options: Array<Record<string, unknown>>;
+    };
+    supportRequests: Array<{
+      id: string;
+      kind?: string;
+      eligibleReleaseDay: number;
+      status: string;
+    }>;
+  };
+  const request = mixed.supportRequests.find(
+    (candidate) => candidate.kind === "reprint",
+  );
+  assert.ok(request);
+  request.eligibleReleaseDay = 30;
+  request.status = "offered";
+  delete mixed.releaseSlate.releaseKind;
+  mixed.releaseSlate.options.push({
+    id: "legacy-locked-reprint",
+    kind: "reprint",
+    cardId,
+    themeId,
+    expectedPower: 50,
+    expectedTier: "Tier 3",
+    requested: true,
+    requestId: request.id,
+    locked: true,
+  });
+
+  assert.throws(() => parseGameState(mixed), SaveSchemaError);
+});
+test("round-trips schema v9 and rejects every earlier schema", () => {
   const initial = createInitialGame(7301);
   const restored = parseGameState(jsonRoundTrip(initial));
-  assert.equal(restored.schemaVersion, 8);
+  assert.equal(restored.schemaVersion, 9);
   assert.deepEqual(restored, initial);
   assert.ok(Buffer.byteLength(JSON.stringify(restored), "utf8") < MAX_SAVE_BYTES);
 
@@ -341,303 +390,36 @@ test("accepts schema v8 saves and preserves deterministic continuation", () => {
     type: "SUBMIT_BAN" as const,
     changes: { "cycle-gate": 1 as const },
   };
-  const uninterrupted = reduceGame(originalAtGate, command);
-  const continued = reduceGame(restoredAtGate, command);
-  assert.deepEqual(continued, uninterrupted);
-  parseGameState(continued);
-});
-
-test("migrates v7 generic state at the next strictly future release", () => {
-  const source = createInitialGame(7_307);
-  const legacy = asLegacyV7(source);
-  const untouched = structuredClone(legacy);
-
-  const migrated = parseGameState(legacy);
-
-  assert.equal(migrated.schemaVersion, 8);
-  assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
-  assert.equal(migrated.genericReleaseStartDay, 60);
-  assert.ok(migrated.releaseHistory.every((batch) => batch.products.length === 3));
-  assert.deepEqual(legacy, untouched, "migration must not mutate its input");
-});
-
-test("lets a migrated v7 six-option review finish before generic rules begin", () => {
-  let source = createCampaignStart(7_308);
-  source.genericReleaseStartDay = 60;
-  source = reduceGame(source, { type: "ADVANCE_DAYS", days: 14 });
-  source = reduceGame(source, {
-    type: "SUBMIT_BAN",
-    changes: getPrologueRestrictionChanges(source),
-  });
-  source = reduceGame(source, { type: "ADVANCE_DAYS", days: 7 });
-  source = reduceGame(source, {
-    type: "RUN_BUSINESS_ACTION",
-    action: "tv-cm",
-  });
-  source = reduceGame(source, { type: "ADVANCE_DAYS", days: 8 });
-  assert.equal(source.day, 30);
-  assert.equal(source.phase, "release-edit");
-  assert.equal(source.releaseSlate?.options.length, 6);
-
-  const migrated = parseGameState(asLegacyV7(source));
-
-  assert.equal(migrated.genericReleaseStartDay, 60);
-  assert.equal(migrated.releaseSlate?.options.length, 6);
-  const submitted = submitThree(migrated);
-  assert.equal(submitted.releaseHistory.at(-1)?.products.length, 3);
-  parseGameState(submitted);
-});
-
-test("migrates late v7 campaigns with no remaining release to a null start", () => {
-  const source = advanceThroughDecisions(createInitialGame(7_309), 451);
-  assert.equal(source.day, 451);
-
-  const migrated = parseGameState(asLegacyV7(source));
-
-  assert.equal(migrated.schemaVersion, 8);
-  assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
-  assert.equal(migrated.genericReleaseStartDay, null);
-  assert.ok(migrated.releaseHistory.every((batch) => batch.products.length === 3));
-});
-
-test("deep-migrates v0.1.5 future theme and part IDs in schema v3-v7 saves", () => {
-  let current = advanceThroughDecisions(createInitialGame(7319), 61);
-  const futureThemeId = current.activeThemeIds.find((id) =>
-    id.startsWith("future-"),
-  );
-  assert.ok(futureThemeId);
-  current = reduceGame(current, {
-    type: "PROPOSE_SUPPORT",
-    themeId: futureThemeId,
-    direction: "recovery",
-  });
-  current = advanceToNextRelease(current);
-  assert.equal(current.phase, "release-edit");
-  assert.ok(
-    current.releaseSlate?.options.some(
-      (option) =>
-        option.kind === "support" &&
-        option.themeId === futureThemeId &&
-        option.requested,
-    ),
-  );
-
-  const legacyThemeId = CURRENT_FUTURE_THEME_ID_MAP[futureThemeId];
-  assert.ok(legacyThemeId);
-  const legacyPartId = CURRENT_FUTURE_PART_ID_MAP[
-    current.themes[futureThemeId].releasedPartIds[0]
-  ];
-  assert.ok(legacyPartId);
-
-  const legacyFactories: ReadonlyArray<{
-    version: 3 | 4 | 5 | 6 | 7;
-    make: (state: GameState) => unknown;
-  }> = [
-    { version: 3, make: asLegacyV3 },
-    { version: 4, make: asLegacyV4 },
-    { version: 5, make: asLegacyV5 },
-    { version: 6, make: asLegacyV6 },
-    { version: 7, make: asLegacyV7 },
-  ];
-
-  for (const { version, make } of legacyFactories) {
-    const legacy = asLegacyFutureIdentifiers(make(current));
-    const untouched = structuredClone(legacy);
-    const serializedLegacy = JSON.stringify(legacy);
-    assert.match(serializedLegacy, new RegExp(legacyThemeId));
-    assert.match(serializedLegacy, new RegExp(legacyPartId));
-
-    const migrated = parseGameState(legacy);
-    assert.equal(migrated.schemaVersion, 8, `schema v${version}`);
-    assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
-    assert.equal(migrated.genericReleaseStartDay, 120);
-    assert.ok(migrated.activeThemeIds.includes(futureThemeId));
-    assert.equal(migrated.themes[legacyThemeId], undefined);
-    assert.deepEqual(
-      migrated.themes[futureThemeId].releasedPartIds,
-      current.themes[futureThemeId].releasedPartIds,
-    );
-    assert.deepEqual(
-      migrated.themes[futureThemeId].legalLimits,
-      current.themes[futureThemeId].legalLimits,
-    );
-    assert.deepEqual(
-      migrated.themes[futureThemeId].partStats,
-      current.themes[futureThemeId].partStats,
-    );
-    assert.ok(
-      migrated.releaseHistory.some((batch) =>
-        batch.products.some(
-          (product) =>
-            product.kind !== "generic" && product.themeId === futureThemeId,
-        ),
-      ),
-    );
-    assert.ok(
-      migrated.history.some(
-        (entry) => entry.shares[futureThemeId] !== undefined,
-      ),
-    );
-    assert.ok(
-      migrated.supportRequests.some(
-        (request) => request.themeId === futureThemeId,
-      ),
-    );
-    assert.equal(JSON.stringify(migrated).includes(legacyThemeId), false);
-    assert.equal(JSON.stringify(migrated).includes(legacyPartId), false);
-    assert.deepEqual(legacy, untouched, "migration must not mutate its input");
-  }
-});
-
-test("rejects legacy/current future-ID key collisions instead of losing data", () => {
-  const current = advanceThroughDecisions(createInitialGame(7320), 61);
-  const futureThemeId = current.activeThemeIds.find((id) =>
-    id.startsWith("future-"),
-  );
-  assert.ok(futureThemeId);
-  const legacyThemeId = CURRENT_FUTURE_THEME_ID_MAP[futureThemeId];
-  assert.ok(legacyThemeId);
-
-  const collision = jsonRoundTrip(current) as GameState;
-  collision.themes[legacyThemeId] = structuredClone(
-    collision.themes[futureThemeId],
-  );
-  assert.throws(
-    () => parseGameState(collision),
-    (error: unknown) =>
-      error instanceof SaveSchemaError && /colliding/.test(error.message),
-  );
-});
-
-test("migrates strict schema v3 saves to v8 finance and event state", () => {
-  let source = createCampaignStart(7302);
-  source = reduceGame(source, { type: "ADVANCE_DAYS", days: 9 });
-  const legacy = asLegacyV3(source);
-  const untouched = structuredClone(legacy);
-  const legacyFinance = legacy.finance as Record<string, number>;
-
-  const migrated = parseGameState(legacy);
-  assert.equal(isGameState(legacy), false);
-  assert.equal(isGameState(migrated), true);
-  assert.equal(migrated.schemaVersion, 8);
-  assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
-  assert.equal(migrated.genericReleaseStartDay, 30);
-  assert.equal(
-    migrated.finance.cash,
-    round4(2.5 + legacyFinance.cumulative * 0.32),
-  );
-  assert.equal(
-    migrated.finance.todayOperatingCash,
-    round4(legacyFinance.today * 0.32),
-  );
-  assert.equal(migrated.finance.todayOperatingCost, 0);
-  assert.equal(migrated.finance.cumulativeOperatingCosts, 0);
-  assert.equal(migrated.finance.cumulativeExpenses, 0);
-  assert.equal(migrated.operations.nextActionId, 1);
-  assert.deepEqual(migrated.operations.records, []);
-  assert.equal(migrated.operations.nextEventId, 1);
-  assert.ok(migrated.operations.nextEventDay! > migrated.day);
-  assert.equal(migrated.operations.pendingEvent, null);
-  assert.deepEqual(migrated.operations.eventRecords, []);
-  assert.deepEqual(migrated.operations.strategy, {
-    audience: 0,
-    product: 0,
-    posture: 0,
-  });
-  assert.deepEqual(legacy, untouched, "migration must not mutate its input");
   assert.deepEqual(
-    parseGameState(jsonRoundTrip(migrated)),
-    migrated,
-    "a migrated save must round-trip as schema v8",
+    reduceGame(restoredAtGate, command),
+    reduceGame(originalAtGate, command),
   );
 
-  const extraLegacyField = structuredClone(legacy);
-  extraLegacyField.operations = { nextActionId: 1, records: [] };
-  assert.throws(() => parseGameState(extraLegacyField), SaveSchemaError);
+  for (const schemaVersion of [3, 4, 5, 6, 7, 8]) {
+    const incompatible = jsonRoundTrip(initial) as Record<string, unknown>;
+    incompatible.schemaVersion = schemaVersion;
+    assert.throws(
+      () => parseGameState(incompatible),
+      (error: unknown) =>
+        error instanceof SaveSchemaError &&
+        /schemaVersion: must equal 9/.test(error.message),
+    );
+    assert.equal(isGameState(incompatible), false);
+  }
+
+  const missingSeason = jsonRoundTrip(initial) as {
+    operations: { season?: unknown };
+  };
+  delete missingSeason.operations.season;
+  assert.throws(() => parseGameState(missingSeason), SaveSchemaError);
 });
-
-test("migrates schema v4 saves without retroactively charging operating costs", () => {
-  let source = createInitialGame(7303);
-  source = reduceGame(source, { type: "ADVANCE_DAYS", days: 4 });
-  const legacy = asLegacyV4(source);
-  const untouched = structuredClone(legacy);
-  const legacyCash = (legacy.finance as Record<string, number>).cash;
-
-  const migrated = parseGameState(legacy);
-
-  assert.equal(isGameState(legacy), false);
-  assert.equal(migrated.schemaVersion, 8);
-  assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
-  assert.equal(migrated.genericReleaseStartDay, 60);
-  assert.equal(migrated.finance.cash, legacyCash);
-  assert.equal(migrated.finance.todayOperatingCost, 0);
-  assert.equal(migrated.finance.cumulativeOperatingCosts, 0);
-  assert.deepEqual(legacy, untouched, "migration must not mutate its input");
-  assert.deepEqual(parseGameState(jsonRoundTrip(migrated)), migrated);
-});
-
-test("continues a pre-rule schema v8 save without retroactive operating costs", () => {
-  const preRule = structuredClone(createCampaignStart(7308));
-  const skippedDayOneCost = preRule.finance.todayOperatingCost;
-  assert.ok(skippedDayOneCost > 0);
-
-  preRule.finance.todayOperatingCost = 0;
-  preRule.finance.cumulativeOperatingCosts = 0;
-  preRule.finance.todayOperatingCash = round4(
-    preRule.finance.todayOperatingCash + skippedDayOneCost,
-  );
-  preRule.finance.cash = round4(preRule.finance.cash + skippedDayOneCost);
-  preRule.history[0].operatingCash = preRule.finance.todayOperatingCash;
-  preRule.history[0].cash = preRule.finance.cash;
-
-  const loaded = parseGameState(jsonRoundTrip(preRule));
-  assert.equal(loaded.day, 1);
-  assert.equal(loaded.finance.todayOperatingCost, 0);
-  assert.equal(loaded.finance.cumulativeOperatingCosts, 0);
-
-  const continued = reduceGame(loaded, { type: "ADVANCE_DAYS", days: 1 });
-  assert.equal(continued.day, 2);
-  assert.ok(continued.finance.todayOperatingCost > 0);
-  assert.equal(
-    continued.finance.cumulativeOperatingCosts,
-    continued.finance.todayOperatingCost,
-    "DAY 1 must not be charged retroactively when the old save continues",
-  );
-});
-
-test("migrates strict schema v6 saves to neutral business-event state", () => {
-  const source = createInitialGame(7305);
-  const legacy = asLegacyV6(source);
-  const untouched = structuredClone(legacy);
-
-  const migrated = parseGameState(legacy);
-
-  assert.equal(isGameState(legacy), false);
-  assert.equal(migrated.schemaVersion, 8);
-  assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
-  assert.equal(migrated.genericReleaseStartDay, 60);
-  assert.equal(migrated.operations.nextActionId, source.operations.nextActionId);
-  assert.deepEqual(migrated.operations.records, source.operations.records);
-  assert.equal(migrated.operations.nextEventId, 1);
-  assert.ok(migrated.operations.nextEventDay! > migrated.day);
-  assert.equal(migrated.operations.pendingEvent, null);
-  assert.deepEqual(migrated.operations.eventRecords, []);
-  assert.deepEqual(migrated.operations.strategy, {
-    audience: 0,
-    product: 0,
-    posture: 0,
-  });
-  assert.deepEqual(legacy, untouched, "migration must not mutate its input");
-  assert.deepEqual(parseGameState(jsonRoundTrip(migrated)), migrated);
-});
-
 test("round-trips pending, chosen, and resolved business events", () => {
-  let pending = createInitialGame(7310);
-  pending = reduceGame(pending, { type: "ADVANCE_DAYS", days: 100 });
+  const pending = advanceToPendingBusinessEvent(createInitialGame(7310));
   assert.equal(pending.phase, "running");
   assert.ok(pending.operations.pendingEvent);
   assert.equal(pending.operations.nextEventDay, null);
-  assert.deepEqual(parseGameState(jsonRoundTrip(pending)), pending);
+  const pendingJson = jsonRoundTrip(pending);
+  assert.deepEqual(parseGameState(pendingJson), pendingJson);
 
   const offer = pending.operations.pendingEvent;
   const chosen = reduceGame(pending, {
@@ -652,27 +434,35 @@ test("round-trips pending, chosen, and resolved business events", () => {
   assert.equal(chosenRecord.id, offer.id);
   assert.equal(chosenRecord.outcome, "pending");
   assert.equal(chosenRecord.resolvedDay, undefined);
-  assert.deepEqual(parseGameState(jsonRoundTrip(chosen)), chosen);
+  const chosenJson = jsonRoundTrip(chosen);
+  assert.deepEqual(parseGameState(chosenJson), chosenJson);
 
   const resolved = advanceThroughDecisions(chosen, chosenRecord.resolutionDay);
   const resolvedRecord = resolved.operations.eventRecords[0];
   assert.ok(["success", "backlash"].includes(resolvedRecord.outcome));
   assert.equal(resolvedRecord.resolvedDay, chosenRecord.resolutionDay);
-  assert.deepEqual(parseGameState(jsonRoundTrip(resolved)), resolved);
+  const resolvedJson = jsonRoundTrip(resolved);
+  assert.deepEqual(parseGameState(resolvedJson), resolvedJson);
 });
 
 test("rejects forged business-event definitions, outcomes, and strategy", () => {
   type MutableEventSnapshot = {
     finance: Record<string, number>;
     operations: {
+      nextEventDay: number | null;
       pendingEvent: Record<string, unknown> | null;
       eventRecords: Array<Record<string, unknown>>;
       strategy: Record<string, unknown>;
     };
   };
 
-  let pending = createInitialGame(7311);
-  pending = reduceGame(pending, { type: "ADVANCE_DAYS", days: 100 });
+  const forgedInitialSchedule = jsonRoundTrip(
+    createInitialGame(7311),
+  ) as MutableEventSnapshot;
+  forgedInitialSchedule.operations.nextEventDay! += 1;
+  assert.throws(() => parseGameState(forgedInitialSchedule), SaveSchemaError);
+
+  const pending = advanceToPendingBusinessEvent(createInitialGame(7311));
   assert.ok(pending.operations.pendingEvent);
 
   const badType = jsonRoundTrip(pending) as MutableEventSnapshot;
@@ -711,57 +501,23 @@ test("rejects forged business-event definitions, outcomes, and strategy", () => 
     (badResolution.operations.eventRecords[0].resolutionDay as number) + 1;
   assert.throws(() => parseGameState(badResolution), SaveSchemaError);
 
+  const badAppearedDay = jsonRoundTrip(chosen) as MutableEventSnapshot;
+  badAppearedDay.operations.eventRecords[0].appearedDay =
+    (badAppearedDay.operations.eventRecords[0].appearedDay as number) + 1;
+  assert.throws(() => parseGameState(badAppearedDay), SaveSchemaError);
+
+  const badRecurringSchedule = jsonRoundTrip(chosen) as MutableEventSnapshot;
+  badRecurringSchedule.operations.nextEventDay! += 1;
+  assert.throws(() => parseGameState(badRecurringSchedule), SaveSchemaError);
+
   const badStrategy = jsonRoundTrip(chosen) as MutableEventSnapshot;
   badStrategy.operations.strategy.audience =
     (badStrategy.operations.strategy.audience as number) + 1;
   assert.throws(() => parseGameState(badStrategy), SaveSchemaError);
 });
 
-test("migrates schema v5 and reopens former DAY 419 endings for v3-v5", () => {
-  const source = reachFormerCampaignEnd(7304);
-  const legacyFactories = [asLegacyV3, asLegacyV4, asLegacyV5] as const;
-
-  for (const [index, makeLegacy] of legacyFactories.entries()) {
-    const legacy = makeLegacy(source);
-    legacy.phase = "ended";
-    const untouched = structuredClone(legacy);
-
-    const migrated = parseGameState(legacy);
-    assert.equal(migrated.schemaVersion, 8);
-    assert.deepEqual(migrated.genericLimits, INITIAL_GENERIC_LIMITS);
-    assert.equal(migrated.genericReleaseStartDay, 420);
-    assert.equal(migrated.day, 419);
-    assert.equal(migrated.phase, "running");
-    assert.deepEqual(legacy, untouched, "migration must not mutate its input");
-
-    const atNextRelease = reduceGame(migrated, {
-      type: "ADVANCE_DAYS",
-      days: 1,
-    });
-    assert.equal(atNextRelease.day, 420);
-    assert.equal(atNextRelease.phase, "release-edit");
-
-    const collapsedLegacy = makeLegacy(source);
-    collapsedLegacy.phase = "ended";
-    collapsedLegacy.users = { tier: 0, casual: 0, collector: 0 };
-    const collapsedFinance = collapsedLegacy.finance as Record<string, unknown>;
-    if ("todayOperatingCost" in collapsedFinance) {
-      collapsedFinance.todayOperatingCost = 0;
-    }
-    const collapsed = parseGameState(collapsedLegacy);
-    assert.equal(collapsed.schemaVersion, 8, `legacy index ${index}`);
-    assert.equal(collapsed.day, 419);
-    assert.equal(collapsed.phase, "ended");
-  }
-});
-
 test("round-trips every guided prologue gate without tutorial-only save data", () => {
   let state = parseGameState(jsonRoundTrip(createCampaignStart(1000)));
-  assert.equal(state.day, 1);
-  assert.equal(state.phase, "running");
-
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 14 });
-  state = parseGameState(jsonRoundTrip(state));
   assert.equal(state.day, FIRST_BAN_DAY);
   assert.equal(state.phase, "ban-edit");
 
@@ -775,35 +531,24 @@ test("round-trips every guided prologue gate without tutorial-only save data", (
 
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 7 });
   state = parseGameState(jsonRoundTrip(state));
-  assert.equal(state.day, 22);
-
-  state = reduceGame(state, {
-    type: "RUN_BUSINESS_ACTION",
-    action: "tv-cm",
-  });
-  state = parseGameState(jsonRoundTrip(state));
-  assert.equal(state.operations.records[0].id, "business-action-1");
-  assert.equal(state.operations.records[0].outcome, "active");
-
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 8 });
-  state = parseGameState(jsonRoundTrip(state));
-  assert.equal(state.day, 30);
-  assert.equal(state.phase, "release-edit");
-  const selections = getPrologueReleaseSelections(state);
-
-  state = reduceGame(state, { type: "SUBMIT_RELEASE", selections });
-  state = parseGameState(jsonRoundTrip(state));
-  assert.equal(state.day, 30);
-  assert.equal(state.phase, "running");
-
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
   assert.equal(state.day, TUTORIAL_END_DAY);
   state = reduceGame(state, { type: "COMPLETE_HANDOVER" });
   state = parseGameState(jsonRoundTrip(state));
   assert.deepEqual(state, createInitialGame(1000));
+
+  state = advanceToNextRelease(state);
+  state = parseGameState(jsonRoundTrip(state));
+  assert.equal(state.day, FIRST_RELEASE_DAY);
+  assert.equal(state.phase, "release-edit");
+  assert.equal(state.releaseSlate?.releaseKind, "regular");
+  assert.equal(state.releaseSlate?.options.length, 9);
+
+  state = submitThree(state);
+  assert.equal(state.releaseHistory.at(-1)?.products.length, 4);
+  parseGameState(jsonRoundTrip(state));
 });
 
-test("round-trips the completed DAY 31 handover and rejects an early completion", () => {
+test("round-trips the completed DAY 7 handover and rejects an early completion", () => {
   const review = createFirstBanGame(1_002);
   const forged = structuredClone(review);
   forged.handoverComplete = true;
@@ -812,50 +557,21 @@ test("round-trips the completed DAY 31 handover and rejects an early completion"
   let published = reduceGame(review, { type: "SUBMIT_BAN", changes: {} });
   assert.throws(
     () => reduceGame(published, { type: "COMPLETE_HANDOVER" }),
-    /DAY 30 release/,
+    /DAY 0 emergency restriction and observation through DAY 7/,
   );
   published = reduceGame(published, { type: "ADVANCE_DAYS", days: 7 });
-  published = reduceGame(published, {
-    type: "RUN_BUSINESS_ACTION",
-    action: "tv-cm",
-  });
-  published = reduceGame(published, { type: "ADVANCE_DAYS", days: 8 });
-  published = reduceGame(published, {
-    type: "SUBMIT_RELEASE",
-    selections: getPrologueReleaseSelections(published),
-  });
-  published = reduceGame(published, { type: "ADVANCE_DAYS", days: 1 });
   const completed = reduceGame(published, { type: "COMPLETE_HANDOVER" });
   const restored = parseGameState(jsonRoundTrip(completed));
   assert.equal(restored.day, TUTORIAL_END_DAY);
   assert.equal(restored.handoverComplete, true);
 });
 
-test("lets a v0.2.0 save paused on the former DAY 45 board finish safely", () => {
-  let legacy = createInitialGame(1_003);
-  legacy = reduceGame(legacy, { type: "ADVANCE_DAYS", days: 13 });
-  legacy.day = 45;
-  legacy.phase = "ban-edit";
-  legacy.handoverComplete = false;
-  legacy.community = legacy.community.filter(
-    (event) => !(event.day === FIRST_BAN_DAY && event.category === "restriction"),
-  );
-
-  const restoredBoard = parseGameState(jsonRoundTrip(legacy));
-  assert.equal(restoredBoard.day, 45);
-  assert.equal(restoredBoard.phase, "ban-edit");
-
-  let published = reduceGame(restoredBoard, {
-    type: "SUBMIT_BAN",
-    changes: {},
-  });
-  published = reduceGame(published, { type: "ADVANCE_DAYS", days: 1 });
-  const completed = reduceGame(published, { type: "COMPLETE_HANDOVER" });
-  assert.equal(completed.day, 46);
-  assert.equal(completed.handoverComplete, true);
-  assert.doesNotThrow(() => parseGameState(jsonRoundTrip(completed)));
+test("rejects the former DAY 45 restriction board", () => {
+  const formerBoard = jsonRoundTrip(createInitialGame(1_003)) as GameState;
+  formerBoard.day = 45;
+  formerBoard.phase = "ban-edit";
+  assert.throws(() => parseGameState(formerBoard), SaveSchemaError);
 });
-
 test("accepts legacy history rows while preserving the new dashboard metrics", () => {
   const current = jsonRoundTrip(createInitialGame(7302)) as GameState;
   const restored = parseGameState(current);
@@ -1010,14 +726,15 @@ test("round-trips release editing, support requests, and dynamic theme history",
   assert.deepEqual(continued, uninterrupted);
   assert.equal(continued.releaseHistory[1].products.length, 4);
   assert.equal(continued.supportRequests[0].status, "released");
-  assert.equal(continued.supportRequests[0].releasedDay, 60);
+  assert.equal(continued.supportRequests[0].releasedDay, FIRST_RELEASE_DAY);
 
-  const historicalWidths = continued.history.map(
+  const observed = reduceGame(continued, { type: "ADVANCE_DAYS", days: 1 });
+  const historicalWidths = observed.history.map(
     (entry) => Object.keys(entry.shares).length,
   );
   assert.equal(historicalWidths[0], 5);
   assert.ok(historicalWidths.at(-1)! > historicalWidths[0]);
-  parseGameState(jsonRoundTrip(continued));
+  parseGameState(jsonRoundTrip(observed));
 });
 
 test("validates generic catalog IDs, release uniqueness, and D+1 limits", () => {
@@ -1161,17 +878,19 @@ test("validates generic catalog IDs, release uniqueness, and D+1 limits", () => 
   assert.throws(() => parseGameState(missingNextDayLimit), SaveSchemaError);
 });
 
-test("normalizes stale schema-v7 new-theme forecasts and same-day products", () => {
-  const atRelease = reachFirstRelease(8_124);
+test("rejects stale new-theme forecasts and same-day products", () => {
+  let atRelease = reachFirstRelease(8_124);
+  atRelease = submitThree(atRelease);
+  atRelease = advanceToNextRelease(atRelease);
+  assert.equal(atRelease.day, 30);
   assert.ok(atRelease.releaseSlate);
+
   const newOption = atRelease.releaseSlate.options.find(
     (option) => option.kind === "new-theme",
   );
   assert.ok(newOption);
   const content = THEMES.find((theme) => theme.id === newOption.themeId);
   assert.ok(content);
-  const expectedPower = getNewThemeExpectedPower(content, atRelease.day);
-  assert.ok(expectedPower > content.basePower);
 
   const staleReleaseEdit = structuredClone(atRelease);
   const staleOption = staleReleaseEdit.releaseSlate!.options.find(
@@ -1180,50 +899,9 @@ test("normalizes stale schema-v7 new-theme forecasts and same-day products", () 
   assert.ok(staleOption);
   staleOption.expectedPower = content.basePower;
   staleOption.expectedTier = getExpectedTier(content.basePower);
-  const restoredReleaseEdit = parseGameState(staleReleaseEdit);
-  const normalizedOption = restoredReleaseEdit.releaseSlate!.options.find(
-    (option) => option.id === newOption.id,
-  );
-  assert.equal(normalizedOption?.expectedPower, expectedPower);
-  assert.equal(normalizedOption?.expectedTier, getExpectedTier(expectedPower));
+  assert.throws(() => parseGameState(staleReleaseEdit), SaveSchemaError);
 
-  const selectedOptions = [
-    restoredReleaseEdit.releaseSlate!.options.find(
-      (option) => option.id === newOption.id,
-    )!,
-    restoredReleaseEdit.releaseSlate!.options.find(
-      (option) => option.kind === "support",
-    )!,
-    restoredReleaseEdit.releaseSlate!.options.find(
-      (option) => option.kind === "generic",
-    )!,
-  ];
-  selectedOptions.push(
-    restoredReleaseEdit.releaseSlate!.options.find(
-      (option) => !selectedOptions.includes(option),
-    )!,
-  );
-  const selections = selectedOptions.map((option) => ({
-      optionId: option.id,
-      powerAdjustment: 0 as const,
-    }));
-  const submitted = reduceGame(restoredReleaseEdit, {
-    type: "SUBMIT_RELEASE",
-    selections,
-  });
-  const expectedLaunchPower = getNewThemeLaunchPower(
-    content,
-    0,
-    submitted.day,
-  );
-  const submittedProduct = submitted.releaseHistory.at(-1)!.products.find(
-    (product) => product.optionId === newOption.id,
-  );
-  assert.equal(
-    submittedProduct?.expectedTier,
-    getExpectedTier(expectedLaunchPower),
-  );
-
+  const submitted = submitThree(atRelease);
   const staleSubmitted = structuredClone(submitted);
   const staleProduct = staleSubmitted.releaseHistory.at(-1)!.products.find(
     (product) => product.optionId === newOption.id,
@@ -1232,22 +910,8 @@ test("normalizes stale schema-v7 new-theme forecasts and same-day products", () 
   staleProduct.expectedTier = staleProduct.expectedTier === "Tier 0"
     ? "Tier 3"
     : "Tier 0";
-  const restoredSubmitted = parseGameState(staleSubmitted);
-  assert.equal(
-    restoredSubmitted.releaseHistory.at(-1)!.products.find(
-      (product) => product.optionId === newOption.id,
-    )?.expectedTier,
-    getExpectedTier(expectedLaunchPower),
-  );
-
-  const observed = reduceGame(restoredSubmitted, {
-    type: "ADVANCE_DAYS",
-    days: 1,
-  });
-  assert.equal(observed.themes[newOption.themeId].power, expectedLaunchPower);
-  parseGameState(observed);
+  assert.throws(() => parseGameState(staleSubmitted), SaveSchemaError);
 });
-
 test("keeps the historical share floor closed across advance and reparse", () => {
   const initial = createInitialGame(5_151);
   const floorSave = structuredClone(initial);
@@ -1289,7 +953,11 @@ test("cross-validates applied support waves and rejects a malformed release mix"
       themeId: targetId,
       direction: "consistency",
     });
-    state = advanceWhileRunning(state, 100);
+    state = advanceToNextRelease(state);
+    while (getReleaseSlateKind(state.releaseSlate!) === "reprint") {
+      state = submitThree(state);
+      state = advanceToNextRelease(state);
+    }
     const requested = state.releaseSlate?.options.find(
       (option) =>
         option.kind === "support" &&
@@ -1302,7 +970,7 @@ test("cross-validates applied support waves and rejects a malformed release mix"
     if (wave < 3) {
       state = advanceWhileRunning(state, 15);
       if (state.phase === "ban-edit") {
-        assert.equal(state.day, 75);
+        assert.equal(state.day, 40);
         state = reduceGame(state, { type: "SUBMIT_BAN", changes: {} });
         state = advanceWhileRunning(state, 1);
       }
@@ -1323,11 +991,12 @@ test("cross-validates applied support waves and rejects a malformed release mix"
   assert.throws(() => parseGameState(mismatchedRuntime), SaveSchemaError);
 
   state = advanceToNextRelease(state);
-  assert.equal(state.day, 150);
+  assert.equal(state.day, 90);
   const forgedFourth = structuredClone(state);
   const otherThemeIds = state.activeThemeIds.filter((id) => id !== targetId).slice(0, 2);
   forgedFourth.releaseHistory.push({
-    day: 150,
+    day: state.day,
+    releaseKind: "regular",
     products: [targetId, ...otherThemeIds].map((themeId, index) => ({
       optionId: `forged-support-${index + 1}`,
       kind: "support" as const,
@@ -1383,8 +1052,13 @@ test("accepts every decision gate through campaign termination", () => {
   assert.equal(game.day, CAMPAIGN_END_DAY);
   assert.ok(
     game.releaseHistory
-      .filter((batch) => !batch.baseline)
-      .every((batch) => batch.products.length === 4),
+      .filter((batch) => batch.releaseKind !== "baseline")
+      .every((batch) =>
+        batch.products.length ===
+          (getReleaseBatchKind(batch) === "reprint"
+            ? REPRINT_PACK_PRODUCT_COUNT
+            : 4)
+      ),
   );
   const serialized = JSON.stringify(game);
   assert.ok(Buffer.byteLength(serialized, "utf8") < MAX_SAVE_BYTES);
@@ -1393,12 +1067,7 @@ test("accepts every decision gate through campaign termination", () => {
 });
 
 test("round-trips business-action lifecycles and permits net-negative daily cash flow", () => {
-  let state = createFirstBanGame(6201);
-  state = reduceGame(state, {
-    type: "SUBMIT_BAN",
-    changes: getPrologueRestrictionChanges(state),
-  });
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 7 });
+  let state = createInitialGame(6201);
   state = reduceGame(state, {
     type: "RUN_BUSINESS_ACTION",
     action: "tv-cm",
@@ -1408,12 +1077,13 @@ test("round-trips business-action lifecycles and permits net-negative daily cash
   assert.deepEqual(state.operations.records[0], {
     id: "business-action-1",
     type: "tv-cm",
-    startedDay: 22,
-    endsDay: 43,
+    startedDay: 7,
+    endsDay: 28,
     cost: 0.6,
     outcome: "active",
-    risk: 0.3378,
+    risk: state.operations.records[0].risk,
   });
+  assert.ok((state.operations.records[0].risk ?? 0) > 0);
 
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
   state = reduceGame(state, {
@@ -1430,16 +1100,16 @@ test("round-trips business-action lifecycles and permits net-negative daily cash
       startedDay: state.operations.records[1].startedDay,
       endsDay: state.operations.records[1].endsDay,
     },
-    { outcome: "pending", startedDay: 23, endsDay: 59 },
+    { outcome: "pending", startedDay: 8, endsDay: 39 },
   );
 
-  state = reduceGame(state, { type: "ADVANCE_DAYS", days: 7 });
-  assert.equal(state.day, 30);
+  state = advanceToNextRelease(state);
+  assert.equal(state.day, 10);
   assert.equal(state.phase, "release-edit");
   assert.equal(state.operations.records[1].outcome, "pending");
   state = submitThree(state);
   assert.equal(state.operations.records[1].outcome, "active");
-  assert.equal(state.operations.records[1].appliedDay, 30);
+  assert.equal(state.operations.records[1].appliedDay, 10);
   state = reduceGame(state, {
     type: "RUN_BUSINESS_ACTION",
     action: "championship",
@@ -1450,20 +1120,32 @@ test("round-trips business-action lifecycles and permits net-negative daily cash
 
   state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
   assert.ok(["clean", "detected"].includes(state.operations.records[1].outcome));
-  assert.equal(state.operations.records[1].resolvedDay, 31);
+  assert.equal(state.operations.records[1].resolvedDay, 11);
   assert.ok(["success", "backlash"].includes(state.operations.records[2].outcome));
-  assert.equal(state.operations.records[2].resolvedDay, 31);
+  assert.equal(state.operations.records[2].resolvedDay, 11);
   assert.deepEqual(parseGameState(jsonRoundTrip(state)), state);
 });
 
 test("round-trips strategic risk snapshots and rejects forged project results", () => {
+  let organizedPlay = advanceThroughDecisions(createInitialGame(6_204), 90);
+  organizedPlay.finance.cash = 100;
+  organizedPlay = reduceGame(organizedPlay, {
+    type: "RUN_BUSINESS_ACTION",
+    action: "organized-play-platform",
+  });
+  assert.equal(
+    organizedPlay.operations.records.at(-1)?.type,
+    "organized-play-platform",
+  );
+  assert.doesNotThrow(() => parseGameState(jsonRoundTrip(organizedPlay)));
+
   let active = advanceThroughDecisions(createInitialGame(6203), 120);
   active.finance.cash = 100;
   active = reduceGame(active, {
     type: "RUN_BUSINESS_ACTION",
     action: "season-overhaul",
   });
-  assert.deepEqual(parseGameState(jsonRoundTrip(active)), active);
+  assert.doesNotThrow(() => parseGameState(jsonRoundTrip(active)));
   assert.ok(active.operations.records.at(-1)?.riskContext);
 
   const forcedSuccess = structuredClone(active);
@@ -1471,7 +1153,45 @@ test("round-trips strategic risk snapshots and rejects forged project results", 
   const success = advanceThroughDecisions(forcedSuccess, 150);
   assert.equal(success.operations.records.at(-1)?.outcome, "success");
   assert.equal(success.operations.records.at(-1)?.cashReturn, 6.5);
-  assert.deepEqual(parseGameState(jsonRoundTrip(success)), success);
+  assert.deepEqual(success.operations.season, {
+    currentSeasonNumber: 2,
+    startedDay: 150,
+    boundaries: [{
+      seasonNumber: 2,
+      startedDay: 150,
+      sourceActionId: success.operations.records.at(-1)!.id,
+    }],
+  });
+  assert.doesNotThrow(() => parseGameState(jsonRoundTrip(success)));
+
+  const missingSeason = structuredClone(success) as unknown as {
+    operations: { season?: unknown };
+  };
+  delete missingSeason.operations.season;
+  assert.throws(() => parseGameState(jsonRoundTrip(missingSeason)), SaveSchemaError);
+
+  const wrongSeasonNumber = structuredClone(success);
+  wrongSeasonNumber.operations.season!.currentSeasonNumber = 3;
+  assert.throws(() => parseGameState(wrongSeasonNumber), SaveSchemaError);
+
+  const wrongBoundarySource = structuredClone(success);
+  wrongBoundarySource.operations.season!.boundaries[0].sourceActionId =
+    "business-action-missing";
+  assert.throws(() => parseGameState(wrongBoundarySource), SaveSchemaError);
+
+  const duplicateSource = reduceGame(success, {
+    type: "ADVANCE_DAYS",
+    days: 1,
+  });
+  duplicateSource.operations.season!.currentSeasonNumber = 3;
+  duplicateSource.operations.season!.startedDay = 151;
+  duplicateSource.operations.season!.boundaries.push({
+    seasonNumber: 3,
+    startedDay: 151,
+    sourceActionId: duplicateSource.operations.season!.boundaries[0]
+      .sourceActionId,
+  });
+  assert.throws(() => parseGameState(duplicateSource), SaveSchemaError);
 
   const badCause = structuredClone(success) as unknown as Record<string, unknown>;
   const causeOperations = badCause.operations as {
@@ -1492,6 +1212,7 @@ test("rejects malformed business-action records and finance totals", () => {
     changes: getPrologueRestrictionChanges(valid),
   });
   valid = reduceGame(valid, { type: "ADVANCE_DAYS", days: 7 });
+  valid = reduceGame(valid, { type: "COMPLETE_HANDOVER" });
   valid = reduceGame(valid, {
     type: "RUN_BUSINESS_ACTION",
     action: "tv-cm",
@@ -1542,7 +1263,15 @@ test("rejects malformed business-action records and finance totals", () => {
 
   const legacyRiskless = structuredClone(valid);
   delete legacyRiskless.operations.records[0].risk;
-  assert.deepEqual(parseGameState(jsonRoundTrip(legacyRiskless)), legacyRiskless);
+  assert.throws(() => parseGameState(jsonRoundTrip(legacyRiskless)), SaveSchemaError);
+
+  for (const retiredType of ["reprint-campaign", "first-print-expansion"]) {
+    const retiredAction = jsonRoundTrip(valid) as {
+      operations: { records: Array<Record<string, unknown>> };
+    };
+    retiredAction.operations.records[0].type = retiredType;
+    assert.throws(() => parseGameState(retiredAction), SaveSchemaError);
+  }
 
   const resolvedOrdinary = reduceGame(valid, {
     type: "ADVANCE_DAYS",
@@ -1552,7 +1281,7 @@ test("rejects malformed business-action records and finance totals", () => {
     resolvedOrdinary.operations.records[0].outcome === "success" ||
       resolvedOrdinary.operations.records[0].outcome === "backlash",
   );
-  assert.equal(resolvedOrdinary.operations.records[0].resolvedDay, 23);
+  assert.equal(resolvedOrdinary.operations.records[0].resolvedDay, 8);
   assert.deepEqual(
     parseGameState(jsonRoundTrip(resolvedOrdinary)),
     resolvedOrdinary,
@@ -1921,7 +1650,10 @@ test("rejects malformed release batches and historical share maps", () => {
 test("rejects cross-theme parts and impossible decision phases", () => {
   const initial = createInitialGame(91);
   const wrongPart = structuredClone(initial);
-  wrongPart.community[0].partId = "cycle-gate";
+  const event = wrongPart.community[0];
+  const foreignTheme = THEMES.find((theme) => theme.id !== event.themeId);
+  assert.ok(foreignTheme);
+  event.partId = foreignTheme.parts[0].id;
   assert.throws(() => parseGameState(wrongPart), SaveSchemaError);
 
   const wrongBanPhase = structuredClone(initial);

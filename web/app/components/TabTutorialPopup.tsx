@@ -92,16 +92,25 @@ function getTutorialFlow(sectionLabel?: string): readonly SignalFlowNode[] | nul
         { icon: <CalendarIcon size={18} />, label: "추적", value: "발매·금제와 비교", tone: "positive" },
       ];
     case "첫 금제위원회":
+    case "긴급 투입":
+    case "긴급 금제":
       return [
-        { icon: <TrendIcon size={18} />, label: "위협", value: "지배력·채용 확인" },
-        { icon: <GavelIcon size={18} />, label: "조정", value: "허용 매수 결정", tone: "caution" },
-        { icon: <MessageIcon size={18} />, label: "후폭풍", value: "다음 날부터 관찰", tone: "positive" },
+        { icon: <TrendIcon size={18} />, label: "증거", value: "취임 전 14일 분포" },
+        { icon: <GavelIcon size={18} />, label: "긴급 결정", value: "허용 매수 확정", tone: "caution" },
+        { icon: <MessageIcon size={18} />, label: "후폭풍", value: "DAY 1부터 관찰", tone: "positive" },
       ];
     case "첫 정기 발매":
+    case "첫 정규 발매":
       return [
         { icon: <ReleaseIcon size={18} />, label: "구성", value: "수록 4종 확인" },
         { icon: <TrendIcon size={18} />, label: "파워", value: "매출·환경 영향", tone: "caution" },
         { icon: <CalendarIcon size={18} />, label: "반응", value: "D+1 결과 관찰", tone: "positive" },
+      ];
+    case "첫 재판팩":
+      return [
+        { icon: <RevenueIcon size={18} />, label: "품귀", value: "고가 후보 9종" },
+        { icon: <ReleaseIcon size={18} />, label: "재판", value: "기존 카드 3종 선택", tone: "caution" },
+        { icon: <UsersIcon size={18} />, label: "파급", value: "접근성·보유가치", tone: "positive" },
       ];
     default:
       return null;

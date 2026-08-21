@@ -7,8 +7,7 @@ import {
   type GenericMetaState,
 } from "../app/game/generic-card-meta.ts";
 import {
-  createCampaignStart,
-  getPrologueRestrictionChanges,
+  createInitialGame,
   getCurrentGenericMetaModel,
   getCurrentPairWinProbability,
   reduceGame,
@@ -27,20 +26,7 @@ import type {
 const INTEGRATION_SEED = 3;
 
 function advanceToDay30(seed = INTEGRATION_SEED): GameState {
-  let state = reduceGame(createCampaignStart(seed), {
-    type: "ADVANCE_DAYS",
-    days: 14,
-  });
-  assert.equal(state.day, 15);
-  assert.equal(state.phase, "ban-edit");
-  state = reduceGame(state, {
-    type: "SUBMIT_BAN",
-    changes: getPrologueRestrictionChanges(state),
-  });
-  state = reduceGame(state, {
-    type: "ADVANCE_DAYS",
-    days: 15,
-  });
+  const state = advanceThroughDecisions(createInitialGame(seed), 30);
   assert.equal(state.day, 30);
   assert.equal(state.phase, "release-edit");
   assert.ok(state.releaseSlate);
@@ -69,6 +55,12 @@ function selectionsFor(
 }
 
 function defaultReleaseSelections(state: GameState): ReleaseSelection[] {
+  assert.ok(state.releaseSlate);
+  if (state.releaseSlate.releaseKind === "reprint") {
+    const reprints = optionsOfKind(state, "reprint");
+    assert.equal(reprints.length, 9);
+    return selectionsFor(reprints.slice(0, 3), 0);
+  }
   const newThemes = optionsOfKind(state, "new-theme");
   const supports = optionsOfKind(state, "support");
   const generics = optionsOfKind(state, "generic");
@@ -106,6 +98,7 @@ function advanceThroughDecisions(state: GameState, targetDay: number): GameState
 function assertNineOptionSlate(state: GameState): void {
   assert.equal(state.phase, "release-edit");
   assert.ok(state.releaseSlate);
+  assert.equal(state.releaseSlate.releaseKind, "regular");
   assert.equal(state.releaseSlate.options.length, 9);
   assert.deepEqual(
     Object.fromEntries(
@@ -116,6 +109,15 @@ function assertNineOptionSlate(state: GameState): void {
     ),
     { "new-theme": 3, support: 3, generic: 3 },
   );
+}
+
+function assertReprintSlate(state: GameState): void {
+  assert.equal(state.phase, "release-edit");
+  assert.ok(state.releaseSlate);
+  assert.equal(state.releaseSlate.releaseKind, "reprint");
+  assert.equal(state.releaseSlate.options.length, 9);
+  assert.ok(state.releaseSlate.options.every((option) => option.kind === "reprint"));
+  assert.equal(defaultReleaseSelections(state).length, 3);
 }
 
 function releaseOneStrongGeneric(): {
@@ -139,17 +141,52 @@ function releaseOneStrongGeneric(): {
   };
 }
 
-test("DAY 30 and DAY 60 each offer three themes, supports, and generics", () => {
+test("DAY 30 and DAY 70 regular reviews surround the DAY 50 reprint pack", () => {
   let state = advanceToDay30();
   assertNineOptionSlate(state);
+  assert.deepEqual(
+    state.releaseHistory
+      .filter((batch) => batch.releaseKind !== "baseline")
+      .map((batch) => batch.day),
+    [10],
+  );
 
   state = reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: defaultReleaseSelections(state),
   });
-  state = advanceThroughDecisions(state, 60);
+  state = advanceThroughDecisions(state, 50);
+  assertReprintSlate(state);
+  assert.deepEqual(
+    state.releaseHistory
+      .filter((batch) => batch.releaseKind !== "baseline")
+      .map((batch) => batch.day),
+    [10, 30],
+  );
+  state = reduceGame(state, {
+    type: "SUBMIT_RELEASE",
+    selections: defaultReleaseSelections(state),
+  });
+  assert.equal(state.releaseHistory.at(-1)?.products.length, 3);
+  assert.ok(
+    state.releaseHistory.at(-1)?.products.every(
+      (product) => product.kind === "reprint" && product.powerAdjustment === 0,
+    ),
+  );
+
+  state = advanceThroughDecisions(state, 70);
 
   assertNineOptionSlate(state);
+  assert.deepEqual(
+    state.releaseHistory
+      .filter((batch) => batch.releaseKind !== "baseline")
+      .map((batch) => [batch.day, batch.releaseKind, batch.products.length]),
+    [
+      [10, "regular", 4],
+      [30, "regular", 4],
+      [50, "reprint", 3],
+    ],
+  );
   const day30GenericIds = new Set(
     state.releaseHistory
       .find((batch) => batch.day === 30)
@@ -227,10 +264,10 @@ test("a released generic becomes legal on D+1 and can displace the baseline pool
 
   const card = getGenericCard(genericOption.genericCardId);
   assert.ok(card);
-  const optimized = reduceGame(observed, {
-    type: "ADVANCE_DAYS",
-    days: Math.max(0, card.optimizationDays - 1),
-  });
+  const optimized = advanceThroughDecisions(
+    observed,
+    30 + card.optimizationDays,
+  );
   const optimizedMeta = getCurrentGenericMetaModel(optimized);
   const optimizedCardMeta = optimizedMeta.cardMetaById[genericOption.genericCardId];
   assert.ok(optimizedCardMeta);
@@ -281,6 +318,7 @@ test("matching a generic keyword grants synergy without changing mirror odds", (
     releaseHistory: [
       {
         day: 30,
+        releaseKind: "regular",
         products: [
           {
             optionId: genericOption.id,
@@ -357,14 +395,14 @@ test("+3 tuning raises either product while a learned generic reaches beyond one
   const genericCard = getGenericCard(strongGeneric.genericCardId);
   assert.ok(genericCard);
 
-  const genericObserved = reduceGame(genericRelease, {
-    type: "ADVANCE_DAYS",
-    days: genericCard.optimizationDays,
-  });
-  const themeObserved = reduceGame(themeRelease, {
-    type: "ADVANCE_DAYS",
-    days: genericCard.optimizationDays,
-  });
+  const genericObserved = advanceThroughDecisions(
+    genericRelease,
+    30 + genericCard.optimizationDays,
+  );
+  const themeObserved = advanceThroughDecisions(
+    themeRelease,
+    30 + genericCard.optimizationDays,
+  );
   const genericReach = getCurrentGenericMetaModel(genericObserved)
     .cardMetaById[strongGeneric.genericCardId]?.marketReach;
   assert.ok(genericReach !== undefined);
@@ -378,8 +416,8 @@ test("generic restrictions persist globally and immediately reduce purchase trus
   const strongGenericRelease = releaseOneStrongGeneric();
   let released = strongGenericRelease.released;
   const genericOption = strongGenericRelease.genericOption;
-  released = advanceThroughDecisions(released, 75);
-  assert.equal(released.day, 75);
+  released = advanceThroughDecisions(released, 80);
+  assert.equal(released.day, 80);
   assert.equal(released.phase, "ban-edit");
   assert.equal(released.genericLimits[genericOption.genericCardId], 3);
   const trustBefore = released.purchaseTrust;
@@ -393,7 +431,7 @@ test("generic restrictions persist globally and immediately reduce purchase trus
   assert.ok(
     restricted.community.some(
       (event) =>
-        event.day === 75 &&
+        event.day === 80 &&
         event.type === "restriction-applied" &&
         event.genericCardId === genericOption.genericCardId &&
         event.previousValue === 3 &&

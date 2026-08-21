@@ -8,15 +8,16 @@ import {
   getThemeCardMarketQuoteAtDay,
 } from "../app/game/card-market.ts";
 import { THEME_BY_ID } from "../app/game/content.ts";
-import { createCampaignStart, createInitialGame } from "../app/game/engine.ts";
+import { createInitialGame } from "../app/game/engine.ts";
 
-function createHistoricalMarketState(seed: number) {
-  const state = createCampaignStart(seed);
-  const baseline = state.history[0];
-  state.day = 20;
-  state.history = Array.from({ length: state.day }, (_, index) => ({
+function createHistoricalMarketState(seed: number, throughDay = 20) {
+  const state = createInitialGame(seed);
+  const baseline = state.history.find((entry) => entry.day === 0);
+  assert.ok(baseline);
+  state.day = throughDay;
+  state.history = Array.from({ length: state.day + 1 }, (_, day) => ({
     ...baseline,
-    day: index + 1,
+    day,
     shares: { ...baseline.shares },
     ...(baseline.winRates ? { winRates: { ...baseline.winRates } } : {}),
     ...(baseline.topCutPlacements
@@ -69,11 +70,15 @@ test("reflects a newly announced ban in the next day's market quote", () => {
   const state = createInitialGame(0x13572468);
   const themeId = state.activeThemeIds[0];
   const cardId = state.themes[themeId].releasedPartIds[0];
-  state.day = 46;
+  state.community = state.community.filter(
+    (event) =>
+      event.type !== "restriction-applied" &&
+      event.type !== "restriction-no-change",
+  );
   state.themes[themeId].legalLimits[cardId] = 0;
   state.community.push({
-    id: "market-ban-day-45",
-    day: 45,
+    id: "market-ban-day-0",
+    day: 0,
     category: "restriction",
     type: "restriction-applied",
     themeId,
@@ -87,14 +92,14 @@ test("reflects a newly announced ban in the next day's market quote", () => {
     state,
     themeId,
     cardId,
-    45,
+    0,
     1,
   );
   const followingDay = getThemeCardMarketQuoteAtDay(
     state,
     themeId,
     cardId,
-    46,
+    1,
     1,
   );
 
@@ -118,12 +123,17 @@ test("returns the actual restriction target with the steepest one-day decline", 
   const limited = candidates[1];
   assert.ok(banned);
   assert.ok(limited);
+  state.community = state.community.filter(
+    (event) =>
+      event.type !== "restriction-applied" &&
+      event.type !== "restriction-no-change",
+  );
   runtime.legalLimits[banned.id] = 0;
   runtime.legalLimits[limited.id] = 2;
   state.community.push(
     {
       id: "market-impact-ban",
-      day: 15,
+      day: 0,
       category: "restriction",
       type: "restriction-applied",
       themeId,
@@ -134,7 +144,7 @@ test("returns the actual restriction target with the steepest one-day decline", 
     },
     {
       id: "market-impact-semi",
-      day: 15,
+      day: 0,
       category: "restriction",
       type: "restriction-applied",
       themeId,
@@ -145,19 +155,19 @@ test("returns the actual restriction target with the steepest one-day decline", 
     },
   );
 
-  const impact = getNextDayRestrictionMarketImpact(state, 16);
+  const impact = getNextDayRestrictionMarketImpact(state, 1);
   const bannedQuote = getThemeCardMarketQuoteAtDay(
     state,
     themeId,
     banned.id,
-    16,
+    1,
     1,
   );
   const limitedQuote = getThemeCardMarketQuoteAtDay(
     state,
     themeId,
     limited.id,
-    16,
+    1,
     1,
   );
 
@@ -168,7 +178,7 @@ test("returns the actual restriction target with the steepest one-day decline", 
   assert.equal(impact.cardId, banned.id);
   assert.equal(impact.sourceEventId, "market-impact-ban");
   assert.ok(impact.changeRate < limitedQuote.changeRate);
-  assert.deepEqual(getNextDayRestrictionMarketImpact(state, 16), impact);
+  assert.deepEqual(getNextDayRestrictionMarketImpact(state, 1), impact);
 });
 
 test("gives a no-change risk survivor a deterministic, decaying relief bid", () => {
@@ -181,11 +191,16 @@ test("gives a no-change risk survivor a deterministic, decaying relief bid", () 
       (left, right) =>
         right.powerWeight * right.inclusion - left.powerWeight * left.inclusion ||
         left.id.localeCompare(right.id),
-    )[0];
+  )[0];
   assert.ok(survivor);
+  state.community = state.community.filter(
+    (event) =>
+      event.type !== "restriction-applied" &&
+      event.type !== "restriction-no-change",
+  );
   state.community.push({
     id: "market-impact-no-change",
-    day: 15,
+    day: 0,
     category: "restriction",
     type: "restriction-no-change",
     themeId,
@@ -199,38 +214,38 @@ test("gives a no-change risk survivor a deterministic, decaying relief bid", () 
     state,
     themeId,
     survivor.id,
-    15,
+    0,
     1,
   );
   const firstDay = getThemeCardMarketQuoteAtDay(
     state,
     themeId,
     survivor.id,
-    16,
+    1,
     1,
   );
   const secondDay = getThemeCardMarketQuoteAtDay(
     state,
     themeId,
     survivor.id,
-    17,
+    2,
     1,
   );
   const thirdDay = getThemeCardMarketQuoteAtDay(
     state,
     themeId,
     survivor.id,
-    18,
+    3,
     1,
   );
   const settled = getThemeCardMarketQuoteAtDay(
     state,
     themeId,
     survivor.id,
-    19,
+    4,
     1,
   );
-  const impact = getNextDayRestrictionMarketImpact(state, 16);
+  const impact = getNextDayRestrictionMarketImpact(state, 1);
 
   assert.ok(decisionDay);
   assert.ok(firstDay);
@@ -248,6 +263,56 @@ test("gives a no-change risk survivor a deterministic, decaying relief bid", () 
   assert.ok(thirdDay.price < secondDay.price);
   assert.ok(settled.price < thirdDay.price);
   assert.ok(!settled.drivers.includes("금제 회피 안도 매수"));
-  assert.deepEqual(getNextDayRestrictionMarketImpact(state, 16), impact);
-  assert.equal(getNextDayRestrictionMarketImpact(state, 17), null);
+  assert.deepEqual(getNextDayRestrictionMarketImpact(state, 1), impact);
+  assert.equal(getNextDayRestrictionMarketImpact(state, 2), null);
+});
+
+test("DAY 50 reprint supply lands in the following day's market quote", () => {
+  const state = createHistoricalMarketState(0x55667788, 51);
+  const themeId = state.activeThemeIds[0];
+  const runtime = state.themes[themeId];
+  const cardId = runtime.releasedPartIds.find(
+    (candidate) => !Object.hasOwn(COLLECTOR_CARD_PROFILES, candidate),
+  );
+  assert.ok(cardId);
+  const before = getThemeCardMarketQuoteAtDay(state, themeId, cardId, 50, 1);
+  assert.ok(before);
+
+  state.releaseHistory.push({
+    day: 50,
+    releaseKind: "reprint",
+    products: [{
+      optionId: "reprint-50-test",
+      kind: "reprint",
+      cardId,
+      themeId,
+      expectedTier: "Tier 2",
+      powerAdjustment: 0,
+      referencePrice: before.price,
+      trustDelta: 1,
+      accessibilityUserGain: 100,
+      collectorUserLoss: 25,
+      releaseRevenueBoost: 1,
+    }],
+  });
+
+  const releaseDay = getThemeCardMarketQuoteAtDay(
+    state,
+    themeId,
+    cardId,
+    50,
+    1,
+  );
+  const followingDay = getThemeCardMarketQuoteAtDay(
+    state,
+    themeId,
+    cardId,
+    51,
+    1,
+  );
+  assert.ok(releaseDay);
+  assert.ok(followingDay);
+  assert.equal(releaseDay.price, before.price);
+  assert.ok(followingDay.changeRate < -50);
+  assert.ok(followingDay.price < releaseDay.price);
 });

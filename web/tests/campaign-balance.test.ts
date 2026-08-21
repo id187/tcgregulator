@@ -6,8 +6,17 @@ import {
   getBusinessEventOutcome,
   getBusinessEventResult,
 } from "../app/game/business-events.ts";
-import { BUSINESS_ACTION_BY_TYPE } from "../app/game/business-actions.ts";
-import { CAMPAIGN_END_DAY, PLAYER_START_DAY } from "../app/game/campaign.ts";
+import {
+  BUSINESS_ACTION_BY_TYPE,
+  getBusinessActionAvailability,
+  getBusinessEnvironmentHealth,
+} from "../app/game/business-actions.ts";
+import {
+  CAMPAIGN_END_DAY,
+  LAST_BAN_DAY,
+  PLAYER_START_DAY,
+  REPRINT_PACK_PRODUCT_COUNT,
+} from "../app/game/campaign.ts";
 import { evaluateCampaignEnding } from "../app/game/campaign-ending.ts";
 import { THEME_BY_ID } from "../app/game/content.ts";
 import { createInitialGame, reduceGame } from "../app/game/engine.ts";
@@ -16,6 +25,7 @@ import {
   getRestrictionPolicyProfile,
   type RestrictionPolicyProfile,
 } from "../app/game/restriction-policy.ts";
+import { getReprintImpactPreview } from "../app/game/release-requests.ts";
 import type {
   BusinessActionType,
   GameState,
@@ -34,15 +44,19 @@ const ROLE_EXPONENT: Record<PartRole, number> = {
   recursion: 0.5,
 };
 
-const BUSINESS_ACTION_PLAN = new Map<number, BusinessActionType>([
-  [15, "championship"],
-  [60, "championship"],
-  [90, "championship"],
-  [120, "championship"],
-  [150, "championship"],
-  [180, "championship"],
-  [240, "season-overhaul"],
-]);
+function choosePlannedBusinessAction(
+  state: GameState,
+): BusinessActionType | null {
+  if (
+    state.day >= 120 &&
+    state.finance.cash + 1e-9 >= BUSINESS_ACTION_BY_TYPE["season-overhaul"].cost &&
+    getBusinessEnvironmentHealth(state) >= 64 &&
+    getBusinessActionAvailability(state, "season-overhaul").available
+  ) {
+    return "season-overhaul";
+  }
+  return null;
+}
 
 const SUPPORT_PLAN = new Map<
   number,
@@ -50,7 +64,7 @@ const SUPPORT_PLAN = new Map<
 >([
   [46, { themeId: "ironblood", direction: "recovery" }],
   [106, { themeId: "white-night", direction: "counterplay" }],
-  [166, { themeId: "plague-garden", direction: "consistency" }],
+  [166, { themeId: "abyss", direction: "consistency" }],
 ]);
 
 function partAvailability(part: PartContent, limit: RestrictionLimit): number {
@@ -215,6 +229,33 @@ function getBalancedRestrictionChanges(
 function submitPlannedRelease(state: GameState): GameState {
   const slate = state.releaseSlate;
   assert.ok(slate, "release-edit must have a release slate");
+  if (slate.releaseKind === "reprint") {
+    const selected = slate.options
+      .filter((option) => option.kind === "reprint")
+      .sort(
+        (left, right) => {
+          const requestPriority =
+            Number(Boolean(right.requested)) - Number(Boolean(left.requested));
+          if (requestPriority !== 0) return requestPriority;
+          const leftImpact = getReprintImpactPreview(state, left.cardId);
+          const rightImpact = getReprintImpactPreview(state, right.cardId);
+          return (
+            (rightImpact?.trustDelta ?? -Infinity) -
+              (leftImpact?.trustDelta ?? -Infinity) ||
+            left.cardId.localeCompare(right.cardId)
+          );
+        },
+      )
+      .slice(0, REPRINT_PACK_PRODUCT_COUNT);
+    assert.equal(selected.length, REPRINT_PACK_PRODUCT_COUNT);
+    return reduceGame(state, {
+      type: "SUBMIT_RELEASE",
+      selections: selected.map((option) => ({
+        optionId: option.id,
+        powerAdjustment: 0,
+      })),
+    });
+  }
   const prioritized = <K extends (typeof slate.options)[number]["kind"]>(
     kind: K,
     count: number,
@@ -258,20 +299,24 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
     }
     if (state.phase === "ban-edit") {
       const decisionDay = state.day;
-      const changes = getBalancedRestrictionChanges(state);
+      const changes = decisionDay === 40 || decisionDay === LAST_BAN_DAY
+        ? getBalancedRestrictionChanges(state)
+        : {};
       state = reduceGame(state, { type: "SUBMIT_BAN", changes });
       if (decisionDay >= PLAYER_START_DAY) {
         const published = getPublishedRestrictionPolicyProfile(
           state,
           decisionDay,
         );
-        assert.equal(published.quality, "balanced");
+        if (decisionDay === 40 || decisionDay === LAST_BAN_DAY) {
+          assert.equal(published.quality, "balanced");
+        }
         publishedPolicies.push(published);
       }
       continue;
     }
 
-    const businessAction = BUSINESS_ACTION_PLAN.get(state.day);
+    const businessAction = choosePlannedBusinessAction(state);
     if (businessAction) {
       assert.ok(
         state.finance.cash + 1e-9 >= BUSINESS_ACTION_BY_TYPE[businessAction].cost,
@@ -306,41 +351,53 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
     [
       {
         proposedDay: 46,
-        releasedDay: 60,
+        releasedDay: 70,
         themeId: "ironblood",
         direction: "recovery",
         status: "released",
       },
       {
         proposedDay: 106,
-        releasedDay: 120,
+        releasedDay: 130,
         themeId: "white-night",
         direction: "counterplay",
         status: "released",
       },
       {
         proposedDay: 166,
-        releasedDay: 180,
-        themeId: "plague-garden",
+        releasedDay: 190,
+        themeId: "abyss",
         direction: "consistency",
         status: "released",
       },
     ],
   );
-  assert.equal(publishedPolicies.length, 7);
-  assert.ok(
-    publishedPolicies.every((profile) => profile.quality === "balanced"),
+  assert.equal(publishedPolicies.length, 11);
+  assert.deepEqual(
+    publishedPolicies
+      .filter((profile) => profile.quality === "balanced")
+      .map((profile) => profile.decisionDay),
+    [40, LAST_BAN_DAY],
   );
   assert.deepEqual(
     publishedPolicies.map((profile) => profile.changeCount),
-    [2, 4, 3, 2, 2, 3, 4],
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
   );
   assert.equal(
     publishedPolicies.reduce(
       (total, profile) => total + profile.staleFullyReleased,
       0,
     ),
-    6,
+    1,
+  );
+
+  assert.deepEqual(
+    state.operations.records.map((record) => ({
+      type: record.type,
+      startedDay: record.startedDay,
+      outcome: record.outcome,
+    })),
+    [{ type: "season-overhaul", startedDay: 160, outcome: "success" }],
   );
 
   const ending = evaluateCampaignEnding(state);
@@ -370,6 +427,7 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       "a",
       "b",
       "a",
+      "a",
     ],
   );
   assert.deepEqual(
@@ -384,11 +442,11 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       title: ending.title,
     },
     {
-      cash: 20.2017,
-      endingCash: 20.2,
-      environmentHealth: 72.4,
-      purchaseTrust: 87.3,
-      userRatio: 1.9904,
+      cash: 19.8889,
+      endingCash: 19.9,
+      environmentHealth: 74.5,
+      purchaseTrust: 84.8,
+      userRatio: 1.7665,
       bands: {
         cash: "reserve",
         environment: "stable",

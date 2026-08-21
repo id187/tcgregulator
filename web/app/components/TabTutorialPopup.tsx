@@ -6,6 +6,17 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  CalendarIcon,
+  ClockIcon,
+  GavelIcon,
+  MessageIcon,
+  ReleaseIcon,
+  RevenueIcon,
+  TrendIcon,
+  UsersIcon,
+} from "./MetricGlyphs.tsx";
+import { SignalFlow, type SignalFlowNode } from "./SignalFlow.tsx";
 
 export type TabTutorialTerm = {
   label: string;
@@ -36,6 +47,67 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
 
+function getTutorialFlow(sectionLabel?: string): readonly SignalFlowNode[] | null {
+  switch (sectionLabel) {
+    case "인수인계":
+      return [
+        { icon: <UsersIcon size={18} />, label: "역할", value: "운영 책임 파악" },
+        { icon: <TrendIcon size={18} />, label: "상황", value: "핵심 지표 확인", tone: "caution" },
+        { icon: <ClockIcon size={18} />, label: "진행", value: "다음 일정까지", tone: "positive" },
+      ];
+    case "카드":
+      return [
+        { icon: <UsersIcon size={18} />, label: "대상", value: "테마·카드 선택" },
+        { icon: <TrendIcon size={18} />, label: "판단", value: "성과·시세 비교", tone: "caution" },
+        { icon: <GavelIcon size={18} />, label: "요청", value: "발매·금제 방향", tone: "positive" },
+      ];
+    case "발매":
+      return [
+        { icon: <CalendarIcon size={18} />, label: "일정", value: "출시 DAY 확인" },
+        { icon: <ReleaseIcon size={18} />, label: "구성", value: "수록 카드 파악", tone: "caution" },
+        { icon: <TrendIcon size={18} />, label: "비교", value: "파워·반응 추적", tone: "positive" },
+      ];
+    case "사업 운영":
+      return [
+        { icon: <RevenueIcon size={18} />, label: "여력", value: "자금·신뢰 확인" },
+        { icon: <TrendIcon size={18} />, label: "조건", value: "수익·위험 비교", tone: "caution" },
+        { icon: <GavelIcon size={18} />, label: "집행", value: "액션 하나 선택", tone: "positive" },
+      ];
+    case "커뮤니티":
+      return [
+        { icon: <MessageIcon size={18} />, label: "여론", value: "주요 반응 훑기" },
+        { icon: <UsersIcon size={18} />, label: "갈등", value: "누가 왜 화났는지", tone: "caution" },
+        { icon: <CalendarIcon size={18} />, label: "추적", value: "날짜별 후폭풍 비교", tone: "positive" },
+      ];
+    case "소식":
+      return [
+        { icon: <CalendarIcon size={18} />, label: "날짜", value: "변화가 생긴 날" },
+        { icon: <MessageIcon size={18} />, label: "사건", value: "무슨 일이었는지", tone: "caution" },
+        { icon: <TrendIcon size={18} />, label: "파급", value: "수치·여론 변화", tone: "positive" },
+      ];
+    case "재무":
+      return [
+        { icon: <RevenueIcon size={18} />, label: "현금", value: "매출·보유자금 확인" },
+        { icon: <TrendIcon size={18} />, label: "역행", value: "돈과 환경의 엇박자", tone: "caution" },
+        { icon: <CalendarIcon size={18} />, label: "추적", value: "발매·금제와 비교", tone: "positive" },
+      ];
+    case "첫 금제위원회":
+      return [
+        { icon: <TrendIcon size={18} />, label: "위협", value: "지배력·채용 확인" },
+        { icon: <GavelIcon size={18} />, label: "조정", value: "허용 매수 결정", tone: "caution" },
+        { icon: <MessageIcon size={18} />, label: "후폭풍", value: "다음 날부터 관찰", tone: "positive" },
+      ];
+    case "첫 정기 발매":
+      return [
+        { icon: <ReleaseIcon size={18} />, label: "구성", value: "수록 4종 확인" },
+        { icon: <TrendIcon size={18} />, label: "파워", value: "매출·환경 영향", tone: "caution" },
+        { icon: <CalendarIcon size={18} />, label: "반응", value: "D+1 결과 관찰", tone: "positive" },
+      ];
+    default:
+      return null;
+  }
+}
+
 export function TabTutorialPopup({
   pages,
   currentIndex,
@@ -57,6 +129,7 @@ export function TabTutorialPopup({
   const isOpen = Boolean(page);
   const isFirstPage = safeIndex === 0;
   const isLastPage = safeIndex === pages.length - 1;
+  const tutorialFlow = isFirstPage ? getTutorialFlow(sectionLabel) : null;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -149,6 +222,13 @@ export function TabTutorialPopup({
         </header>
 
         <div className="tab-tutorial-popup__body" id={contentId} ref={bodyRef}>
+          {tutorialFlow ? (
+            <SignalFlow
+              className="tutorial-signal-flow"
+              compact
+              nodes={tutorialFlow}
+            />
+          ) : null}
           <div className="tab-tutorial-popup__content">{page.body}</div>
 
           {page.terms && page.terms.length > 0 ? (

@@ -653,10 +653,10 @@ const FIRST_RELEASE_TUTORIAL = {
       ],
     },
     {
-      id: "first-release-fixed-plan",
-      title: "이번 첫 발매 시안은 이미 결정되어 있습니다",
+      id: "first-release-selection",
+      title: "이번 카드팩의 네 자리를 직접 고릅니다",
       body:
-        "첫 시안의 수록 4종과 파워는 결정된 상태입니다. 표시된 구성과 값을 읽은 뒤 발매 확정으로 기록에 반영합니다.",
+        "신테마·기존 테마 지원·범용을 각각 1종 이상 포함해 4종을 고릅니다. 남는 한 자리는 세 종류 중 현재 전략에 필요한 카드를 더 선택하세요.",
       terms: [
         {
           label: "이후 정기 발매",
@@ -672,9 +672,9 @@ const FIRST_RELEASE_TUTORIAL = {
     },
     {
       id: "first-release-power-submit",
-      title: "결정된 파워를 확인하고 발매를 확정합니다",
+      title: "고른 카드의 파워를 조정합니다",
       body:
-        "파워는 -3이 가장 약한 조정, 0이 기본, +3이 가장 강한 조정입니다. 이번 시안에서는 선택과 파워를 바꾸지 않고, 발매 확정 버튼으로 DAY 30 발매 기록에 반영합니다.",
+        "파워는 -3이 가장 약하고, 0이 기본, +3이 가장 강합니다. 강하게 내면 초기 매출과 채용을 끌어올리기 쉽지만, 환경 집중과 구매 신뢰 하락 위험도 커집니다. 구성과 파워를 모두 정한 뒤 발매를 확정하세요.",
     },
   ],
 } as const satisfies ContextualTutorialDefinition;

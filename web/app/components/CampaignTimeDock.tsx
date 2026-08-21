@@ -1,7 +1,4 @@
-export type CampaignMilestone = {
-  days: number;
-  label: string;
-};
+import type { CampaignMilestone } from "../game/campaign-milestone.ts";
 
 export function CampaignTimeDock({
   disabled,
@@ -52,12 +49,13 @@ export function CampaignTimeDock({
           onClick={() => milestone && onAdvance(milestone.days)}
           type="button"
         >
-          <span>다음 일정까지</span>
-          <strong>
-            {milestone
-              ? `${milestone.label} · ${milestone.days}일`
-              : "예정 없음"}
-          </strong>
+          <svg aria-hidden="true" className="time-major-icon" viewBox="0 0 32 32">
+            <circle cx="16" cy="16" r="12" />
+            <path d="M16 9v7l5 3M16 2v4M30 16h-4" />
+          </svg>
+          <span>다음 일정</span>
+          <strong>{milestone ? milestone.label : "예정 없음"}</strong>
+          <small>{milestone ? `${milestone.days}일 후` : "종료"}</small>
         </button>
       </div>
     </footer>

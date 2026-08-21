@@ -37,10 +37,10 @@ import {
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
   PROLOGUE_SEED,
-  RELEASE_INTERVAL,
   SETTLEMENT_START_DAY,
   SETTLEMENT_DAYS,
 } from "./game/campaign";
+import { getNextCampaignMilestone } from "./game/campaign-milestone.ts";
 import {
   CAMPAIGN_ENVIRONMENT_STABLE_MIN,
   evaluateCampaignEnding,
@@ -154,8 +154,6 @@ import {
   getNextBanDay,
   getNextReleaseDay,
   getProspectiveSupportKeyword,
-  getPrologueReleaseCommand,
-  getPrologueReleasePlan,
   isHandoverReady,
   isBanDay,
   reduceGame,
@@ -727,6 +725,17 @@ function GenericAdopterNames({
   );
 }
 
+function getLastRestrictionDay(game: GameState, cardId: string): string {
+  const lastDay = game.community.reduce((latest, event) => {
+    const isCardChange =
+      event.category === "restriction" &&
+      (event.type === "restriction-applied" || event.type === "cosmetic-restriction") &&
+      (event.partId === cardId || event.genericCardId === cardId);
+    return isCardChange ? Math.max(latest, event.day) : latest;
+  }, -1);
+  return lastDay >= 0 ? `DAY ${lastDay}` : "—";
+}
+
 function CurrentBanList({
   expanded = false,
   game,
@@ -771,6 +780,7 @@ function CurrentBanList({
           <div className="current-banlist-reference-head" role="row">
             <span>테마 / 카드</span>
             <span>출시</span>
+            <span>최종 금제일</span>
             <span>현행</span>
           </div>
           {themeEntries.map(({ theme, part, limit }) => (
@@ -780,6 +790,7 @@ function CurrentBanList({
                 <strong>{part.name}</strong>
               </span>
               <span>{getPartReleaseLabel(game, theme, part.id)}</span>
+              <span>{getLastRestrictionDay(game, part.id)}</span>
               <strong>{LIMIT_LABELS[limit]}</strong>
             </div>
           ))}
@@ -795,6 +806,7 @@ function CurrentBanList({
                 <GenericAdopterNames game={game} limit={3} meta={entry.meta} />
               </span>
               <span>DAY {entry.releaseDay}</span>
+              <span>{getLastRestrictionDay(game, entry.card.id)}</span>
               <strong>{LIMIT_LABELS[entry.legalLimit]}</strong>
             </div>
           ))}
@@ -1742,28 +1754,12 @@ function GameSession({
       : settlementPeriod
         ? "결산 관찰"
         : "임기 진행률";
-  const nextMilestone = [
-    hasFutureRelease && nextReleaseDay > game.day
-      ? { day: nextReleaseDay, label: "정기 발매" }
-      : null,
-    hasFutureBan && nextBanDay > game.day
-      ? { day: nextBanDay, label: "금제위원회" }
-      : null,
-    game.day < SETTLEMENT_START_DAY
-      ? { day: SETTLEMENT_START_DAY, label: "결산 관찰" }
-      : null,
-    game.day < CAMPAIGN_END_DAY
-      ? { day: CAMPAIGN_END_DAY, label: "임기 종료" }
-      : null,
-  ]
-    .filter((entry): entry is { day: number; label: string } => Boolean(entry))
-    .sort((left, right) => left.day - right.day)[0];
-  const nextCampaignMilestone = nextMilestone
-    ? {
-        days: nextMilestone.day - game.day,
-        label: nextMilestone.label,
-      }
-    : null;
+  const nextCampaignMilestone = getNextCampaignMilestone({
+    day: game.day,
+    nextBanDay,
+    nextReleaseDay,
+    phase: game.phase,
+  });
   const total = totalUsers(game);
   const gameOver = total <= 0;
   const campaignComplete = game.phase === "ended" && !gameOver;
@@ -1821,13 +1817,6 @@ function GameSession({
   const tutorialPopupKey = tutorialPopup
     ? `${tutorialPopup.kind}-${tutorialPopup.id}`
     : null;
-  const firstReleasePlan =
-    game.phase === "release-edit" &&
-    game.day === RELEASE_INTERVAL &&
-    !game.handoverComplete
-      ? getPrologueReleasePlan(game)
-      : null;
-
   function dispatch(command: GameCommand) {
     const next = reduceGame(game, command);
     setGame(next);
@@ -1854,7 +1843,7 @@ function GameSession({
     const news = getImpactNewsRange(next, previousDay, next.day);
     news.forEach((item, index) => {
       const arrivalTimer = window.setTimeout(() => {
-        setImpactItems((current) => [...current, item]);
+        setImpactItems((current) => [...current, item].slice(-6));
         emitGameSound("impact");
         setAdvisorPulseKey((current) => current + 1);
         if (
@@ -1870,7 +1859,7 @@ function GameSession({
           setImpactItems((current) => current.filter((entry) => entry.id !== item.id));
         }, 7600);
         impactTimersRef.current.push(dismissTimer);
-      }, index * 140);
+      }, index * 90);
       impactTimersRef.current.push(arrivalTimer);
     });
   }
@@ -2172,19 +2161,14 @@ function GameSession({
 
   function submitReleaseSelections(selections: ReleaseSelection[]) {
     if (game.phase !== "release-edit" || !game.releaseSlate) return null;
-    const firstReleaseFixed =
-      game.day === RELEASE_INTERVAL && !game.handoverComplete;
-    const next = dispatch(
-      firstReleaseFixed
-        ? getPrologueReleaseCommand(game)
-        : { type: "SUBMIT_RELEASE", selections },
-    );
+    const next = dispatch({ type: "SUBMIT_RELEASE", selections });
     impactTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     impactTimersRef.current = [];
     setImpactItems([]);
     setReleaseDraft([]);
     setReactionFlashDay(next.day + 1);
     setAdvisorPulseKey((current) => current + 1);
+    triggerImpactObservation(next.day, "caution");
     setToast(`DAY ${next.day} 카드팩 ${next.releaseHistory.at(-1)?.products.length ?? 0}종을 발매했습니다.`);
     emitGameSound("release");
     return next;
@@ -2444,7 +2428,6 @@ function GameSession({
         {activeTab === "releases" ? (
           <ReleasesView
             game={game}
-            fixedSelections={firstReleasePlan?.selections}
             releaseDraft={releaseDraft}
             onReleaseDraftChange={setReleaseDraft}
             onSubmitRelease={submitReleaseSelections}
@@ -3361,8 +3344,6 @@ function MetaWorkspace({
                     <h2 id="theme-detail-title" ref={detailHeadingRef} tabIndex={-1}>
                       {selectedTheme.name}
                     </h2>
-                    <p>{selectedTheme.playstyle}</p>
-                    <PlayKeywordChips game={game} theme={selectedTheme} />
                   </div>
                 </div>
                 <div className="card-release-request-actions" aria-label="다음 발매 요청">
@@ -3417,6 +3398,15 @@ function MetaWorkspace({
                   >
                     재판
                   </button>
+                </div>
+                <div className="theme-detail-context">
+                  <div
+                    aria-hidden={requestHelpOpen}
+                    className="theme-detail-summary"
+                  >
+                    <p className="theme-playstyle-line">{selectedTheme.playstyle}</p>
+                    <PlayKeywordChips game={game} theme={selectedTheme} />
+                  </div>
                   {requestHelpOpen ? (
                     <div
                       aria-label="발매 요청 종류"
@@ -4272,13 +4262,11 @@ function OverviewCard({ className = "", dataTutorialTerm, icon, label, value, no
 }
 
 function ReleasesView({
-  fixedSelections,
   game,
   onReleaseDraftChange,
   onSubmitRelease,
   releaseDraft,
 }: {
-  fixedSelections?: readonly ReleaseSelection[];
   game: GameState;
   onReleaseDraftChange: (optionIds: string[]) => void;
   onSubmitRelease: (selections: ReleaseSelection[]) => void;
@@ -4306,7 +4294,6 @@ function ReleasesView({
       </header>
       {game.phase === "release-edit" && game.releaseSlate ? (
         <ReleaseDecisionPanel
-          fixedSelections={fixedSelections}
           game={game}
           onChange={onReleaseDraftChange}
           onSubmit={onSubmitRelease}

@@ -116,6 +116,50 @@ test("range collection preserves every intermediate day in stable order", () => 
   assert.ok(range.every((item, index) => index === 0 || item.day >= range[index - 1].day));
 });
 
+test("a weak release explains the trust response in plain player language", () => {
+  const state = createInitialGame(0x5eed1234);
+  const release = state.releaseHistory.find((batch) => batch.day === 30);
+  assert.ok(release);
+  for (const product of release.products) product.powerAdjustment = -3;
+
+  const metric = getDailyNews(state, 31).find(
+    (item) => item.kind === "trust",
+  );
+  assert.ok(metric);
+  assert.equal(
+    metric.reason,
+    "유저들은 신규 팩이 너무 약하다는 반응입니다.",
+  );
+  assert.doesNotMatch(metric.reason, /DAY|D\+|정기 발매/);
+});
+
+test("release D+1 presents several distinct consequences instead of one alert", () => {
+  const state = createInitialGame(0x5eed1234);
+  const impact = getImpactNewsRange(state, 30, 31);
+  const metricKinds = new Set(impact.map((item) => item.kind));
+
+  for (const kind of ["revenue", "environment", "trust", "sentiment"] as const) {
+    assert.equal(metricKinds.has(kind), true, kind);
+  }
+  assert.ok(impact.length >= 4);
+  assert.ok(
+    impact
+      .filter((item) => item.chainId === "release-30")
+      .every((item) => !/DAY|D\+|관측/.test(item.reason)),
+  );
+  const environment = impact.find((item) => item.kind === "environment");
+  const sentiment = impact.find((item) => item.kind === "sentiment");
+  assert.ok(environment);
+  assert.match(environment.reason, /입상 비중.*% → .*%/);
+  assert.ok(sentiment);
+  assert.match(sentiment.reason, /좋아요 [\d,]+개/);
+  assert.equal(
+    impact.some((item) => item.kind === "community"),
+    false,
+    "the side burst should not repeat the same strongest post twice",
+  );
+});
+
 test("promotes only genuinely high-like posts into the news desk", () => {
   const state = createInitialGame(0x5eed1234);
   const quiet = getDailyNews(state, 1).filter(
@@ -128,6 +172,7 @@ test("promotes only genuinely high-like posts into the news desk", () => {
   assert.equal(quiet.length, 0);
   assert.equal(popular.length, 1);
   assert.match(popular[0].detail, /^♥ [\d,]+ · /);
+  assert.ok(popular[0].reason.includes(popular[0].detail.split(" · ")[1]));
 });
 
 test("a user-share leader change alone does not produce meta-leader news", () => {

@@ -373,7 +373,7 @@ test("restriction and release help are separate contextual topics", () => {
   for (const phrase of [
     "강한 카드",
     "약한 카드",
-    "이미 결정",
+    "직접 고릅니다",
     "신테마",
     "지원",
     "범용",
@@ -382,11 +382,11 @@ test("restriction and release help are separate contextual topics", () => {
     "-3",
     "0",
     "+3",
-    "발매 확정",
-    "DAY 30",
+    "발매를 확정",
   ]) {
     assert.ok(releaseText.includes(phrase), phrase);
   }
+  assert.equal(releaseText.includes("이미 결정"), false);
 
   assert.equal(tutorialText("cards").includes("0 · 금지"), false);
   assert.equal(tutorialText("cards").includes("금제안 제출"), false);

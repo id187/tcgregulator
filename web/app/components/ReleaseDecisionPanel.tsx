@@ -1,7 +1,9 @@
 import { useState } from "react";
 
 import { THEME_BY_ID } from "../game/content.ts";
+import { getProspectiveSupportKeyword } from "../game/engine.ts";
 import { getGenericCard } from "../game/generic-card-catalog.ts";
+import { getPlayKeyword } from "../game/play-keywords.ts";
 import {
   canToggleReleaseOption,
   getDirectReleaseSelectionCount,
@@ -12,18 +14,10 @@ import type {
   PowerAdjustment,
   ReleaseOption,
   ReleaseSelection,
-  SupportDirection,
 } from "../game/types.ts";
 
 const POWER_ADJUSTMENTS = [-3, -2, -1, 0, 1, 2, 3] as const satisfies
   readonly PowerAdjustment[];
-
-const SUPPORT_DIRECTION_LABEL: Record<SupportDirection, string> = {
-  consistency: "안정성",
-  counterplay: "대응력",
-  finisher: "결과물",
-  recovery: "회수",
-};
 
 function optionName(option: ReleaseOption): string {
   if (option.kind === "generic") {
@@ -32,7 +26,35 @@ function optionName(option: ReleaseOption): string {
   if (option.kind === "reprint") return `재판 · ${option.cardId}`;
   const theme = THEME_BY_ID[option.themeId];
   if (option.kind === "new-theme") return theme?.name ?? "신테마";
-  return `${theme?.shortName ?? "테마"} · ${SUPPORT_DIRECTION_LABEL[option.direction]} 지원`;
+  return theme?.shortName ?? "테마";
+}
+
+function optionNameLines(option: ReleaseOption): readonly string[] {
+  return [optionName(option)];
+}
+
+function optionKeywordLabels(
+  game: GameState,
+  option: ReleaseOption,
+): readonly string[] {
+  if (option.kind === "new-theme") {
+    return THEME_BY_ID[option.themeId].playKeywords.map(
+      (keyword) => getPlayKeyword(keyword).label,
+    );
+  }
+  if (option.kind === "support") {
+    const keyword = getProspectiveSupportKeyword(
+      game,
+      option.themeId,
+      option.direction,
+    );
+    return keyword ? [`+ ${getPlayKeyword(keyword).label}`] : [];
+  }
+  if (option.kind === "generic") {
+    const card = getGenericCard(option.genericCardId);
+    return card ? [getPlayKeyword(card.keyword).label] : [];
+  }
+  return [];
 }
 
 function optionRole(option: ReleaseOption): string {
@@ -44,7 +66,6 @@ function optionRole(option: ReleaseOption): string {
 
 export function ReleaseDecisionPanel({
   disabled = false,
-  fixedSelections,
   game,
   guidedTarget = false,
   onChange,
@@ -52,7 +73,6 @@ export function ReleaseDecisionPanel({
   selectedOptionIds,
 }: {
   disabled?: boolean;
-  fixedSelections?: readonly ReleaseSelection[];
   game: GameState;
   guidedTarget?: boolean;
   onChange: (optionIds: string[]) => void;
@@ -64,17 +84,6 @@ export function ReleaseDecisionPanel({
     Record<string, PowerAdjustment>
   >({});
   const directOptions = options.filter((option) => option.kind !== "reprint");
-  const effectiveSelectedOptionIds = fixedSelections
-    ? fixedSelections.map((selection) => selection.optionId)
-    : selectedOptionIds;
-  const fixedPowerAdjustments = fixedSelections
-    ? new Map(
-        fixedSelections.map((selection) => [
-          selection.optionId,
-          selection.powerAdjustment,
-        ]),
-      )
-    : null;
   const lockedReprint = options.find(
     (option) => option.kind === "reprint" && option.locked,
   );
@@ -84,31 +93,31 @@ export function ReleaseDecisionPanel({
   );
   const complete = isCompleteReleaseSelection(
     options,
-    effectiveSelectedOptionIds,
+    selectedOptionIds,
   );
   const selectedCount = directOptions.filter((option) =>
-    effectiveSelectedOptionIds.includes(option.id),
+    selectedOptionIds.includes(option.id),
   ).length;
   const selectedDirectOptions = directOptions.filter((option) =>
-    effectiveSelectedOptionIds.includes(option.id),
+    selectedOptionIds.includes(option.id),
   );
 
   const toggleOption = (option: ReleaseOption) => {
-    if (disabled || fixedSelections || option.kind === "reprint") return;
-    const selected = effectiveSelectedOptionIds.includes(option.id);
+    if (disabled || option.kind === "reprint") return;
+    const selected = selectedOptionIds.includes(option.id);
     if (selected) {
-      onChange(effectiveSelectedOptionIds.filter((id) => id !== option.id));
+      onChange(selectedOptionIds.filter((id) => id !== option.id));
       return;
     }
 
     if (
       !canToggleReleaseOption(
         options,
-        effectiveSelectedOptionIds,
+        selectedOptionIds,
         option.id,
       )
     ) return;
-    onChange([...effectiveSelectedOptionIds, option.id]);
+    onChange([...selectedOptionIds, option.id]);
   };
 
   const groups: Array<{
@@ -134,9 +143,7 @@ export function ReleaseDecisionPanel({
           <span>RELEASE REVIEW · DAY {game.day}</span>
           <h2 id="release-decision-title">이번 카드팩 구성</h2>
           <p>
-            {fixedSelections
-              ? `이번 발매 시안 ${expectedCount}종은 이미 결정되었습니다. 구성과 파워를 확인하세요.`
-              : hasGenericRules
+            {hasGenericRules
               ? `신테마·지원·범용을 각각 1종 이상 포함해 ${expectedCount}종을 고르세요.`
               : `신테마를 1종 이상 포함해 ${expectedCount}종을 고르세요.`}
           </p>
@@ -152,11 +159,13 @@ export function ReleaseDecisionPanel({
               {directOptions
                 .filter((option) => option.kind === group.kind)
                 .map((option) => {
-                  const selected = effectiveSelectedOptionIds.includes(option.id);
+                  const selected = selectedOptionIds.includes(option.id);
+                  const nameLines = optionNameLines(option);
+                  const keywordLabels = optionKeywordLabels(game, option);
                   const atCapacity = !selected && selectedCount >= expectedCount;
                   const preservesRequiredMix = canToggleReleaseOption(
                     options,
-                    effectiveSelectedOptionIds,
+                    selectedOptionIds,
                     option.id,
                   );
                   const selectionBlocked = !selected && !preservesRequiredMix;
@@ -167,7 +176,6 @@ export function ReleaseDecisionPanel({
                       data-tutorial-control={`release-core-${group.kind}`}
                       disabled={
                         disabled ||
-                        Boolean(fixedSelections) ||
                         selectionBlocked
                       }
                       key={option.id}
@@ -182,7 +190,14 @@ export function ReleaseDecisionPanel({
                       type="button"
                     >
                       <span>{optionRole(option)}</span>
-                      <strong>{optionName(option)}</strong>
+                      <strong className="release-option-name">
+                        {nameLines.map((line) => <span key={line}>{line}</span>)}
+                      </strong>
+                      {keywordLabels.length > 0 ? (
+                        <small className="release-option-keywords">
+                          {keywordLabels.join(" · ")}
+                        </small>
+                      ) : null}
                     </button>
                   );
                 })}
@@ -197,19 +212,13 @@ export function ReleaseDecisionPanel({
           className="release-power-adjustments"
         >
           <header>
-            <strong>{fixedSelections ? "결정된 파워" : "파워 조정"}</strong>
-            <span>
-              {fixedSelections
-                ? "첫 발매에 적용될 값을 확인합니다."
-                : "-3은 약하게 · 0은 기본 · +3은 강하게"}
-            </span>
+            <strong>파워 조정</strong>
+            <span>-3은 약하게 · 0은 기본 · +3은 강하게</span>
           </header>
           <div>
             {selectedDirectOptions.map((option) => {
               const currentAdjustment =
-                fixedPowerAdjustments?.get(option.id) ??
-                powerAdjustments[option.id] ??
-                0;
+                powerAdjustments[option.id] ?? 0;
               return (
                 <div className="release-power-adjustment-row" key={option.id}>
                   <span>
@@ -224,7 +233,7 @@ export function ReleaseDecisionPanel({
                     {POWER_ADJUSTMENTS.map((adjustment) => (
                       <button
                         aria-pressed={currentAdjustment === adjustment}
-                        disabled={disabled || Boolean(fixedSelections)}
+                        disabled={disabled}
                         key={adjustment}
                         onClick={() =>
                           setPowerAdjustments((current) => ({
@@ -256,9 +265,7 @@ export function ReleaseDecisionPanel({
       <footer>
         <p>
           {complete
-            ? fixedSelections
-              ? "이번 발매 시안이 준비됐습니다. 발매 확정을 눌러 기록에 반영하세요."
-              : `필수 구성이 완성됐습니다. 제출하면 DAY ${game.day} 발매 기록에 즉시 반영됩니다.`
+            ? `필수 구성이 완성됐습니다. 제출하면 DAY ${game.day} 발매 기록에 즉시 반영됩니다.`
             : hasGenericRules
               ? "신테마·지원·범용을 각각 1종 이상 선택해주세요."
               : "신테마가 1종 이상 필요합니다."}
@@ -270,13 +277,11 @@ export function ReleaseDecisionPanel({
           disabled={disabled || !complete}
           onClick={() => {
             const selected = directOptions
-              .filter((option) => effectiveSelectedOptionIds.includes(option.id))
+              .filter((option) => selectedOptionIds.includes(option.id))
               .map((option) => ({
                 optionId: option.id,
                 powerAdjustment:
-                  fixedPowerAdjustments?.get(option.id) ??
-                  powerAdjustments[option.id] ??
-                  0,
+                  powerAdjustments[option.id] ?? 0,
               }));
             onSubmit(selected);
           }}

@@ -5,6 +5,88 @@ import {
   type DailyNewsItem,
 } from "../game/daily-news.ts";
 import type { GameState } from "../game/types.ts";
+import {
+  GavelIcon,
+  MessageIcon,
+  ReleaseIcon,
+  RevenueIcon,
+  TrendIcon,
+  UsersIcon,
+} from "./MetricGlyphs.tsx";
+
+function getNewsGlyph(kind: DailyNewsItem["kind"]) {
+  switch (kind) {
+    case "release":
+      return <ReleaseIcon size={18} />;
+    case "restriction":
+      return <GavelIcon size={18} />;
+    case "business":
+    case "market":
+    case "revenue":
+      return <RevenueIcon size={18} />;
+    case "community":
+    case "sentiment":
+      return <MessageIcon size={18} />;
+    case "users":
+      return <UsersIcon size={18} />;
+    default:
+      return <TrendIcon size={18} />;
+  }
+}
+
+function getNewsLead(item: DailyNewsItem): string {
+  const details = item.detail.split("·").map((part) => part.trim());
+  if (
+    item.kind === "environment" ||
+    item.kind === "trust" ||
+    item.kind === "sentiment" ||
+    item.kind === "market" ||
+    item.kind === "revenue" ||
+    item.kind === "meta"
+  ) {
+    return (details.at(-1) ?? item.detail).replace(/점$/, "");
+  }
+  if (item.kind === "release") {
+    return item.headline.match(/\d+종/)?.[0] ?? "신규 발매";
+  }
+  if (item.kind === "restriction") {
+    return item.headline.match(/\d+건/)?.[0] ?? item.detail;
+  }
+  return details[0] ?? item.detail;
+}
+
+function getNewsLabel(item: DailyNewsItem): string {
+  switch (item.kind) {
+    case "release":
+      return "정기 발매";
+    case "restriction":
+      return "금제";
+    case "business":
+      return item.headline.split("·")[0]?.trim() || "사업 운영";
+    case "community":
+      return "커뮤니티";
+    case "market":
+      return item.headline
+        .replace(/ 시세가 (?:급등|폭락)했습니다$/, "")
+        .trim() || "카드 시세";
+    case "users":
+      return "활성 유저";
+    case "revenue":
+      return "일매출";
+    case "environment":
+      return "환경 건강";
+    case "trust":
+      return "구매 신뢰";
+    case "sentiment":
+      return "커뮤니티 여론";
+    case "meta":
+      return item.headline === "메타 1위가 바뀌었습니다"
+        ? "메타 1위"
+        : item.headline
+            .replace(/ 입상 성적이 (?:반등|급하강)했습니다$/, " 입상")
+            .trim() || "대회 환경";
+  }
+}
 
 export function DailyNewsView({ game }: { game: GameState }) {
   const [selectedDay, setSelectedDay] = useState(game.day);
@@ -62,12 +144,20 @@ export function DailyNewsView({ game }: { game: GameState }) {
       {news.length > 0 ? (
         <ol className="daily-news-list" data-tutorial-control="news-list">
           {news.map((item) => (
-            <li className={`news-item ${item.tone}`} key={item.id}>
-              <span className="news-item-day">DAY {item.day}</span>
-              <div>
-                <strong>{item.headline}</strong>
-                <p>{item.detail}</p>
-                <small className="news-item-reason">← {item.reason}</small>
+            <li
+              aria-label={`${getNewsLabel(item)} ${getNewsLead(item)}. ${item.reason} 세부: ${item.headline}, ${item.detail}`}
+              className={`news-item ${item.tone}`}
+              key={item.id}
+              title={`${item.headline} · ${item.detail}`}
+            >
+              <span aria-hidden="true" className="news-story-glyph">
+                {getNewsGlyph(item.kind)}
+              </span>
+              <div className="news-story-copy">
+                <strong className="news-story-summary">
+                  {getNewsLabel(item)} <em>{getNewsLead(item)}</em>
+                </strong>
+                <p>{item.reason}</p>
               </div>
             </li>
           ))}
@@ -101,10 +191,15 @@ export function ImpactMessageStack({
           key={item.id}
           style={{ "--impact-index": index } as CSSProperties}
         >
-          <span>DAY {item.day}</span>
-          <strong>{item.headline}</strong>
-          <p>{item.detail}</p>
-          <small className="impact-message-reason">← {item.reason}</small>
+          <span aria-hidden="true" className="impact-story-glyph">
+            {getNewsGlyph(item.kind)}
+          </span>
+          <div className="impact-story-copy">
+            <strong>
+              {getNewsLabel(item)} <em>{getNewsLead(item)}</em>
+            </strong>
+            <p>{item.reason}</p>
+          </div>
           <button
             aria-label={`${item.headline} 알림 닫기`}
             onClick={() => onDismiss(item.id)}

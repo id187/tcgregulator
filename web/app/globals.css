@@ -5973,7 +5973,7 @@ body {
 .current-banlist-reference-head,
 .current-banlist-reference-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 55px 45px;
+  grid-template-columns: minmax(0, 1fr) 55px 72px 45px;
   gap: 7px;
   align-items: center;
   padding: 8px 12px;
@@ -6010,7 +6010,8 @@ body {
 }
 
 .current-banlist-reference-row small,
-.current-banlist-reference-row > span:nth-child(2) {
+.current-banlist-reference-row > span:nth-child(2),
+.current-banlist-reference-row > span:nth-child(3) {
   color: var(--ink-500);
 }
 
@@ -6041,7 +6042,7 @@ body {
 
   .current-banlist-reference-head,
   .current-banlist-reference-row {
-    grid-template-columns: minmax(0, 1fr) 48px 40px;
+    grid-template-columns: minmax(0, 1fr) 48px 64px 40px;
   }
 }
 
@@ -11945,5 +11946,1428 @@ body {
 
   .time-major-action > span {
     display: none;
+  }
+}
+
+/* Visual-first UX pass ---------------------------------------------------
+   The simulation stays dense underneath, while the default surface reads as
+   situation -> problem -> action. Informative text is never miniaturized. */
+
+.tab-tutorial-popup {
+  width: min(720px, 100%);
+  height: auto;
+  max-height: calc(100dvh - 24px);
+  grid-template-rows: auto minmax(0, auto) auto;
+}
+
+.tab-tutorial-popup__body {
+  max-height: min(64dvh, 560px);
+}
+
+.tab-tutorial-popup__meta,
+.tab-tutorial-popup__page-status {
+  font-size: 11px;
+}
+
+.tab-tutorial-popup__terms {
+  counter-reset: tutorial-term;
+}
+
+.tab-tutorial-popup__terms > div {
+  position: relative;
+  min-height: 70px;
+  padding: 11px 12px 11px 48px;
+  counter-increment: tutorial-term;
+}
+
+.tab-tutorial-popup__terms > div::before {
+  content: counter(tutorial-term);
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: var(--blue);
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.tab-tutorial-popup__terms dt,
+.tab-tutorial-popup__terms dd {
+  font-size: 12px;
+}
+
+.signal-flow {
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.signal-node {
+  min-width: 0;
+  display: grid;
+  flex: 1 1 0;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-top: 3px solid #7f91a5;
+}
+
+.signal-node.positive {
+  background: #f2faf7;
+  border-top-color: var(--mint);
+}
+
+.signal-node.negative {
+  background: #fff5f4;
+  border-top-color: var(--red);
+}
+
+.signal-node.caution {
+  background: #fff9ed;
+  border-top-color: var(--amber);
+}
+
+.signal-node-index {
+  width: 28px;
+  height: 28px;
+  color: var(--blue);
+}
+
+.signal-node-glyph {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: var(--blue);
+  background: #fff;
+  border: 1px solid currentcolor;
+  border-radius: 50%;
+}
+
+.signal-node.positive .signal-node-glyph { color: var(--mint); }
+.signal-node.negative .signal-node-glyph { color: var(--red); }
+.signal-node.caution .signal-node-glyph { color: var(--amber); }
+
+.signal-node-index circle {
+  fill: #fff;
+  stroke: currentcolor;
+  stroke-width: 2;
+}
+
+.signal-node-index text {
+  fill: currentcolor;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.signal-node > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.signal-node span {
+  color: var(--ink-500);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.signal-node strong {
+  color: var(--ink-950);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.signal-connector {
+  width: 24px;
+  flex: 0 0 24px;
+  align-self: center;
+  color: #8ea0b3;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.tutorial-signal-flow {
+  margin-bottom: 16px;
+}
+
+.tutorial-signal-flow .signal-node {
+  min-height: 72px;
+}
+
+.news-signal-flow .signal-node {
+  padding: 6px 8px;
+  background: transparent;
+  border: 0;
+}
+
+.news-signal-flow .signal-node:not(:first-child) {
+  border-left: 1px solid var(--line);
+}
+
+.news-signal-flow .signal-node-index circle {
+  fill: transparent;
+}
+
+.workspace > .advisor-brief,
+.workspace > .advisor-brief.collapsed {
+  position: static;
+  width: 100%;
+  min-height: 62px;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-self: auto;
+  gap: 12px;
+  margin: 0 0 10px;
+  padding: 9px 10px 9px 12px;
+  border-radius: 6px;
+}
+
+.advisor-brief > .lotus-symbol {
+  width: 34px;
+  height: 34px;
+}
+
+.advisor-brief-copy {
+  max-height: none;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 12px;
+  overflow: visible;
+}
+
+.advisor-brief-copy > span {
+  font-size: 11px;
+}
+
+.advisor-brief-copy > p {
+  color: var(--ink-950);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.advisor-brief-copy > small {
+  font-size: 11px;
+}
+
+.advisor-brief > button {
+  min-width: 62px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 9px;
+  border-left: 1px solid var(--line);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.advisor-brief > button svg {
+  transition: transform 160ms ease;
+  transform: rotate(90deg);
+}
+
+.advisor-brief > button svg.is-open {
+  transform: rotate(-90deg);
+}
+
+.advisor-brief.collapsed .advisor-brief-copy {
+  display: block;
+}
+
+.advisor-brief.collapsed .advisor-brief-copy > p,
+.advisor-brief.collapsed .advisor-brief-copy > small {
+  display: none;
+}
+
+.advisor-brief.collapsed .advisor-brief-copy > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.news-item {
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 13px;
+}
+
+.news-item-day,
+.daily-news-summary > span,
+.news-day-controls button {
+  font-size: 11px;
+}
+
+.news-story-glyph,
+.impact-story-glyph {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  color: var(--blue);
+  border: 1px solid currentcolor;
+  border-radius: 50%;
+}
+
+.news-item.negative .news-story-glyph {
+  color: var(--red);
+}
+
+.news-item.positive .news-story-glyph {
+  color: var(--mint);
+}
+
+.news-story-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.news-story-summary {
+  color: var(--ink-950);
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.news-story-summary > em,
+.impact-story-copy > strong > em {
+  color: var(--blue);
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.news-item.negative .news-story-summary > em {
+  color: var(--red);
+}
+
+.news-item.positive .news-story-summary > em {
+  color: var(--mint);
+}
+
+.news-story-copy > p {
+  margin: 0;
+  color: var(--ink-600);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.workspace > .daily-news-page {
+  height: auto;
+  max-height: 100%;
+  flex: 0 1 auto;
+  overflow-y: auto;
+}
+
+.daily-news-page .daily-news-list {
+  overflow: visible;
+}
+
+.impact-message-stack {
+  width: min(440px, calc(100vw - 28px));
+}
+
+.impact-message {
+  min-height: 96px;
+  grid-template-columns: 32px minmax(0, 1fr) 28px;
+  grid-template-rows: auto;
+  gap: 7px 10px;
+  padding: 10px 10px 10px 12px;
+}
+
+.impact-story-glyph {
+  width: 30px;
+  height: 30px;
+  align-self: start;
+  margin-top: 2px;
+  color: #9dc9f1;
+  background: transparent;
+}
+
+.impact-message.negative .impact-story-glyph {
+  color: #ef9d98;
+}
+
+.impact-story-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.impact-story-copy > strong {
+  color: #fff;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.impact-story-copy > strong > em {
+  color: #9dc9f1;
+}
+
+.impact-message.negative .impact-story-copy > strong > em {
+  color: #ef9d98;
+}
+
+.impact-message.positive .impact-story-copy > strong > em {
+  color: #77d8b5;
+}
+
+.impact-story-copy > p {
+  margin: 1px 0 0;
+  color: #c7d9e9;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.impact-message > button {
+  grid-column: 3;
+  grid-row: 1 / -1;
+}
+
+.header-reference-buttons > button,
+.header-controls button,
+.header-settings > summary {
+  font-size: 11px;
+}
+
+.settings-options > button span,
+.settings-options > button strong,
+.play-settings > summary,
+.play-settings > summary small {
+  font-size: 11px;
+}
+
+.header-metric,
+.header-metric strong,
+.header-metric small {
+  white-space: nowrap;
+}
+
+.header-metric small {
+  font-size: 11px;
+}
+
+.distribution-legend-copy small,
+.distribution-ranking-copy small,
+.legend-theme small,
+.legend-share small,
+.distribution-summary span,
+.distribution-summary small,
+.distribution-footer > span,
+.overview-card > small,
+.daily-placement-list strong,
+.daily-placement-list b,
+.daily-placement-list span {
+  font-size: 11px;
+}
+
+.distribution-mode-switch button,
+.daily-placement-board > header > span,
+.daily-placement-board > header > button,
+.distribution-kpis span,
+.distribution-kpis small,
+.legend-rank {
+  font-size: 11px;
+}
+
+.distribution-legend-copy strong,
+.distribution-ranking-copy strong,
+.legend-theme strong,
+.overview-card > span {
+  font-size: 12px;
+}
+
+.overview-card > strong {
+  font-size: 18px;
+}
+
+.card-registry-table th,
+.card-registry-table td,
+.card-name-cell small,
+.card-market-quote small,
+.card-row-meta,
+.restriction-option,
+.support-direction-option,
+.card-keyword,
+.keyword-chip {
+  font-size: 11px !important;
+}
+
+.card-name-cell strong,
+.card-market-quote strong {
+  font-size: 13px;
+}
+
+.card-catalog-switch button,
+.panel-heading p,
+.data-stamp,
+.tier-label,
+.play-keyword-chip,
+.card-release-request-actions button,
+.theme-metrics.compact span,
+.parts-heading p,
+.readonly-chip,
+.official-limit small,
+.decision-footer p {
+  font-size: 11px;
+}
+
+.business-action-model,
+.business-action-facts dt,
+.business-action-return,
+.business-action-risk,
+.business-action-footer > small,
+.business-action-challenge dt,
+.operations-section-heading > span,
+.operations-section-tools > button {
+  font-size: 11px;
+}
+
+.business-action-facts dd,
+.business-action-effect,
+.business-action-return strong,
+.business-action-risk strong,
+.business-action-challenge dd {
+  font-size: 12px;
+}
+
+.business-action-facts > div {
+  gap: 3px;
+  padding: 8px;
+}
+
+.business-action-facts dt::before {
+  width: 18px;
+  display: inline-grid;
+  place-items: center;
+  margin-right: 4px;
+  color: var(--blue);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.business-action-facts > div:nth-child(1) dt::before { content: "₩"; }
+.business-action-facts > div:nth-child(2) dt::before { content: "◷"; }
+.business-action-facts > div:nth-child(3) dt::before { content: "↻"; }
+
+.business-action-footer > button {
+  min-height: 40px;
+  font-size: 12px;
+}
+
+.community-day-controls button,
+.community-day-controls strong,
+.community-page .daily-feed strong,
+.community-page .daily-feed p,
+.daily-feed-summary,
+.daily-feed-summary strong,
+.feed-category,
+.feed-likes,
+.feed-list time {
+  font-size: 11px;
+}
+
+.daily-feed-summary > span,
+.daily-feed-summary > small {
+  font-size: 11px;
+}
+
+.community-page .daily-feed {
+  grid-template-rows: none;
+  grid-auto-rows: minmax(58px, auto);
+  overflow-y: auto;
+}
+
+.community-page .daily-feed strong,
+.community-page .daily-feed p {
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.release-pack-copy > span,
+.release-history-count,
+.release-pack-copy li {
+  font-size: 11px;
+}
+
+.release-pack-brand {
+  font-size: 10px;
+}
+
+.release-pack-art small {
+  font-size: 11px;
+}
+
+.finance-chart-legend,
+.finance-chart-insight,
+.finance-chart-insight strong {
+  font-size: 11px;
+}
+
+.finance-day-change > span,
+.finance-chart-toolbar > div:first-child span,
+.finance-grid-line text,
+.finance-sentiment-neutral text,
+.cash-scale {
+  font-size: 11px;
+}
+
+.time-actions > .time-major-action,
+.time-actions > .time-major-action:not(.primary-action) {
+  min-width: 224px;
+  min-height: 44px;
+  grid-template-columns: 26px auto minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  padding: 6px 12px;
+}
+
+.time-major-icon {
+  width: 24px;
+  height: 24px;
+  grid-row: 1 / 3;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.time-major-action > span {
+  align-self: end;
+  font-size: 11px;
+}
+
+.time-major-action > strong {
+  align-self: end;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.time-major-action > small {
+  grid-column: 2 / 4;
+  align-self: start;
+  font-size: 11px;
+  font-weight: 800;
+  opacity: 0.78;
+}
+
+.progress-copy {
+  font-size: 11px;
+}
+
+.progress-copy strong {
+  font-size: 13px;
+}
+
+@media (max-width: 1200px) {
+  .header-metric > span,
+  .header-metric > small {
+    display: none;
+  }
+
+  .header-metric {
+    padding-inline: 10px;
+  }
+}
+
+@media (max-width: 900px) {
+  .workspace > .advisor-brief,
+  .workspace > .advisor-brief.collapsed {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+  }
+
+  .advisor-brief-copy {
+    display: block;
+  }
+
+  .advisor-brief-copy > span,
+  .advisor-brief-copy > p,
+  .advisor-brief-copy > small {
+    display: block;
+  }
+
+  .advisor-brief.collapsed .advisor-brief-copy > p,
+  .advisor-brief.collapsed .advisor-brief-copy > small {
+    display: none;
+  }
+
+  .business-action-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .time-actions > .time-major-action,
+  .time-actions > .time-major-action:not(.primary-action) {
+    min-width: 190px;
+  }
+}
+
+@media (max-width: 700px) {
+  .signal-flow {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .signal-connector {
+    width: 20px;
+    height: 14px;
+    margin-left: 14px;
+    transform: rotate(90deg);
+  }
+
+  .tutorial-signal-flow {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: stretch;
+  }
+
+  .tutorial-signal-flow .signal-node {
+    min-height: 76px;
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+  }
+
+  .tutorial-signal-flow .signal-connector {
+    display: none;
+  }
+
+  .news-item {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+}
+
+@media (max-width: 620px) {
+  .tab-tutorial-popup__terms {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace > .advisor-brief,
+  .workspace > .advisor-brief.collapsed {
+    grid-template-columns: 30px minmax(0, 1fr) 36px;
+    gap: 8px;
+    padding-inline: 8px;
+  }
+
+  .advisor-brief > button {
+    min-width: 36px;
+    padding: 0;
+  }
+
+  .advisor-brief > button span {
+    display: none;
+  }
+
+  .time-actions > .time-major-action,
+  .time-actions > .time-major-action:not(.primary-action) {
+    min-width: 142px;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    gap: 2px 5px;
+    padding-inline: 8px;
+  }
+
+  .time-major-icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  .time-major-action > span {
+    display: none;
+  }
+
+  .time-major-action > strong {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    align-self: center;
+    font-size: 12px;
+  }
+
+  .time-major-action > small {
+    grid-column: 3;
+    grid-row: 1 / 3;
+    align-self: center;
+    font-size: 11px;
+  }
+}
+
+/* Legibility floor -------------------------------------------------------
+   Information text stays readable at a glance. Decorative pack marks and
+   compact notification badges may remain one step smaller. */
+
+.header-reference-buttons > button,
+.header-controls button,
+.header-settings > summary,
+.settings-options > button span,
+.settings-options > button strong,
+.play-settings > summary,
+.play-settings > summary small,
+.advisor-brief-copy > span,
+.advisor-brief-copy > small,
+.advisor-brief > button,
+.daily-placement-board > header > span,
+.daily-placement-board > header > button,
+.daily-placement-list strong,
+.daily-placement-list b,
+.daily-placement-list span,
+.distribution-mode-switch button,
+.distribution-kpis span,
+.distribution-kpis small,
+.distribution-legend-copy small,
+.distribution-ranking-copy small,
+.legend-theme small,
+.legend-share small,
+.distribution-summary span,
+.distribution-summary small,
+.distribution-footer > span,
+.overview-card > span,
+.overview-card > small,
+.card-registry-table th,
+.card-registry-table td,
+.card-name-cell small,
+.card-market-quote small,
+.card-row-meta,
+.restriction-option,
+.support-direction-option,
+.card-keyword,
+.keyword-chip,
+.card-catalog-switch button,
+.panel-heading p,
+.data-stamp,
+.tier-label,
+.play-keyword-chip,
+.card-release-request-actions button,
+.theme-metrics.compact span,
+.parts-heading p,
+.readonly-chip,
+.official-limit small,
+.decision-footer p,
+.business-action-model,
+.business-action-facts dt,
+.business-action-return,
+.business-action-risk,
+.business-action-footer > small,
+.business-action-challenge dt,
+.operations-section-heading > span,
+.operations-section-tools > button,
+.community-day-controls button,
+.community-day-controls strong,
+.community-page .daily-feed strong,
+.community-page .daily-feed p,
+.daily-feed-summary,
+.daily-feed-summary strong,
+.daily-feed-summary > span,
+.daily-feed-summary > small,
+.feed-category,
+.feed-likes,
+.feed-list time,
+.daily-news-summary > span,
+.news-day-controls button,
+.release-pack-copy > span,
+.release-history-count,
+.release-pack-copy li,
+.release-pack-art small,
+.finance-chart-legend,
+.finance-chart-insight,
+.finance-chart-insight strong,
+.finance-day-change > span,
+.finance-chart-toolbar > div:first-child span,
+.finance-grid-line text,
+.finance-sentiment-neutral text,
+.cash-scale,
+.revenue-scale,
+.time-major-action > span,
+.time-major-action > small,
+.progress-copy {
+  font-size: 12px !important;
+}
+
+.legend-rank,
+.theme-row-copy > strong,
+.theme-identity p,
+.decision-footer strong,
+.release-pack-art > strong {
+  font-size: 12px !important;
+}
+
+.nav-count,
+.release-pack-brand,
+.header-reference-info-mark {
+  font-size: 11px;
+}
+
+/* The release review is a decision screen, not a dense spreadsheet. */
+.release-decision-panel {
+  gap: 12px;
+  padding: 16px;
+}
+
+.release-decision-panel > header span {
+  font-size: 11px;
+}
+
+.release-decision-panel > header h2 {
+  margin-block: 3px;
+  font-size: 20px;
+}
+
+.release-decision-panel > header p,
+.release-decision-panel > footer p {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.release-decision-panel > header > strong {
+  font-size: 24px;
+}
+
+.release-option-groups {
+  gap: 10px;
+}
+
+.release-option-group {
+  padding: 9px;
+}
+
+.release-option-group legend {
+  font-size: 12px;
+}
+
+.release-option-group > div {
+  gap: 6px;
+}
+
+.release-option-group button {
+  min-height: 72px;
+  gap: 4px;
+  padding: 9px 10px;
+}
+
+.release-option-group button > span,
+.release-option-group button > small {
+  overflow: visible;
+  font-size: 12px;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.release-option-group button > strong {
+  overflow: visible;
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.release-power-adjustments {
+  gap: 9px;
+  padding: 10px;
+}
+
+.release-power-adjustments > header strong {
+  font-size: 14px;
+}
+
+.release-power-adjustments > header span {
+  font-size: 12px;
+}
+
+.release-power-adjustment-row {
+  min-height: 52px;
+  gap: 10px;
+  padding: 7px 9px;
+}
+
+.release-power-adjustment-row > span small {
+  font-size: 12px;
+}
+
+.release-power-adjustment-row > span strong {
+  font-size: 13px;
+}
+
+.release-power-scale > button {
+  min-height: 36px;
+  font-size: 12px;
+}
+
+.release-decision-panel > footer .primary-action {
+  min-width: 130px;
+  min-height: 44px;
+  font-size: 13px;
+}
+
+/* Lift the time controls away from the operating-system edge. */
+.time-dock {
+  min-height: 76px;
+  padding-top: 8px;
+  padding-bottom: max(18px, env(safe-area-inset-bottom));
+}
+
+@media (min-width: 821px) and (min-height: 761px) {
+  .app-shell {
+    grid-template-rows: 60px 44px minmax(0, 1fr) 76px;
+  }
+}
+
+@media (min-width: 641px) and (max-height: 760px) {
+  .app-shell {
+    grid-template-rows: 52px 38px minmax(0, 1fr) 66px;
+  }
+}
+
+@media (max-width: 640px) and (max-height: 520px) {
+  .app-shell {
+    grid-template-rows:
+      60px 36px minmax(0, 1fr)
+      calc(64px + env(safe-area-inset-bottom));
+  }
+}
+
+/* LOTUS is a permanent one-line briefing, so it no longer spends space on a
+   collapse control or leaves an empty third grid column. */
+.workspace > .advisor-brief,
+.workspace > .advisor-brief.collapsed {
+  grid-template-columns: 38px minmax(0, 1fr);
+}
+
+@media (max-width: 620px) {
+  .workspace > .advisor-brief,
+  .workspace > .advisor-brief.collapsed {
+    grid-template-columns: 30px minmax(0, 1fr);
+  }
+}
+
+/* A release result should land as a short burst, not a lone memo. */
+.impact-message {
+  animation: impact-message-arrive 190ms cubic-bezier(0.2, 0.82, 0.2, 1) both;
+}
+
+.impact-message-stack {
+  width: min(520px, calc(100vw - 28px));
+}
+
+.impact-story-copy > p {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Keep both lines of the major time action optically centered. */
+.time-actions > .time-major-action,
+.time-actions > .time-major-action:not(.primary-action) {
+  grid-template-rows: auto auto;
+  align-content: center;
+  row-gap: 1px;
+}
+
+.time-major-action > span,
+.time-major-action > strong,
+.time-major-action > small {
+  line-height: 1.2;
+}
+
+.time-major-action > span,
+.time-major-action > strong {
+  align-self: end;
+}
+
+.time-major-action > small {
+  align-self: start;
+  margin-top: -1px;
+}
+
+/* Decision pages grow after the legibility pass; let the release page own a
+   real scrollbar instead of clipping the power controls and submit button. */
+.release-history-page:has(.release-decision-panel) {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.release-history-page:has(.release-decision-panel) .release-pack-list {
+  flex: none;
+  overflow: visible;
+}
+
+/* On short desktop windows, keep the cards workspace bounded and make the
+   selected detail pane scroll. Rows must never paint below its border. */
+@media (min-width: 641px) and (max-height: 760px) {
+  .meta-workspace.cards {
+    display: flex;
+    overflow: hidden;
+  }
+
+  .meta-workspace.cards > .meta-layout,
+  .meta-workspace.cards > .generic-card-catalog {
+    height: auto;
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+
+  .meta-workspace.cards .theme-detail,
+  .meta-workspace.cards .generic-card-catalog {
+    overflow-x: clip;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .meta-workspace.cards .parts-table-wrap {
+    overflow-y: visible;
+  }
+}
+
+/* Community posts are primary play feedback, not compact table rows. Enlarge
+   the whole hit target and its internal hierarchy so each reaction reads as
+   a card at a glance. This intentionally comes after the short-window rules. */
+.community-page .daily-feed {
+  grid-auto-rows: minmax(84px, auto);
+}
+
+.community-page .daily-feed > button,
+.community-page .daily-feed > button:last-child {
+  min-height: 84px;
+  grid-template-columns: 104px minmax(0, 1fr) max-content max-content;
+  gap: 14px;
+  padding: 12px 16px;
+  align-items: center;
+}
+
+.community-page .daily-feed > button > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.community-page .feed-category {
+  min-height: 50px;
+  display: grid;
+  place-items: center;
+  padding: 8px 10px;
+  font-size: 13px !important;
+  line-height: 1.35;
+}
+
+.community-page .daily-feed strong {
+  font-size: 14px !important;
+  line-height: 1.4;
+}
+
+.community-page .daily-feed p,
+.community-page .feed-list time,
+.community-page .feed-likes {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.community-page .feed-likes {
+  min-width: 72px;
+  justify-content: flex-end;
+}
+
+@media (max-width: 620px) {
+  .community-page .daily-feed > button,
+  .community-page .daily-feed > button:last-child {
+    min-height: 76px;
+    grid-template-columns: 84px minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .community-page .feed-category {
+    min-height: 42px;
+    padding-inline: 7px;
+  }
+
+  .community-page .feed-list time {
+    display: none;
+  }
+
+  .community-page .feed-likes {
+    min-width: 58px;
+  }
+}
+
+/* Reuse one reserved row beneath the theme header. The deck summary occupies
+   it normally; the info control swaps help copy into that exact row instead
+   of growing the hero and squeezing the summary into a narrow column. */
+.meta-workspace .cards-detail-hero .detail-title-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(420px, auto);
+  align-items: start;
+  gap: 8px 18px;
+}
+
+.meta-workspace .cards-detail-hero .theme-identity {
+  grid-column: 1;
+}
+
+.meta-workspace .cards-detail-hero .card-release-request-actions {
+  grid-column: 2;
+}
+
+.theme-detail-context {
+  min-width: 0;
+  min-height: 34px;
+  grid-column: 1 / -1;
+  position: relative;
+  padding-left: 94px;
+}
+
+.theme-detail-summary {
+  min-width: 0;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.theme-playstyle-line {
+  min-width: 0;
+  margin: 0;
+  flex: 1 1 auto;
+  color: #a9bdd0;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.theme-detail-context .play-keyword-list {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  margin-top: 0;
+}
+
+.theme-detail-context .card-release-request-help {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  align-items: center;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 7px 10px;
+}
+
+.release-option-name {
+  width: 100%;
+  display: grid;
+  gap: 1px;
+  font-size: 12px !important;
+  letter-spacing: -0.02em;
+}
+
+.release-option-name > span {
+  display: block;
+  overflow: visible;
+  overflow-wrap: normal;
+  text-overflow: clip;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
+.release-option-group button > .release-option-keywords {
+  display: block;
+  overflow: visible;
+  color: inherit;
+  font-size: 10px;
+  letter-spacing: -0.04em;
+  line-height: 1.35;
+  opacity: 0.72;
+  text-overflow: clip;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
+.release-option-group button {
+  padding-inline: 7px;
+}
+
+/* The chart column can be narrow even on desktop. Let its own width, rather
+   than the viewport width, decide when KPI cells need a roomier 2x2 grid. */
+.distribution-chart-card {
+  container-type: inline-size;
+}
+
+@container (max-width: 520px) {
+  .distribution-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .distribution-kpis > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .distribution-kpis > div:nth-child(n + 3) {
+    border-top: 1px solid var(--line);
+  }
+
+  .distribution-kpis span,
+  .distribution-kpis small,
+  .distribution-kpis strong {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: nowrap;
+  }
+}
+
+/* Business events are full decisions, so their explanatory copy must not use
+   notification-scale type. The wider dialog keeps both choices readable while
+   the existing inner scroller protects short windows. */
+.business-event-dialog {
+  width: min(1040px, calc(100% - 24px));
+}
+
+.business-event-heading span {
+  font-size: 11px;
+}
+
+.business-event-heading p {
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.business-event-choice {
+  gap: 10px;
+  padding: 15px;
+}
+
+.business-event-choice-title > span {
+  font-size: 11px;
+}
+
+.business-event-choice-title > strong {
+  font-size: 19px;
+  line-height: 1.35;
+}
+
+.business-event-choice-title > p {
+  min-height: 40px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.business-event-choice-facts dt {
+  font-size: 11px;
+}
+
+.business-event-choice-facts dd {
+  font-size: 13px;
+}
+
+.business-event-strategy-deltas span {
+  padding: 4px 7px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.business-event-outcomes {
+  gap: 5px;
+  padding: 10px;
+}
+
+.business-event-outcomes p {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.business-event-outcomes b {
+  min-width: 38px;
+}
+
+.business-event-choose {
+  min-height: 46px;
+  font-size: 14px;
+}
+
+.business-event-footnote {
+  font-size: 11px;
+}
+
+.business-event-footnote strong {
+  font-size: 12px;
+}
+
+@media (max-width: 820px) {
+  .business-event-dialog {
+    width: min(680px, calc(100% - 20px));
+  }
+}
+
+/* Pack records must size from their complete product list. A constrained grid
+   track previously let the card stay shorter than its enlarged list copy. */
+.release-pack-list {
+  grid-auto-rows: max-content;
+  align-content: start;
+  padding-bottom: 12px;
+  scroll-padding-bottom: 12px;
+}
+
+.release-pack-card {
+  height: max-content;
+  align-self: start;
+}
+
+@media (max-width: 820px) {
+  .meta-workspace .cards-detail-hero .detail-title-block {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .meta-workspace .cards-detail-hero .theme-identity,
+  .meta-workspace .cards-detail-hero .card-release-request-actions,
+  .theme-detail-context {
+    grid-column: 1;
+  }
+
+  .theme-detail-context {
+    min-height: 68px;
+    padding-left: 0;
+  }
+
+  .theme-detail-summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .theme-playstyle-line {
+    white-space: normal;
+  }
+
+  .theme-detail-context .play-keyword-list {
+    flex-wrap: wrap;
+  }
+
+  .theme-detail-context .card-release-request-help {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@keyframes impact-message-arrive {
+  from {
+    opacity: 0;
+    transform: translateX(38px) scale(0.96);
+  }
+  68% {
+    opacity: 1;
+    transform: translateX(-4px) scale(1.012);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
   }
 }

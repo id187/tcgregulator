@@ -156,8 +156,8 @@ function competitiveChainDrafts(state: GameState, day: number): NewsDraft[] {
       kind: "meta",
       tone: delta >= 0 ? "positive" : "negative",
       headline: delta >= 0
-        ? `${THEME_BY_ID[themeId]?.shortName ?? "대상 테마"} 탑컷이 반등했습니다`
-        : `${THEME_BY_ID[themeId]?.shortName ?? "대상 테마"} 탑컷이 급하강했습니다`,
+        ? `${THEME_BY_ID[themeId]?.shortName ?? "대상 테마"} 입상 성적이 반등했습니다`
+        : `${THEME_BY_ID[themeId]?.shortName ?? "대상 테마"} 입상 성적이 급하강했습니다`,
       reason: `DAY ${cause.day} ‘${cause.body}’ 공표 뒤 대회 결과가 움직였습니다.`,
       detail: `${(before * 100).toFixed(1)}% → ${(after * 100).toFixed(1)}% · ${formatSigned(delta * 100)}%p`,
       priority: 80,
@@ -188,7 +188,7 @@ function competitiveChainDrafts(state: GameState, day: number): NewsDraft[] {
         ? `${part.name} 시세가 급등했습니다`
         : `${part.name} 시세가 폭락했습니다`,
       reason: topCutNewsIdByTheme.has(cause.themeId)
-        ? "탑컷 변화가 카드 수요와 중고 시장에 곧바로 번졌습니다."
+        ? "입상 성적 변화가 카드 수요와 중고 시장에 곧바로 번졌습니다."
         : `DAY ${cause.day} 금제 변경이 카드 수요에 반영됐습니다.`,
       detail: `₩${quote.previousPrice.toLocaleString("ko-KR")} → ₩${quote.price.toLocaleString("ko-KR")} · ${formatSigned(quote.changeRate)}%`,
       priority: 74,

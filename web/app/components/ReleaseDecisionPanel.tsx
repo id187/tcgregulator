@@ -200,7 +200,7 @@ export function ReleaseDecisionPanel({
             <strong>{fixedSelections ? "결정된 파워" : "파워 조정"}</strong>
             <span>
               {fixedSelections
-                ? "첫 인수인계에 적용될 값을 확인합니다."
+                ? "첫 발매에 적용될 값을 확인합니다."
                 : "-3은 약하게 · 0은 기본 · +3은 강하게"}
             </span>
           </header>

@@ -3148,6 +3148,9 @@ export function parseGameState(value: unknown): GameState {
       `must remain zero before DAY ${OPERATING_COST_START_DAY}`,
     );
   }
+  // A current-schema save created before DAY-1 charging was introduced may
+  // legitimately retain zero here. Do not synthesize missed costs on load;
+  // the engine begins charging on the next day it settles.
   if (
     todayOperatingCost !== 0 &&
     Math.abs(todayOperatingCost - expectedTodayOperatingCost) > 0.0001

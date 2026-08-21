@@ -3388,7 +3388,9 @@ function assertState(state: GameState): void {
     (state.finance.todayOperatingCost !== 0 ||
       state.finance.cumulativeOperatingCosts !== 0)
   ) {
-    throw new Error("Operating costs cannot be charged before the handover.");
+    throw new Error(
+      `Operating costs cannot be charged before DAY ${OPERATING_COST_START_DAY}.`,
+    );
   }
   if (
     state.finance.todayOperatingCost !== 0 &&

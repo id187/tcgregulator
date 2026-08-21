@@ -203,7 +203,7 @@ test("keeps restriction, next-day top-cut shock, and price shock as rapid separa
     (item) => item.day === FIRST_BAN_DAY && item.kind === "restriction",
   );
   const topCut = impact.find(
-    (item) => item.day === impactDay && /탑컷이 급하강/.test(item.headline),
+    (item) => item.day === impactDay && /입상 성적이 급하강/.test(item.headline),
   );
   const price = impact.find(
     (item) => item.day === impactDay && /시세가 폭락/.test(item.headline),

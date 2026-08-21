@@ -12,12 +12,11 @@ import {
   TrendIcon,
   UsersIcon,
 } from "./components/MetricGlyphs";
-import { GuidedTutorialBar } from "./components/GuidedTutorialBar";
 import { HeaderReferenceTools } from "./components/HeaderReferenceTools";
 import { LotusSymbol } from "./components/LotusSymbol";
+import { TabTutorialPopup } from "./components/TabTutorialPopup";
 import {
   CardMarketQuote,
-  formatCardMarketPrice,
 } from "./components/CardMarketQuote";
 import { DailyNewsView, ImpactMessageStack } from "./components/NewsViews";
 import { ReleasePackCard } from "./components/ReleasePackCard";
@@ -31,19 +30,15 @@ import {
   THEMES,
 } from "./game/content";
 import {
-  BAN_INTERVAL,
   CAMPAIGN_END_DAY,
   FIRST_BAN_DAY,
   LAST_BAN_DAY,
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
-  PLAYER_CONTROL_DAYS,
-  PLAYER_START_DAY,
   PROLOGUE_SEED,
   RELEASE_INTERVAL,
   SETTLEMENT_START_DAY,
   SETTLEMENT_DAYS,
-  TUTORIAL_END_DAY,
 } from "./game/campaign";
 import {
   CAMPAIGN_ENVIRONMENT_STABLE_MIN,
@@ -60,7 +55,6 @@ import {
   getRevenueChangeSignal,
   getMonthlyOperatingCost,
   getOperatingRunwayMonths,
-  OPERATING_COST_START_DAY,
   RELEASE_SALES_WINDOW_DAYS,
 } from "./game/finance";
 import {
@@ -73,9 +67,7 @@ import { getDailyCommunitySentiment } from "./game/community-sentiment";
 import { rankCommunityPostsByLikes } from "./game/community-engagement";
 import {
   getGenericCardMarketQuote,
-  getNextDayRestrictionMarketImpact,
   getThemeCardMarketQuote,
-  getThemeCardMarketMovers,
 } from "./game/card-market";
 import { getImpactNewsRange, type DailyNewsItem } from "./game/daily-news";
 import {
@@ -89,16 +81,20 @@ import {
 } from "./game/release-requests";
 import { getChartEnvironmentHealth } from "./game/environment-health";
 import {
-  DEFAULT_TUTORIAL_GUIDANCE_ENABLED,
-  GUIDED_OBJECTIVE_COUNT,
-  getGuidedAdvanceDays,
-  getGuidedObjective,
-  getGuidedStep,
-  getTutorialGuidanceEnabledAfterEvent,
-  isGuidedAdvanceDaysAllowed,
-  shouldShowGuidedPrompt,
-  type GuidedStep,
-} from "./game/guided-tutorial";
+  CONTEXTUAL_TUTORIAL_TOPIC_IDS,
+  TAB_TUTORIAL_TAB_IDS,
+  createContextualTutorialVisitState,
+  createTabTutorialVisitState,
+  getPendingTutorialPopups,
+  isTabTutorialSeriesComplete,
+  markContextualTutorialVisited,
+  markTabTutorialVisited,
+  type ContextualTutorialTopicId,
+  type ContextualTutorialVisitState,
+  type PendingTutorialPopup,
+  type TabTutorialTabId,
+  type TabTutorialVisitState,
+} from "./game/tab-tutorial";
 import { isInitialGenericReleaseBatch } from "./game/initial-generic-cards";
 import {
   getPlayKeyword,
@@ -157,6 +153,8 @@ import {
   getNextBanDay,
   getNextReleaseDay,
   getProspectiveSupportKeyword,
+  getPrologueReleaseCommand,
+  getPrologueReleasePlan,
   isHandoverReady,
   isBanDay,
   reduceGame,
@@ -190,14 +188,7 @@ import type {
   ThemeRuntime,
 } from "./game/types";
 
-type TabId =
-  | "distribution"
-  | "cards"
-  | "releases"
-  | "operations"
-  | "community"
-  | "news"
-  | "finance";
+type TabId = TabTutorialTabId;
 
 const NAV_ITEMS: { id: TabId; label: string }[] = [
   { id: "distribution", label: "분포" },
@@ -220,6 +211,8 @@ type InterfaceSettings = {
 };
 
 const INTERFACE_SETTINGS_KEY = "tcg-regulator-interface-settings-v1";
+const TAB_TUTORIAL_PROGRESS_KEY = "tcg-regulator-tab-tutorial-v1";
+const DEFAULT_TUTORIAL_GUIDANCE_ENABLED = true;
 const DEFAULT_INTERFACE_SETTINGS: InterfaceSettings = {
   soundEnabled: true,
   impactEffectsEnabled: true,
@@ -391,6 +384,99 @@ function useInterfaceSettings() {
   return { settings, updateSetting };
 }
 
+type TabTutorialProgress = {
+  tabVisits: TabTutorialVisitState;
+  contextualVisits: ContextualTutorialVisitState;
+};
+
+function createEmptyTabTutorialProgress(): TabTutorialProgress {
+  return {
+    tabVisits: createTabTutorialVisitState(),
+    contextualVisits: createContextualTutorialVisitState(),
+  };
+}
+
+function loadTabTutorialProgress(): TabTutorialProgress {
+  if (typeof window === "undefined") return createEmptyTabTutorialProgress();
+  try {
+    const stored = window.localStorage.getItem(TAB_TUTORIAL_PROGRESS_KEY);
+    if (!stored) return createEmptyTabTutorialProgress();
+    const parsed = JSON.parse(stored) as {
+      version?: unknown;
+      visitedTabs?: unknown;
+      completedTopics?: unknown;
+    };
+    if (parsed.version !== 1) return createEmptyTabTutorialProgress();
+    const visitedTabs = Array.isArray(parsed.visitedTabs)
+      ? parsed.visitedTabs.filter(
+          (value): value is TabTutorialTabId =>
+            typeof value === "string" &&
+            TAB_TUTORIAL_TAB_IDS.includes(value as TabTutorialTabId),
+        )
+      : [];
+    const completedTopics = Array.isArray(parsed.completedTopics)
+      ? parsed.completedTopics.filter(
+          (value): value is ContextualTutorialTopicId =>
+            typeof value === "string" &&
+            CONTEXTUAL_TUTORIAL_TOPIC_IDS.includes(
+              value as ContextualTutorialTopicId,
+            ),
+        )
+      : [];
+    return {
+      tabVisits: createTabTutorialVisitState(visitedTabs),
+      contextualVisits: createContextualTutorialVisitState(completedTopics),
+    };
+  } catch {
+    return createEmptyTabTutorialProgress();
+  }
+}
+
+function useTabTutorialProgress() {
+  const [progress, setProgress] = useState<TabTutorialProgress>(
+    loadTabTutorialProgress,
+  );
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        TAB_TUTORIAL_PROGRESS_KEY,
+        JSON.stringify({
+          version: 1,
+          visitedTabs: TAB_TUTORIAL_TAB_IDS.filter(
+            (tab) => progress.tabVisits[tab],
+          ),
+          completedTopics: CONTEXTUAL_TUTORIAL_TOPIC_IDS.filter(
+            (topic) => progress.contextualVisits[topic],
+          ),
+        }),
+      );
+    } catch {
+      // First-visit help can safely restart if optional UI storage is blocked.
+    }
+  }, [progress]);
+
+  const reset = () => setProgress(createEmptyTabTutorialProgress());
+  const complete = (popup: PendingTutorialPopup) => {
+    setProgress((current) =>
+      popup.kind === "tab"
+        ? {
+            ...current,
+            tabVisits: markTabTutorialVisited(current.tabVisits, popup.id),
+          }
+        : {
+            ...current,
+            contextualVisits: markContextualTutorialVisited(
+              current.contextualVisits,
+              popup.id,
+            ),
+          },
+    );
+  };
+
+  return { complete, progress, reset };
+}
+
 function SettingsOptions({
   settings,
   updateSetting,
@@ -451,18 +537,13 @@ function SettingsOptions({
         onClick={() =>
           updateSetting(
             "tutorialGuidanceEnabled",
-            getTutorialGuidanceEnabledAfterEvent(
-              settings.tutorialGuidanceEnabled,
-              settings.tutorialGuidanceEnabled
-                ? "settings-disable"
-                : "settings-enable",
-            ),
+            !settings.tutorialGuidanceEnabled,
           )
         }
-        title="ON으로 설정한 뒤 새 임기를 시작하면 튜토리얼을 다시 진행합니다."
+        title="각 화면을 처음 열 때 설명 팝업을 표시합니다."
         type="button"
       >
-        <span>튜토리얼</span>
+        <span>첫 방문 도움말</span>
         <strong>{settings.tutorialGuidanceEnabled ? "ON" : "OFF"}</strong>
       </button>
     </div>
@@ -470,8 +551,8 @@ function SettingsOptions({
 }
 
 const ROLE_LABELS: Record<PartRole, string> = {
-  starter1: "초동 1",
-  starter2: "초동 2",
+  starter1: "초동",
+  starter2: "초동",
   bridge: "중간다리",
   finisher: "최종 결과물",
   recursion: "자원 회수",
@@ -960,8 +1041,8 @@ function getAdvisorBrief(
   const tabBriefs: Record<TabId, AdvisorBrief> = {
     distribution: {
       tone: "info",
-      kicker: "탑컷 해석",
-      message: "탑컷 점유율은 최근 14일 본선 자리의 비중입니다. 채용률·승률과 함께 보십시오.",
+      kicker: "입상 지표 해석",
+      message: "입상 점유율은 최근 14일 주요 대회의 전체 입상 자리 중 해당 테마가 차지한 비중입니다. 채용률·승률과 함께 보십시오.",
     },
     cards: {
       tone: "info",
@@ -994,7 +1075,7 @@ function getAdvisorBrief(
       tone: "info",
       kicker: "재무 해석",
       message: "발매일의 급등과 장기 잔존은 분리해서 보아야 합니다.",
-      submessage: "DAY 47부터 기본 조직비와 활성 유저 규모 비용이 매일 일할 정산됩니다.",
+      submessage: "기본 조직비와 활성 유저 규모 비용이 매일 일할 정산됩니다.",
     },
   };
   const activeTabBrief = tabBriefs[activeTab];
@@ -1192,17 +1273,21 @@ function getPartReleaseLabel(
   return release ? `DAY ${release.day}` : "출시 기록 없음";
 }
 
+function withKoreanObjectParticle(value: string) {
+  const lastCodePoint = value.codePointAt(value.length - 1) ?? 0;
+  const hasFinalConsonant =
+    lastCodePoint >= 0xac00 &&
+    lastCodePoint <= 0xd7a3 &&
+    (lastCodePoint - 0xac00) % 28 !== 0;
+  return `${value}${hasFinalConsonant ? "을" : "를"}`;
+}
+
 type BootState =
   | { status: "loading" }
   | {
       status: "title";
       backend: PersistenceBackend;
       savedGame: GameState | null;
-    }
-  | {
-      status: "prologue";
-      backend: PersistenceBackend;
-      initialGame: GameState;
     }
   | {
       status: "playing";
@@ -1216,6 +1301,26 @@ export default function Home() {
   const [confirmNewGame, setConfirmNewGame] = useState(false);
   const [titleMessage, setTitleMessage] = useState<string | null>(null);
   const { settings, updateSetting } = useInterfaceSettings();
+  const tabTutorial = useTabTutorialProgress();
+
+  function completeTutorialPopup(popup: PendingTutorialPopup) {
+    const nextTabVisits =
+      popup.kind === "tab"
+        ? markTabTutorialVisited(tabTutorial.progress.tabVisits, popup.id)
+        : tabTutorial.progress.tabVisits;
+    const nextContextualVisits =
+      popup.kind === "contextual"
+        ? markContextualTutorialVisited(
+            tabTutorial.progress.contextualVisits,
+            popup.id,
+          )
+        : tabTutorial.progress.contextualVisits;
+
+    tabTutorial.complete(popup);
+    if (isTabTutorialSeriesComplete(nextTabVisits, nextContextualVisits)) {
+      updateSetting("tutorialGuidanceEnabled", false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -1262,9 +1367,10 @@ export default function Home() {
         throw new Error(boot.backend.message);
       }
       await savePersistedGame(boot.backend, next);
+      tabTutorial.reset();
       setTitleMessage(null);
       setBoot({
-        status: settings.tutorialGuidanceEnabled ? "prologue" : "playing",
+        status: "playing",
         backend: boot.backend,
         initialGame: next,
       });
@@ -1277,17 +1383,6 @@ export default function Home() {
 
   function continueGame() {
     if (boot.status !== "title" || !boot.savedGame) return;
-    if (
-      !boot.savedGame.handoverComplete &&
-      settings.tutorialGuidanceEnabled
-    ) {
-      setBoot({
-        status: "prologue",
-        backend: boot.backend,
-        initialGame: boot.savedGame,
-      });
-      return;
-    }
     setBoot({
       status: "playing",
       backend: boot.backend,
@@ -1296,45 +1391,13 @@ export default function Home() {
     });
   }
 
-  if (boot.status === "prologue") {
-    return (
-      <GameSession
-        interfaceSettings={settings}
-        guided
-        initialGame={boot.initialGame}
-        initialPersistence={boot.backend}
-        onExit={(savedGame, backend) => {
-          setBoot({
-            status: "title",
-            backend,
-            savedGame,
-          });
-          setTitleMessage(
-            backend.kind === "unavailable" ? backend.message : null,
-          );
-        }}
-        onTutorialComplete={(game, backend) => {
-          setBoot({
-            status: "playing",
-            backend,
-            initialGame: game,
-          });
-          setTitleMessage(null);
-        }}
-        updateInterfaceSetting={updateSetting}
-      />
-    );
-  }
-
   if (boot.status !== "playing") {
     const savedGame = boot.status === "title" ? boot.savedGame : null;
     const ready = boot.status === "title";
     const savedGameSummary = !ready
       ? "저장 확인 중"
       : savedGame
-        ? !savedGame.handoverComplete && settings.tutorialGuidanceEnabled
-          ? `DAY ${savedGame.day} · 인수인계 진행 중`
-          : savedGame.phase === "ended"
+        ? savedGame.phase === "ended"
             ? `DAY ${savedGame.day} · 임기 결과 보기`
             : savedGame.phase === "running" &&
                 savedGame.day >= SETTLEMENT_START_DAY
@@ -1377,342 +1440,46 @@ export default function Home() {
           backend.kind === "unavailable" ? backend.message : null,
         );
       }}
+      onTutorialPopupComplete={completeTutorialPopup}
+      tabTutorialProgress={tabTutorial.progress}
       updateInterfaceSetting={updateSetting}
     />
   );
 }
 
-type GuidedRestrictionTarget =
-  | { kind: "limit"; partId: string; limit: RestrictionLimit }
-  | { kind: "submit" };
-
-function getGuidedRestrictionTarget(): GuidedRestrictionTarget | null {
-  // The first restriction review is intentionally unguided. Keep the nullable
-  // target shape for the shared restriction workspace without letting a
-  // constant `null` narrow its TypeScript branches to `never`.
-  return null;
-}
-
-function getGuidedRestrictionThemeId(game: GameState): ThemeId {
-  if (game.activeThemeIds.includes(game.currentTopThemeId)) {
-    return game.currentTopThemeId;
-  }
-  return [...game.activeThemeIds].sort(
-    (left, right) => game.themes[right].share - game.themes[left].share,
-  )[0] ?? "cycle";
-}
-
-type GuidedBrief = {
-  kicker: string;
-  title: string;
-  message: string;
-  help?: string;
-  objective: number;
-  objectiveCount: number;
-  continueLabel?: string;
-  controlIds?: readonly string[];
-  informational?: boolean;
-  freeInteraction?: boolean;
-};
-
-function getGuidedAdvanceTab(step: GuidedStep, day: number): TabId | null {
-  if (step === "observe") return day >= 8 ? "cards" : "distribution";
-  if (step === "restriction") return "cards";
-  if (step === "restriction-reaction") {
-    return day === 16 ? "cards" : null;
-  }
-  if (step === "business") return "operations";
-  if (step === "release-runup") return day === 23 ? "finance" : null;
-  if (step === "release") return "releases";
-  if (step === "release-reaction") return "releases";
-  if (step === "handover") return "community";
-  return null;
-}
-
-function getGuidedInitialTab(game: GameState): TabId {
-  if (game.day >= TUTORIAL_END_DAY) return "community";
-  if (game.phase === "release-edit") return "releases";
-  if (game.phase === "ban-edit" || game.day <= 21 && game.day >= 15) {
-    return "cards";
-  }
-  if (game.day >= 30) return "releases";
-  if (game.day === 22) {
-    return game.operations.records.some(
-      (record) => record.type === "tv-cm" && record.startedDay === 22,
-    )
-      ? "finance"
-      : "operations";
-  }
-  if (game.day > 22) return "finance";
-  return game.day >= 8 ? "cards" : "distribution";
-}
-
-function withKoreanObjectParticle(value: string) {
-  const lastCodePoint = value.codePointAt(value.length - 1) ?? 0;
-  const hasFinalConsonant =
-    lastCodePoint >= 0xac00 &&
-    lastCodePoint <= 0xd7a3 &&
-    (lastCodePoint - 0xac00) % 28 !== 0;
-  return `${value}${hasFinalConsonant ? "을" : "를"}`;
-}
-
-function getGuidedMarketAlert(game: GameState) {
-  const mover = getThemeCardMarketMovers(game, 0)[0];
-  if (!mover) return null;
-  const direction = mover.changeRate >= 0 ? "급등" : "급락";
-  return {
-    cardId: mover.cardId,
-    cardName: mover.cardName,
-    changeRate: Math.abs(mover.changeRate).toFixed(1),
-    direction,
-    price: mover.price,
-    themeId: mover.themeId,
-    drivers: mover.drivers.slice(0, 2),
-  };
-}
-
-function getGuidedBrief(
-  step: GuidedStep,
-  game: GameState,
-  restrictionPolicy: RestrictionPolicyProfile,
-): GuidedBrief {
-  const objective = getGuidedObjective(step, game.day);
-  const objectiveCount = GUIDED_OBJECTIVE_COUNT;
-
-  if (step === "observe") {
-    const firstWeek = game.day < 8;
-    const marketAlert = firstWeek ? null : getGuidedMarketAlert(game);
-    return {
-      kicker: "LOTUS · OBSERVE",
-      title: firstWeek
-        ? "TCG를 운영하고, 시간을 진행합니다"
-        : marketAlert
-          ? `${marketAlert.cardName} 시세 ${marketAlert.direction}`
-          : "첫 시장 변동이 감지됐습니다",
-      message: firstWeek
-        ? "원하는 화면을 둘러보고 +1일 또는 +7일로 진행하세요. 중요한 사건이 생기면 자동으로 멈춥니다."
-        : marketAlert
-          ? `DAY 8 시장 경보: ${marketAlert.cardName} 시세가 7일 전보다 ${marketAlert.changeRate}% ${marketAlert.direction}해 ${formatCardMarketPrice(marketAlert.price)}이 됐습니다. 카드를 확인하거나 바로 진행해도 됩니다.`
-          : "DAY 8 시장 경보가 도착했습니다. 카드 화면을 확인하거나 바로 다음 사건까지 진행해도 됩니다.",
-      help: firstWeek
-        ? "튜토리얼을 끝내거나 안내를 생략하면 다음 임기부터 자동으로 OFF됩니다. 설정에서 튜토리얼을 다시 ON한 뒤 새 임기를 시작하면 언제든 재실행할 수 있습니다."
-        : marketAlert
-          ? `${marketAlert.drivers.join(" · ")} 같은 수요 변화가 시세에 반영됩니다. 시세는 정답 지표가 아니라 환경 반응을 읽는 단서입니다.`
-          : "채용률과 입상 변화는 카드 수요와 시세에 이어집니다. 자세한 용어는 필요할 때 키워드 도감에서 확인할 수 있습니다.",
-      objective,
-      objectiveCount,
-      controlIds: marketAlert
-        ? [`card-market-${marketAlert.cardId}`]
-        : undefined,
-      freeInteraction: true,
-    };
-  }
-
-  if (step === "restriction-reaction") {
-    const impact = game.day === 16
-      ? getNextDayRestrictionMarketImpact(game)
-      : null;
-    if (game.day === 15) {
-      return {
-        kicker: "LOTUS · DECISION PUBLISHED",
-        title: "첫 금제안이 공표됐습니다",
-        message: "+1일 또는 +7일을 누르면 DAY 16의 카드 시세 반응에서 멈춥니다.",
-        help: "제재를 바꿨다면 대상 카드의 매도 반응을, 변경 없음이라면 위험군 카드의 안도 매수를 확인하게 됩니다.",
-        objective,
-        objectiveCount,
-        freeInteraction: true,
-      };
-    }
-    if (game.day === 16) {
-      const impactRate = impact ? Math.abs(impact.changeRate).toFixed(1) : null;
-      const impactDirection = impact?.kind === "restriction-drop"
-        ? "하락"
-        : "상승";
-      return {
-        kicker: "LOTUS · RESTRICTION IMPACT",
-        title: impact
-          ? `${impact.cardName} 시세 ${impactDirection}`
-          : "금제 다음 날의 시세를 확인합니다",
-        message: impact
-          ? impact.kind === "restriction-drop"
-            ? `어제 제재한 ${impact.cardName} 시세가 ${impactRate}% 하락해 ${formatCardMarketPrice(impact.price)}이 됐습니다. 강조된 카드에서 실제 반응을 확인하거나 바로 진행하세요.`
-            : `위험군이던 ${impact.cardName}의 시세가 금제를 피한 뒤 ${impactRate}% 상승해 ${formatCardMarketPrice(impact.price)}이 됐습니다. 강조된 카드에서 실제 반응을 확인하거나 바로 진행하세요.`
-          : "카드 화면에서 전날 금제 결정 이후의 시세와 채용 변화를 확인하거나 바로 진행하세요.",
-        help: impact
-          ? `${impact.reactionLabel}는 결정의 단기 시장 반응입니다. 제재 방향과 시세 방향이 어떻게 연결됐는지 확인하세요.`
-          : "시세는 결정의 영향을 읽는 단서 중 하나입니다. 분포·입상·커뮤니티와 함께 볼 때 의미가 생깁니다.",
-        objective,
-        objectiveCount,
-        controlIds: impact ? [`card-market-${impact.cardId}`] : undefined,
-        freeInteraction: true,
-      };
-    }
-    return {
-      kicker: "LOTUS · NEXT EVENT",
-      title: "첫 사업 액션까지 자유롭게 관찰합니다",
-      message: "+1일 또는 +7일로 진행하면 DAY 22의 사업 운영 안내에서 멈춥니다.",
-      help: "이 구간에는 필수 읽기가 없습니다. 원하는 화면만 둘러보거나 바로 넘겨도 됩니다.",
-      objective,
-      objectiveCount,
-      freeInteraction: true,
-    };
-  }
-
-  if (step === "business") {
-    return {
-      kicker: "LOTUS · FIRST ACTION",
-      title: "사업 액션 하나를 집행합니다",
-      message: "TV CM의 비용과 성공 확률만 확인하고 집행하세요. 결과는 다음 날부터 반영됩니다.",
-      help: "다른 사업 액션은 자유 운영에서 필요해질 때 각 카드의 비용·기간·위험을 확인하면 됩니다.",
-      objective,
-      objectiveCount,
-      controlIds: ["business-actions"],
-      freeInteraction: true,
-    };
-  }
-
-  if (step === "release-runup") {
-    const tvCm = game.operations.records.find(
-      (record) => record.type === "tv-cm" && record.startedDay === 22,
-    );
-    const resultLabel = tvCm?.outcome === "success"
-      ? "성공"
-      : tvCm?.outcome === "backlash"
-        ? "성과 미달"
-        : "결과";
-    const resultDay = game.day === 23;
-    return {
-      kicker: "LOTUS · NEXT DECISION",
-      title: game.day === 22
-        ? "TV CM 결과는 다음 날 공개됩니다"
-        : resultDay
-          ? `TV CM ${resultLabel} 결과가 재무에 반영됐습니다`
-          : "첫 정기 발매까지 자유롭게 진행합니다",
-      message: game.day === 22
-        ? "+1일 또는 +7일을 누르면 DAY 23의 사업 결과에서 멈춥니다."
-        : resultDay
-          ? `오늘 매출은 ₩${formatRevenue(game.finance.today)}, 현재 운영자금은 ₩${formatRevenue(game.finance.cash)}입니다. 재무 화면에서 결과를 확인하거나 바로 진행하세요.`
-          : "+1일 또는 +7일로 진행하면 DAY 30의 첫 발매 검토에서 멈춥니다.",
-      help: resultDay
-        ? "매출은 오늘 들어온 돈, 운영자금은 실제로 쓸 수 있는 잔액입니다. 둘의 움직임으로 사업 액션의 효과를 확인할 수 있습니다."
-        : "이 구간에는 필수 읽기가 없습니다. 재무·커뮤니티·카드 화면을 원하는 만큼 둘러볼 수 있습니다.",
-      objective,
-      objectiveCount,
-      controlIds: resultDay ? ["finance-chart"] : undefined,
-      freeInteraction: true,
-    };
-  }
-
-  if (step === "release") {
-    return {
-      kicker: "LOTUS · FIRST RELEASE",
-      title: "첫 카드팩을 직접 구성합니다",
-      message: "신테마·지원·범용을 각각 1종 이상 포함해 4종을 고르고, 파워를 조정한 뒤 발매를 확정하세요.",
-      help: "강한 발매는 초기 매출을 키우지만 환경 집중과 피로를 높일 수 있습니다. 네 번째 자리는 원하는 종류를 한 장 더 선택할 수 있습니다.",
-      objective,
-      objectiveCount,
-      controlIds: ["release-review"],
-    };
-  }
-
-  if (step === "release-reaction") {
-    return {
-      kicker: "LOTUS · AFTERMATH",
-      title: "발매 반응은 다음 날 시작됩니다",
-      message: "+1일 또는 +7일을 누르면 DAY 31의 첫 반응에서 멈춥니다.",
-      help: "다음 날 커뮤니티와 초기 수요 반응을 한 번 확인하면 인수인계가 끝납니다.",
-      objective,
-      objectiveCount,
-      freeInteraction: true,
-    };
-  }
-
-  if (step === "restriction") {
-    return {
-      kicker: "LOTUS · FIRST MANDATE",
-      title: "첫 금제안을 직접 결정합니다",
-      message:
-        restrictionPolicy.changeCount > 0
-          ? "채용률·승률·카드 역할을 참고해 허용 매수를 정하고 제출하세요. 정답은 하나가 아닙니다."
-          : "현 환경을 유지해도 되고 직접 제한을 정해도 됩니다. 결정했으면 제출하세요.",
-      help: "금지·제한·준제한은 허용 매수 0·1·2장을 뜻합니다. 강한 제재는 환경을 빨리 바꾸지만 시세와 구매 신뢰 충격도 커집니다.",
-      objective,
-      objectiveCount,
-      controlIds: ["restriction-actions"],
-      freeInteraction: true,
-    };
-  }
-
-  const releaseReaction = getReleaseReactionProfile(game, game.day);
-  return {
-    kicker: "LOTUS · HANDOVER COMPLETE",
-    title: releaseReaction.headline || "첫 발매 반응이 도착했습니다",
-    message: "DAY 31 커뮤니티에서 첫 발매의 즉각적인 반응을 확인했습니다. 이제 필수 인수인계가 끝났고 원하는 방식으로 운영할 수 있습니다.",
-    help: `다음 정기 발매는 DAY ${RELEASE_INTERVAL * 2}, 다음 금제위원회는 DAY ${FIRST_BAN_DAY + BAN_INTERVAL}입니다. 튜토리얼은 자동으로 OFF되며 설정에서 다시 켤 수 있습니다.`,
-    objective,
-    objectiveCount,
-    controlIds: ["community-day"],
-    freeInteraction: true,
-    informational: true,
-    continueLabel: "자유 운영 시작",
-  };
-}
 function GameSession({
   interfaceSettings,
   initialGame,
   initialPersistence,
   initialWarning,
-  guided = false,
   onExit,
-  onTutorialComplete,
+  onTutorialPopupComplete,
+  tabTutorialProgress,
   updateInterfaceSetting,
 }: {
   interfaceSettings: InterfaceSettings;
   initialGame: GameState;
   initialPersistence: PersistenceBackend;
   initialWarning?: string;
-  guided?: boolean;
   onExit: (game: GameState, backend: PersistenceBackend) => void;
-  onTutorialComplete?: (
-    game: GameState,
-    backend: PersistenceBackend,
-  ) => void;
+  onTutorialPopupComplete: (popup: PendingTutorialPopup) => void;
+  tabTutorialProgress: TabTutorialProgress;
   updateInterfaceSetting: <Key extends keyof InterfaceSettings>(
     key: Key,
     value: InterfaceSettings[Key],
   ) => void;
 }) {
-  const guidedInitialMarketAlert =
-    guided && initialGame.day === 8
-      ? getGuidedMarketAlert(initialGame)
-      : null;
-  const guidedInitialRestrictionImpact =
-    guided && initialGame.day === 16
-      ? getNextDayRestrictionMarketImpact(initialGame)
-      : null;
   const [game, setGame] = useState<GameState>(initialGame);
-  const [selectedThemeId, setSelectedThemeId] = useState<ThemeId>(() =>
-    guided && initialGame.phase === "ban-edit"
-      ? getGuidedRestrictionThemeId(initialGame)
-      : guidedInitialRestrictionImpact?.themeId ??
-        guidedInitialMarketAlert?.themeId ??
-        "cycle",
-  );
-  const initialTab: TabId = guided
-    ? getGuidedInitialTab(initialGame)
-    : initialGame.operations.pendingEvent
-      ? "operations"
+  const [selectedThemeId, setSelectedThemeId] = useState<ThemeId>("cycle");
+  const initialTab: TabId = initialGame.operations.pendingEvent
+    ? "operations"
     : initialGame.phase === "ban-edit"
       ? "cards"
       : initialGame.phase === "release-edit"
         ? "releases"
         : "distribution";
   const [activeTab, setActiveTab] = useState<TabId>(initialTab);
-  const [guidedStep, setGuidedStep] = useState<GuidedStep>(() =>
-    getGuidedStep(initialGame),
-  );
-  const [guidedBusy, setGuidedBusy] = useState(false);
-  const [guidedSkipConfirmOpen, setGuidedSkipConfirmOpen] = useState(false);
+  const [tutorialPageIndex, setTutorialPageIndex] = useState(0);
   const [banDraft, setBanDraft] = useState<Record<string, RestrictionLimit>>(
     initialGame.phase === "ban-edit"
       ? makeRestrictionDraft(initialGame)
@@ -1735,16 +1502,9 @@ function GameSession({
     useState<StrategicBusinessActionType | null>(null);
   const [toast, setToast] = useState<string | null>(initialWarning ?? null);
   const [mobileDetail, setMobileDetail] = useState(
-    guided &&
-      (initialGame.phase === "ban-edit" ||
-        Boolean(guidedInitialMarketAlert) ||
-        Boolean(guidedInitialRestrictionImpact)),
+    initialGame.phase === "ban-edit",
   );
-  const [highlightedPartId, setHighlightedPartId] = useState<string | null>(
-    guidedInitialRestrictionImpact?.cardId ??
-      guidedInitialMarketAlert?.cardId ??
-      null,
-  );
+  const [highlightedPartId, setHighlightedPartId] = useState<string | null>(null);
   const [persistence, setPersistence] =
     useState<PersistenceBackend>(initialPersistence);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -1757,7 +1517,6 @@ function GameSession({
   const saveFailureReportedRef = useRef(false);
   const lastQueuedGameRef = useRef<GameState>(initialGame);
   const seenAdvisorTabsRef = useRef(new Set<TabId>([initialTab]));
-  const guidedFinishingRef = useRef(false);
   const packOddsCommittedRef = useRef(false);
   const lastImpactFxDayRef = useRef<number | null>(null);
   const impactTimersRef = useRef<number[]>([]);
@@ -1966,11 +1725,7 @@ function GameSession({
   const settlementPeriod =
     game.phase === "running" && game.day >= SETTLEMENT_START_DAY;
   const mandateProgress =
-    game.day <= TUTORIAL_END_DAY
-      ? (game.day / TUTORIAL_END_DAY) * 100
-      : ((Math.min(game.day, LAST_DECISION_DAY) - PLAYER_START_DAY + 1) /
-          PLAYER_CONTROL_DAYS) *
-        100;
+    (Math.min(game.day, LAST_DECISION_DAY) / LAST_DECISION_DAY) * 100;
   const settlementProgress =
     ((Math.min(game.day, CAMPAIGN_END_DAY) - LAST_DECISION_DAY) /
       SETTLEMENT_DAYS) *
@@ -1984,8 +1739,6 @@ function GameSession({
   const progressLabel =
     campaignEnded
       ? "임기 종료"
-      : game.day <= TUTORIAL_END_DAY
-      ? "인수인계 진행"
       : settlementPeriod
         ? "결산 관찰"
         : "임기 진행률";
@@ -2024,20 +1777,34 @@ function GameSession({
     concentratedRestrictionRisk,
     restrictionPolicy,
   );
-  // The first real mandate has no hidden answer key or locked control.
-  const guidedRestrictionTarget = getGuidedRestrictionTarget();
-  const guidedPromptVisible = shouldShowGuidedPrompt(guidedStep, game.day);
-  const guidedObjective = getGuidedObjective(guidedStep, game.day);
-  const guidedBrief = guided
-    ? getGuidedBrief(
-        guidedStep,
-        game,
-        restrictionPolicy,
-      )
+  const pendingTutorialPopups = getPendingTutorialPopups(
+    activeTab,
+    tabTutorialProgress.tabVisits,
+    tabTutorialProgress.contextualVisits,
+    {
+      guidanceEnabled: interfaceSettings.tutorialGuidanceEnabled,
+      day: game.day,
+      phase: game.phase,
+    },
+  );
+  const tutorialPopupBlocked = Boolean(
+    game.operations.pendingEvent ||
+      supportTarget ||
+      packOddsConfirmOpen ||
+      strategicConfirmAction,
+  );
+  const tutorialPopup = tutorialPopupBlocked
+    ? null
+    : (pendingTutorialPopups[0] ?? null);
+  const tutorialPopupKey = tutorialPopup
+    ? `${tutorialPopup.kind}-${tutorialPopup.id}`
     : null;
-  const guidedTargetKey = guidedRestrictionTarget
-    ? `${guidedRestrictionTarget.kind}-${"partId" in guidedRestrictionTarget ? guidedRestrictionTarget.partId : "submit"}-${"limit" in guidedRestrictionTarget ? guidedRestrictionTarget.limit : ""}`
-    : `${guidedStep}-${guidedObjective}-${activeTab}-${guidedPromptVisible ? "prompt" : "idle"}`;
+  const firstReleasePlan =
+    game.phase === "release-edit" &&
+    game.day === RELEASE_INTERVAL &&
+    !game.handoverComplete
+      ? getPrologueReleasePlan(game)
+      : null;
 
   function dispatch(command: GameCommand) {
     const next = reduceGame(game, command);
@@ -2050,6 +1817,7 @@ function GameSession({
       seenAdvisorTabsRef.current.add(nextTab);
       setAdvisorPulseKey((current) => current + 1);
     }
+    setTutorialPageIndex(0);
     setActiveTab(nextTab);
   }
 
@@ -2102,11 +1870,7 @@ function GameSession({
       return null;
     }
     let next = reduceGame(game, { type: "ADVANCE_DAYS", days });
-    if (
-      !guided &&
-      !next.handoverComplete &&
-      isHandoverReady(next)
-    ) {
+    if (!next.handoverComplete && isHandoverReady(next)) {
       next = reduceGame(next, { type: "COMPLETE_HANDOVER" });
     }
     setGame(next);
@@ -2205,10 +1969,6 @@ function GameSession({
   }
 
   function openSupport(themeId: ThemeId) {
-    if (guided) {
-      setToast("튜토리얼에서는 요청을 기록하지 않습니다.");
-      return;
-    }
     const committedSupportCount = getCommittedSupportCount(game, themeId);
     if (committedSupportCount >= 3) {
       setToast(
@@ -2265,10 +2025,6 @@ function GameSession({
     kind: "indirect-support" | "environment-target" | "reprint",
     themeId: ThemeId,
   ) {
-    if (guided) {
-      setToast("튜토리얼에서는 요청을 기록하지 않습니다.");
-      return;
-    }
     if (kind === "indirect-support") {
       if (getIndirectSupportGenericPool(game, themeId).length === 0) {
         setToast("이 테마에 맞는 간접 지원 후보가 없습니다.");
@@ -2311,12 +2067,6 @@ function GameSession({
     action: BusinessActionType,
     confirmed = false,
   ) {
-    if (
-      guided &&
-      (guidedStep !== "business" || action !== "tv-cm")
-    ) {
-      return null;
-    }
     const definition = BUSINESS_ACTION_BY_TYPE[action];
     const availability = getBusinessActionAvailability(game, action);
     if (!availability.available) {
@@ -2353,9 +2103,6 @@ function GameSession({
       setToast(
         `${withKoreanObjectParticle(definition.title)} 집행했습니다. ₩${formatRevenue(definition.cost)}을 사용했습니다.`,
       );
-    }
-    if (guided && action === "tv-cm") {
-      setGuidedStep("release-runup");
     }
     return next;
   }
@@ -2403,7 +2150,13 @@ function GameSession({
 
   function submitReleaseSelections(selections: ReleaseSelection[]) {
     if (game.phase !== "release-edit" || !game.releaseSlate) return null;
-    const next = dispatch({ type: "SUBMIT_RELEASE", selections });
+    const firstReleaseFixed =
+      game.day === RELEASE_INTERVAL && !game.handoverComplete;
+    const next = dispatch(
+      firstReleaseFixed
+        ? getPrologueReleaseCommand(game)
+        : { type: "SUBMIT_RELEASE", selections },
+    );
     impactTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     impactTimersRef.current = [];
     setImpactItems([]);
@@ -2412,193 +2165,8 @@ function GameSession({
     setAdvisorPulseKey((current) => current + 1);
     setToast(`DAY ${next.day} 카드팩 ${next.releaseHistory.at(-1)?.products.length ?? 0}종을 발매했습니다.`);
     emitGameSound("release");
-    if (guided && next.day === 30) {
-      setGuidedStep("release-reaction");
-      activateTab("releases", true);
-    }
     return next;
   }
-
-  function handleGuidedNavigation(tab: TabId) {
-    activateTab(tab);
-  }
-
-  function ignoreGuidedInspection() {
-    return undefined;
-  }
-
-  function advanceGuidedInformation() {
-    if (!guided || guidedBusy || guidedStep !== "handover") return;
-    const handover = game.handoverComplete
-      ? game
-      : reduceGame(game, { type: "COMPLETE_HANDOVER" });
-    void finishGuidedTutorial(handover);
-  }
-  async function finishGuidedTutorial(finalGame: GameState) {
-    if (
-      !guided ||
-      !onTutorialComplete ||
-      guidedBusy ||
-      guidedFinishingRef.current
-    ) return;
-    guidedFinishingRef.current = true;
-    setGuidedBusy(true);
-    lastQueuedGameRef.current = finalGame;
-    setGame(finalGame);
-    try {
-      await saveQueueRef.current;
-      if (persistence.kind === "unavailable") {
-        throw new Error(persistence.message);
-      }
-      await savePersistedGame(persistence, finalGame);
-      updateInterfaceSetting(
-        "tutorialGuidanceEnabled",
-        getTutorialGuidanceEnabledAfterEvent(
-          interfaceSettings.tutorialGuidanceEnabled,
-          "complete",
-        ),
-      );
-      // GameSession is reused when the parent switches from guided to normal
-      // play. Clear the transient save lock before that prop change so the
-      // regular +1/+7 controls do not inherit a permanently busy tutorial.
-      guidedFinishingRef.current = false;
-      setGuidedBusy(false);
-      onTutorialComplete(finalGame, persistence);
-    } catch {
-      setToast(
-        "프롤로그 진행을 저장하지 못했습니다. 저장소 상태를 확인한 뒤 다시 시도해주세요.",
-      );
-      guidedFinishingRef.current = false;
-      setGuidedBusy(false);
-    }
-  }
-
-  async function skipGuidedTutorial() {
-    if (!guided || guidedBusy) return;
-    setGuidedBusy(true);
-    lastQueuedGameRef.current = game;
-    try {
-      await saveQueueRef.current;
-      if (persistence.kind === "unavailable") {
-        throw new Error(persistence.message);
-      }
-      await savePersistedGame(persistence, game);
-      updateInterfaceSetting(
-        "tutorialGuidanceEnabled",
-        getTutorialGuidanceEnabledAfterEvent(
-          interfaceSettings.tutorialGuidanceEnabled,
-          "skip",
-        ),
-      );
-      setGuidedBusy(false);
-      onTutorialComplete?.(game, persistence);
-    } catch {
-      setGuidedBusy(false);
-      setToast(
-        "현재 진행을 저장하지 못해 안내를 생략하지 않았습니다. 저장소 상태를 확인해주세요.",
-      );
-    }
-  }
-
-  async function pauseGuidedTutorial() {
-    if (!guided || guidedBusy || guidedFinishingRef.current) return;
-    guidedFinishingRef.current = true;
-    setGuidedBusy(true);
-    try {
-      await saveQueueRef.current;
-      if (persistence.kind === "unavailable") {
-        throw new Error(persistence.message);
-      }
-      await savePersistedGame(persistence, game);
-      onExit(game, persistence);
-    } catch {
-      guidedFinishingRef.current = false;
-      setGuidedBusy(false);
-      setToast(
-        "현재 인수인계 진행을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.",
-      );
-    }
-  }
-
-  function openGuidedRestrictionBoard(next: GameState) {
-    if (next.day !== FIRST_BAN_DAY || next.phase !== "ban-edit") return false;
-    const targetTheme = getGuidedRestrictionThemeId(next);
-    setBanDraft((current) =>
-      Object.keys(current).length > 0 ? current : makeRestrictionDraft(next),
-    );
-    setGuidedStep("restriction");
-    activateTab("cards", true);
-    setSelectedThemeId(targetTheme);
-    setMobileDetail(true);
-    return true;
-  }
-
-  function advanceGuidedTime(days: 1 | 7) {
-    if (
-      !guided ||
-      guidedBusy ||
-      !isGuidedAdvanceDaysAllowed(guidedStep, game.day, days)
-    ) return;
-
-    const advanceDays = getGuidedAdvanceDays(guidedStep, game.day, days);
-    if (advanceDays === null) return;
-    const next = advance(advanceDays);
-    if (!next) return;
-    if (next.phase === "release-edit") setReleaseDraft([]);
-    if (next.phase === "ban-edit") {
-      openGuidedRestrictionBoard(next);
-      return;
-    }
-    const nextStep = getGuidedStep(next);
-    setGuidedStep(nextStep);
-    if (next.day === 8) {
-      const marketAlert = getGuidedMarketAlert(next);
-      if (marketAlert) {
-        setSelectedThemeId(marketAlert.themeId);
-        setHighlightedPartId(marketAlert.cardId);
-        setMobileDetail(true);
-      }
-    } else if (next.day === 16) {
-      const restrictionImpact = getNextDayRestrictionMarketImpact(next);
-      if (restrictionImpact) {
-        setSelectedThemeId(restrictionImpact.themeId);
-        setHighlightedPartId(restrictionImpact.cardId);
-        setMobileDetail(true);
-      }
-    } else if (game.day === 8) {
-      setHighlightedPartId(null);
-    } else if (game.day === 16) {
-      setHighlightedPartId(null);
-    }
-    if (shouldShowGuidedPrompt(nextStep, next.day)) {
-      const nextTab = getGuidedAdvanceTab(nextStep, next.day);
-      if (nextTab) activateTab(nextTab, true);
-    }
-  }
-
-  function submitGuidedRestriction() {
-    if (!guided || guidedStep !== "restriction") return;
-    const next = submitRestriction();
-    if (!next) return;
-    if (next.day === 45) {
-      const legacyImpact = reduceGame(next, {
-        type: "ADVANCE_DAYS",
-        days: 1,
-      });
-      const legacyHandover = reduceGame(legacyImpact, {
-        type: "COMPLETE_HANDOVER",
-      });
-      setGuidedStep("handover");
-      void finishGuidedTutorial(legacyHandover);
-      return;
-    }
-    setGuidedStep("restriction-reaction");
-  }
-
-  const guidedOneDayAdvanceEnabled =
-    guided && isGuidedAdvanceDaysAllowed(guidedStep, game.day, 1);
-  const guidedSevenDayAdvanceEnabled =
-    guided && isGuidedAdvanceDaysAllowed(guidedStep, game.day, 7);
 
   return (
     <div
@@ -2607,7 +2175,6 @@ function GameSession({
           ? " force-reduced-motion"
           : ""
       }${impactFx ? ` is-impact-observing impact-${impactFx.tone}` : ""}`}
-      data-guided-step={guided ? guidedStep : undefined}
     >
       {impactFx ? (
         <div
@@ -2724,23 +2291,44 @@ function GameSession({
             <button
               className={activeTab === item.id ? "nav-item active" : "nav-item"}
               data-tutorial-control={`nav-${item.id}`}
-              disabled={gameOver || campaignComplete || guidedBusy}
+              disabled={gameOver || campaignComplete}
               key={item.id}
-              onClick={() => handleGuidedNavigation(item.id)}
+              onClick={() => activateTab(item.id)}
               type="button"
             >
-              {item.label}
+              <span className="nav-item-label">{item.label}</span>
               {item.id === "community" ? (
                 <span className="nav-count">20</span>
               ) : null}
-              {item.id === "cards" && game.phase === "ban-edit" ? (
-                <span className="nav-count nav-alert">!</span>
+              {item.id === "cards" ? (
+                <span
+                  aria-hidden={game.phase !== "ban-edit"}
+                  className={`nav-count nav-alert${
+                    game.phase === "ban-edit" ? "" : " is-placeholder"
+                  }`}
+                >
+                  !
+                </span>
               ) : null}
-              {item.id === "releases" && game.phase === "release-edit" ? (
-                <span className="nav-count nav-alert">!</span>
+              {item.id === "releases" ? (
+                <span
+                  aria-hidden={game.phase !== "release-edit"}
+                  className={`nav-count nav-alert${
+                    game.phase === "release-edit" ? "" : " is-placeholder"
+                  }`}
+                >
+                  !
+                </span>
               ) : null}
-              {item.id === "operations" && game.operations.pendingEvent ? (
-                <span className="nav-count nav-alert">!</span>
+              {item.id === "operations" ? (
+                <span
+                  aria-hidden={!game.operations.pendingEvent}
+                  className={`nav-count nav-alert${
+                    game.operations.pendingEvent ? "" : " is-placeholder"
+                  }`}
+                >
+                  !
+                </span>
               ) : null}
             </button>
           ))}
@@ -2748,14 +2336,7 @@ function GameSession({
         <button
           className="reset-button"
           data-tutorial-control="home"
-          disabled={guidedBusy}
-          onClick={() => {
-            if (guided) {
-              void pauseGuidedTutorial();
-              return;
-            }
-            onExit(game, persistence);
-          }}
+          onClick={() => onExit(game, persistence)}
           type="button"
         >
           <span aria-hidden="true">←</span>
@@ -2781,70 +2362,26 @@ function GameSession({
           />
         ) : (
           <>
-        {guided ? (
-          <aside aria-label="튜토리얼 상태" className="guided-status-rail">
-            <LotusSymbol tone="info" />
-            <div className="guided-status-copy">
-              <span>LOTUS · TUTORIAL ON</span>
-              <strong>
-                목표 {guidedObjective}/{GUIDED_OBJECTIVE_COUNT}
-              </strong>
-            </div>
-            <i aria-hidden="true">
-              <b
-                style={{
-                  width: `${(guidedObjective / GUIDED_OBJECTIVE_COUNT) * 100}%`,
-                }}
-              />
-            </i>
-            <div className="guided-status-actions">
-              {guidedStep === "handover" ? (
-                <button
-                  disabled={guidedBusy}
-                  onClick={advanceGuidedInformation}
-                  type="button"
-                >
-                  자유 운영 시작
-                </button>
-              ) : null}
-              <button
-                disabled={guidedBusy}
-                onClick={() => setGuidedSkipConfirmOpen(true)}
-                type="button"
-              >
-                안내 생략
-              </button>
-              <button
-                disabled={guidedBusy}
-                onClick={() => void pauseGuidedTutorial()}
-                type="button"
-              >
-                메인 화면으로
-              </button>
-            </div>
-          </aside>
-        ) : (
-          <aside
-            aria-label="로터스 상황 브리핑"
-            className={`advisor-brief ${advisorBrief.tone} ${advisorOpen ? "open" : "collapsed"}`}
-            key={advisorPulseKey}
+        <aside
+          aria-label="로터스 상황 브리핑"
+          className={`advisor-brief ${advisorBrief.tone} ${advisorOpen ? "open" : "collapsed"}`}
+          key={advisorPulseKey}
+        >
+          <LotusSymbol tone={advisorBrief.tone} />
+          <div aria-live="polite" className="advisor-brief-copy" id="advisor-brief-message">
+            <span>LOTUS · {advisorBrief.kicker}</span>
+            <p>{advisorBrief.message}</p>
+            {advisorBrief.submessage ? <small>{advisorBrief.submessage}</small> : null}
+          </div>
+          <button
+            aria-controls="advisor-brief-message"
+            aria-expanded={advisorOpen}
+            onClick={() => setAdvisorOpen((current) => !current)}
+            type="button"
           >
-            <LotusSymbol tone={advisorBrief.tone} />
-            <div aria-live="polite" className="advisor-brief-copy" id="advisor-brief-message">
-              <span>LOTUS · {advisorBrief.kicker}</span>
-              <p>{advisorBrief.message}</p>
-              {advisorBrief.submessage ? <small>{advisorBrief.submessage}</small> : null}
-            </div>
-            <button
-              aria-controls="advisor-brief-message"
-              aria-expanded={advisorOpen}
-              onClick={() => setAdvisorOpen((current) => !current)}
-              type="button"
-            >
-              {advisorOpen ? "접기" : "LOTUS"}
-            </button>
-          </aside>
-        )}
+            {advisorOpen ? "접기" : "LOTUS"}
+          </button>
+        </aside>
 
         {activeTab === "cards" ? (
           <MetaWorkspace
@@ -2852,26 +2389,15 @@ function GameSession({
             game={game}
             highlightedPartId={highlightedPartId}
             mobileDetail={mobileDetail}
-            guidedCatalogTarget={null}
             nextBanDay={nextBanDay}
             rankedThemes={rankedThemes}
             placementReport={placementReport}
             restrictionChanges={restrictionChanges}
-            guidedRestrictionTarget={guidedRestrictionTarget}
             selectedRuntime={selectedRuntime}
             selectedTheme={selectedTheme}
             detailHeadingRef={detailHeadingRef}
             onBackToThemes={() => setMobileDetail(false)}
-            onGuidedCatalogConfirm={ignoreGuidedInspection}
             onDraftChange={(partId, limit) => {
-              if (
-                guidedRestrictionTarget &&
-                (guidedRestrictionTarget?.kind !== "limit" ||
-                  guidedRestrictionTarget.partId !== partId ||
-                  guidedRestrictionTarget.limit !== limit)
-              ) {
-                return;
-              }
               const nextDraft = { ...banDraft, [partId]: limit };
               const projected = getRestrictionChangeCapacity(game, nextDraft);
               if (!projected.withinLimit) {
@@ -2882,25 +2408,18 @@ function GameSession({
             }}
             onOpenSupport={openSupport}
             onRequestThemeRelease={requestThemeRelease}
-            supportDisabled={guided}
             onResetDraft={() => setBanDraft(makeRestrictionDraft(game))}
             onSelectTheme={selectTheme}
-            onSubmitRestriction={
-              guided ? submitGuidedRestriction : submitRestriction
-            }
+            onSubmitRestriction={submitRestriction}
           />
         ) : null}
 
         {activeTab === "distribution" ? (
           <DistributionView
             game={game}
-            guidedInspection={false}
-            guidedModeTarget={null}
-            guidedPlacementInspection={false}
             nextBanDay={nextBanDay}
             nextReleaseDay={nextReleaseDay}
             onSelectTheme={selectTheme}
-            onGuidedModeConfirm={ignoreGuidedInspection}
             placementReport={placementReport}
             previousPlacementReport={previousPlacementReport}
             rankedThemes={rankedThemes}
@@ -2911,9 +2430,8 @@ function GameSession({
         {activeTab === "releases" ? (
           <ReleasesView
             game={game}
-            guidedSelectionActive={guided && guidedStep === "release"}
+            fixedSelections={firstReleasePlan?.selections}
             releaseDraft={releaseDraft}
-            selectionDisabled={guided && guidedStep !== "release"}
             onReleaseDraftChange={setReleaseDraft}
             onSubmitRelease={submitReleaseSelections}
           />
@@ -2922,10 +2440,6 @@ function GameSession({
         {activeTab === "operations" ? (
           <OperationsView
             game={game}
-            guided={guided}
-            guidedActionTarget={
-              guided && guidedStep === "business" ? "tv-cm" : null
-            }
             onRunAction={runBusinessAction}
           />
         ) : null}
@@ -2939,10 +2453,7 @@ function GameSession({
                 : null
             }
             game={game}
-            guidedInspection={false}
-            guidedPostTarget={false}
             onFlashComplete={() => setReactionFlashDay(null)}
-            onGuidedPostOpen={ignoreGuidedInspection}
             onSelectTheme={selectTheme}
           />
         ) : null}
@@ -2950,10 +2461,7 @@ function GameSession({
         {activeTab === "news" ? <DailyNewsView game={game} /> : null}
 
         {activeTab === "finance" ? (
-          <FinanceView
-            game={game}
-            guidedInspection={false}
-          />
+          <FinanceView game={game} />
         ) : null}
           </>
         )}
@@ -2979,36 +2487,22 @@ function GameSession({
         <div className="time-actions">
           <button
             className="time-step-action"
-            data-tutorial-target={
-              guidedOneDayAdvanceEnabled ? "active" : undefined
-            }
             disabled={
               game.phase !== "running" ||
-              Boolean(game.operations.pendingEvent) ||
-              guidedBusy ||
-              (guided && !guidedOneDayAdvanceEnabled)
+              Boolean(game.operations.pendingEvent)
             }
-            onClick={() =>
-              guided ? advanceGuidedTime(1) : advance(1)
-            }
+            onClick={() => advance(1)}
             type="button"
           >
             +1일
           </button>
           <button
             className="time-step-action is-week"
-            data-tutorial-target={
-              guidedSevenDayAdvanceEnabled ? "active" : undefined
-            }
             disabled={
               game.phase !== "running" ||
-              Boolean(game.operations.pendingEvent) ||
-              guidedBusy ||
-              (guided && !guidedSevenDayAdvanceEnabled)
+              Boolean(game.operations.pendingEvent)
             }
-            onClick={() =>
-              guided ? advanceGuidedTime(7) : advance(7)
-            }
+            onClick={() => advance(7)}
             type="button"
           >
             +7일
@@ -3080,21 +2574,27 @@ function GameSession({
         }
       />
 
-      {guided && guidedBrief ? (
-        <GuidedTutorialBar
-          allowSkip
-          brief={guidedBrief}
-          busy={guidedBusy}
-          compact={!guidedPromptVisible}
-          day={game.day}
-          key={guidedTargetKey}
-          onInformationalNext={advanceGuidedInformation}
-          onMain={() => void pauseGuidedTutorial()}
-          onSkip={skipGuidedTutorial}
-          onSkipConfirmOpenChange={setGuidedSkipConfirmOpen}
-          skipConfirmOpen={guidedSkipConfirmOpen}
-          step={guidedStep}
-          targetKey={guidedTargetKey}
+      {tutorialPopup ? (
+        <TabTutorialPopup
+          currentIndex={tutorialPageIndex}
+          key={tutorialPopupKey}
+          onComplete={() => {
+            setTutorialPageIndex(0);
+            onTutorialPopupComplete(tutorialPopup);
+          }}
+          onNext={() =>
+            setTutorialPageIndex((current) =>
+              Math.min(current + 1, tutorialPopup.pages.length - 1),
+            )
+          }
+          onPrevious={() =>
+            setTutorialPageIndex((current) => Math.max(0, current - 1))
+          }
+          pages={tutorialPopup.pages}
+          sectionLabel={
+            tutorialPopup.pages[tutorialPageIndex]?.sectionLabel ??
+            tutorialPopup.label
+          }
         />
       ) : null}
     </div>
@@ -3386,7 +2886,7 @@ function ConfirmNewGameDialog({
       >
         <div className="confirm-icon" aria-hidden="true">!</div>
         <h2 id="new-game-dialog-title">기존 임기를 덮어쓸까요?</h2>
-        <p>새 임기를 시작하면 기존 저장을 DAY 1 상태로 교체하며 되돌릴 수 없습니다. 인수인계 중 날짜와 확정한 결정은 자동 저장됩니다.</p>
+        <p>새 임기를 시작하면 기존 저장을 DAY 1 상태로 교체하며 되돌릴 수 없습니다. 진행한 날짜와 확정한 결정은 자동 저장됩니다.</p>
         <div className="dialog-actions">
           <button className="text-action" onClick={onCancel} type="button">취소</button>
           <button className="primary-action" onClick={onConfirm} type="button">DAY 1부터 시작</button>
@@ -3599,9 +3099,6 @@ type MetaWorkspaceProps = {
   restrictionChanges: [string, RestrictionLimit][];
   highlightedPartId: string | null;
   mobileDetail: boolean;
-  guidedCatalogTarget?: "themes" | "generic" | null;
-  guidedRestrictionTarget?: GuidedRestrictionTarget | null;
-  supportDisabled?: boolean;
   detailHeadingRef: React.RefObject<HTMLHeadingElement | null>;
   onSelectTheme: (themeId: ThemeId, partId?: string) => void;
   onOpenSupport: (themeId: ThemeId) => void;
@@ -3609,7 +3106,6 @@ type MetaWorkspaceProps = {
     kind: "indirect-support" | "environment-target" | "reprint",
     themeId: ThemeId,
   ) => void;
-  onGuidedCatalogConfirm?: () => void;
   onBackToThemes: () => void;
   onDraftChange: (partId: string, limit: RestrictionLimit) => void;
   onResetDraft: () => void;
@@ -3627,14 +3123,10 @@ function MetaWorkspace({
   restrictionChanges,
   highlightedPartId,
   mobileDetail,
-  guidedCatalogTarget = null,
-  guidedRestrictionTarget,
-  supportDisabled = false,
   detailHeadingRef,
   onSelectTheme,
   onOpenSupport,
   onRequestThemeRelease,
-  onGuidedCatalogConfirm,
   onBackToThemes,
   onDraftChange,
   onResetDraft,
@@ -3642,6 +3134,7 @@ function MetaWorkspace({
 }: MetaWorkspaceProps) {
   const [catalogMode, setCatalogMode] = useState<"themes" | "generic">("themes");
   const [requestHelpOpen, setRequestHelpOpen] = useState(false);
+  const themeListRef = useRef<HTMLDivElement>(null);
   const releasedPartIds = new Set(selectedRuntime.releasedPartIds);
   const releasedParts = selectedTheme.parts.filter((part) =>
     releasedPartIds.has(part.id),
@@ -3675,6 +3168,27 @@ function MetaWorkspace({
     return !projected.withinLimit;
   }
 
+  useEffect(() => {
+    const list = themeListRef.current;
+    if (!list) return;
+
+    const keepWheelLocal = (event: WheelEvent) => {
+      if (event.deltaY === 0) return;
+
+      const maxScrollTop = list.scrollHeight - list.clientHeight;
+      const reachedStart = event.deltaY < 0 && list.scrollTop <= 0;
+      const reachedEnd = event.deltaY > 0 && list.scrollTop >= maxScrollTop;
+
+      event.stopPropagation();
+      if (maxScrollTop <= 0 || reachedStart || reachedEnd) {
+        event.preventDefault();
+      }
+    };
+
+    list.addEventListener("wheel", keepWheelLocal, { passive: false });
+    return () => list.removeEventListener("wheel", keepWheelLocal);
+  }, [catalogMode]);
+
   function renderLimitControl(
     cardId: string,
     cardName: string,
@@ -3691,12 +3205,6 @@ function MetaWorkspace({
             role="group"
           >
             {([0, 1, 2, 3] as RestrictionLimit[]).map((limit) => {
-              const guidedMatch =
-                guidedRestrictionTarget?.kind === "limit" &&
-                guidedRestrictionTarget.partId === cardId &&
-                guidedRestrictionTarget.limit === limit;
-              const guidedDisabled =
-                Boolean(guidedRestrictionTarget) && !guidedMatch;
               const capDisabled =
                 draft !== limit && wouldExceedCap(cardId, limit);
               return (
@@ -3712,8 +3220,7 @@ function MetaWorkspace({
                           ? "semi-limited"
                           : "unlimited"
                   }
-                  data-tutorial-target={guidedMatch ? "active" : undefined}
-                  disabled={guidedDisabled || capDisabled}
+                  disabled={capDisabled}
                   key={limit}
                   onClick={() => onDraftChange(cardId, limit)}
                   title={
@@ -3757,10 +3264,7 @@ function MetaWorkspace({
             aria-pressed={catalogMode === "themes"}
             className={catalogMode === "themes" ? "active" : ""}
             data-tutorial-control="card-catalog-themes"
-            onClick={() => {
-              setCatalogMode("themes");
-              if (guidedCatalogTarget === "themes") onGuidedCatalogConfirm?.();
-            }}
+            onClick={() => setCatalogMode("themes")}
             type="button"
           >
             테마 리스트
@@ -3769,11 +3273,7 @@ function MetaWorkspace({
             aria-pressed={catalogMode === "generic"}
             className={catalogMode === "generic" ? "active" : ""}
             data-tutorial-control="card-catalog-generic"
-            disabled={Boolean(guidedRestrictionTarget)}
-            onClick={() => {
-              setCatalogMode("generic");
-              if (guidedCatalogTarget === "generic") onGuidedCatalogConfirm?.();
-            }}
+            onClick={() => setCatalogMode("generic")}
             type="button"
           >
             범용 리스트
@@ -3792,7 +3292,11 @@ function MetaWorkspace({
               </div>
               <span className="data-stamp">DAY {game.day}</span>
             </div>
-            <div className="theme-list" role="list">
+            <div
+              className="theme-list"
+              ref={themeListRef}
+              role="list"
+            >
               {rankedThemes.map((theme) => {
                 const runtime = game.themes[theme.id];
                 const placement =
@@ -3834,7 +3338,7 @@ function MetaWorkspace({
                       <span className="theme-row-copy">
                         <strong>{theme.name}</strong>
                         <small>
-                          유저 {formatPercent(runtime.share)} · 탑컷{" "}
+                          유저 {formatPercent(runtime.share)} · 입상{" "}
                           {formatPercent(placement.placementShare)}
                         </small>
                       </span>
@@ -3891,12 +3395,10 @@ function MetaWorkspace({
                   </button>
                   <button
                     data-tutorial-control="release-request-support"
-                    disabled={supportDisabled || !supportProposalAvailable}
+                    disabled={!supportProposalAvailable}
                     onClick={() => onOpenSupport(selectedTheme.id)}
                     title={
-                      supportDisabled
-                        ? "튜토리얼에서는 요청을 기록하지 않습니다."
-                        : committedSupportCount >= 3
+                      committedSupportCount >= 3
                           ? "세 차례 지원이 모두 확정되었습니다."
                           : "기존 테마의 보강 방향을 요청합니다."
                     }
@@ -3906,7 +3408,7 @@ function MetaWorkspace({
                   </button>
                   <button
                     data-tutorial-control="release-request-indirect"
-                    disabled={supportDisabled || !indirectRequestAvailable}
+                    disabled={!indirectRequestAvailable}
                     onClick={() => onRequestThemeRelease("indirect-support", selectedTheme.id)}
                     title="키워드가 맞는 범용 카드 후보를 요청합니다."
                     type="button"
@@ -3915,7 +3417,7 @@ function MetaWorkspace({
                   </button>
                   <button
                     data-tutorial-control="release-request-target"
-                    disabled={supportDisabled || !targetRequestAvailable}
+                    disabled={!targetRequestAvailable}
                     onClick={() => onRequestThemeRelease("environment-target", selectedTheme.id)}
                     title="선택한 테마를 견제할 범용 카드 후보를 요청합니다."
                     type="button"
@@ -3924,7 +3426,7 @@ function MetaWorkspace({
                   </button>
                   <button
                     data-tutorial-control="release-request-reprint"
-                    disabled={supportDisabled || !reprintRequestAvailable}
+                    disabled={!reprintRequestAvailable}
                     onClick={() => onRequestThemeRelease("reprint", selectedTheme.id)}
                     title="선택한 테마의 출시 카드 재판을 요청합니다."
                     type="button"
@@ -3955,7 +3457,7 @@ function MetaWorkspace({
                   <strong>{formatPercent(selectedRuntime.share)}</strong>
                 </div>
                 <div data-tutorial-term="top-cut-share">
-                  <span>탑컷 비율</span>
+                  <span>입상 점유율</span>
                   <strong>{formatPercent(selectedPlacement.placementShare)}</strong>
                 </div>
                 <div data-tutorial-term="win-rate">
@@ -4167,7 +3669,6 @@ function MetaWorkspace({
             <button
               className="text-action"
               data-tutorial-term="restriction-reset"
-              disabled={Boolean(guidedRestrictionTarget)}
               onClick={onResetDraft}
               type="button"
             >
@@ -4177,16 +3678,7 @@ function MetaWorkspace({
               className="primary-action"
               data-sound="restriction"
               data-tutorial-term="restriction-submit"
-              data-tutorial-target={
-                guidedRestrictionTarget?.kind === "submit"
-                  ? "active"
-                  : undefined
-              }
-              disabled={
-                !capacity.withinLimit ||
-                (Boolean(guidedRestrictionTarget) &&
-                  guidedRestrictionTarget?.kind !== "submit")
-              }
+              disabled={!capacity.withinLimit}
               onClick={onSubmitRestriction}
               type="button"
             >
@@ -4379,11 +3871,11 @@ function DistributionView({
               distributionMode === "top-cut" ? "top-cut-share" : "user-share"
             }
           >
-            {distributionMode === "top-cut" ? "탑컷 비율" : "유저 비율"}
+            {distributionMode === "top-cut" ? "입상 점유율" : "유저 비율"}
           </h1>
           <p>
             {distributionMode === "top-cut"
-              ? "최근 14일 주요 대회의 탑컷 점유율입니다."
+              ? "최근 14일 주요 대회의 입상 점유율입니다."
               : "메타층·캐주얼층·콜렉터층·리셀층의 현재 구성비입니다."}
           </p>
         </div>
@@ -4443,7 +3935,7 @@ function DistributionView({
           }}
           type="button"
         >
-          탑컷 비율
+          입상 점유율
         </button>
         <button
           aria-pressed={distributionMode === "users"}
@@ -4498,7 +3990,7 @@ function DistributionView({
             <svg
               aria-label={
                 distributionMode === "top-cut"
-                  ? "탑컷 비율 분포입니다. 비율이 큰 테마부터 12시 방향에서 시계 방향으로 배치하며 기타는 마지막입니다."
+                  ? "입상 점유율 분포입니다. 비율이 큰 테마부터 12시 방향에서 시계 방향으로 배치하며 기타는 마지막입니다."
                   : "플레이어 계층 구성비입니다. 인원이 많은 계층부터 12시 방향에서 시계 방향으로 배치합니다."
               }
               className="distribution-donut-svg"
@@ -4522,9 +4014,9 @@ function DistributionView({
                   ? `${entry.label}, ${formatUsers(entry.count)}명, 구성비 ${shareLabel}`
                   : entry.theme
                     ? entry.completeSample
-                    ? `${entry.label}, ${distributionMode === "top-cut" ? "탑컷" : "유저"} 비율 ${shareLabel}. 상세 정보 열기`
-                    : `${entry.label}, 집계 ${entry.observedDays}/${PLACEMENT_WINDOW_DAYS}, ${distributionMode === "top-cut" ? "탑컷" : "유저"} 비율 ${shareLabel}. 상세 정보 열기`
-                  : `기타, 3티어 ${tierThreeThemes.length}개 테마 합산 ${distributionMode === "top-cut" ? "탑컷" : "유저"} 비율 ${shareLabel}`;
+                    ? `${entry.label}, ${distributionMode === "top-cut" ? "입상 점유율" : "유저 비율"} ${shareLabel}. 상세 정보 열기`
+                    : `${entry.label}, 집계 ${entry.observedDays}/${PLACEMENT_WINDOW_DAYS}, ${distributionMode === "top-cut" ? "입상 점유율" : "유저 비율"} ${shareLabel}. 상세 정보 열기`
+                  : `기타, 3티어 ${tierThreeThemes.length}개 테마 합산 ${distributionMode === "top-cut" ? "입상 점유율" : "유저 비율"} ${shareLabel}`;
 
                 return (
                   <g
@@ -4601,7 +4093,7 @@ function DistributionView({
             <div data-tutorial-term="environment-health">
               <span>생태계 건강</span>
               <strong
-                title={`경기 품질 ${Math.round(healthBreakdown.gameplayQuality)} · 탑컷 다양성 ${Math.round(healthBreakdown.placementDiversity)} · 상위권 순환 ${Math.round(healthBreakdown.topCohortTurnover)} · 세대 공존 ${Math.round(healthBreakdown.generationalBalance)} · 생태계 연속성 ${Math.round(healthBreakdown.ecosystemContinuity)}`}
+                title={`경기 품질 ${Math.round(healthBreakdown.gameplayQuality)} · 입상 다양성 ${Math.round(healthBreakdown.placementDiversity)} · 상위권 순환 ${Math.round(healthBreakdown.topCohortTurnover)} · 세대 공존 ${Math.round(healthBreakdown.generationalBalance)} · 생태계 연속성 ${Math.round(healthBreakdown.ecosystemContinuity)}`}
               >
                 {health}
               </strong>
@@ -4610,7 +4102,7 @@ function DistributionView({
             <div>
               <span>상위 3개 집중</span>
               <strong>{formatPercent(topThreeShare)}</strong>
-              <small>{distributionMode === "top-cut" ? "최근 14일 탑컷 기준" : "활성 유저 기준"}</small>
+              <small>{distributionMode === "top-cut" ? "최근 14일 입상 기준" : "활성 유저 기준"}</small>
             </div>
             <div data-tutorial-term="purchase-trust">
               <span>구매 신뢰</span>
@@ -4626,7 +4118,7 @@ function DistributionView({
           data-tutorial-control="distribution-legend"
           aria-label={
             distributionMode === "top-cut"
-              ? "탑컷 비율 순위. 기타는 마지막입니다."
+              ? "입상 점유율 순위. 기타는 마지막입니다."
               : "플레이어 계층별 인원과 구성비. 큰 비율 순입니다."
           }
         >
@@ -4785,19 +4277,17 @@ function OverviewCard({ className = "", dataTutorialTerm, icon, label, value, no
 }
 
 function ReleasesView({
+  fixedSelections,
   game,
-  guidedSelectionActive,
   onReleaseDraftChange,
   onSubmitRelease,
   releaseDraft,
-  selectionDisabled,
 }: {
+  fixedSelections?: readonly ReleaseSelection[];
   game: GameState;
-  guidedSelectionActive: boolean;
   onReleaseDraftChange: (optionIds: string[]) => void;
   onSubmitRelease: (selections: ReleaseSelection[]) => void;
   releaseDraft: readonly string[];
-  selectionDisabled: boolean;
 }) {
   const releaseBatches = [...game.releaseHistory]
     .filter((batch) => !isInitialGenericReleaseBatch(batch))
@@ -4821,9 +4311,8 @@ function ReleasesView({
       </header>
       {game.phase === "release-edit" && game.releaseSlate ? (
         <ReleaseDecisionPanel
-          disabled={selectionDisabled}
+          fixedSelections={fixedSelections}
           game={game}
-          guidedTarget={guidedSelectionActive}
           onChange={onReleaseDraftChange}
           onSubmit={onSubmitRelease}
           selectedOptionIds={releaseDraft}
@@ -5728,13 +5217,9 @@ function FinanceMarketChart({
 
 function OperationsView({
   game,
-  guided = false,
-  guidedActionTarget = null,
   onRunAction,
 }: {
   game: GameState;
-  guided?: boolean;
-  guidedActionTarget?: BusinessActionType | null;
   onRunAction: (action: BusinessActionType) => void;
 }) {
   const environmentHealth = getBusinessEnvironmentHealth(game);
@@ -5811,9 +5296,7 @@ function OperationsView({
           icon={<TrendIcon />}
           label={`${operatingDayLabel} 순운영 현금`}
           note={isTodayRecorded
-            ? game.day < OPERATING_COST_START_DAY
-              ? `운영비는 DAY ${OPERATING_COST_START_DAY}부터 매일 정산`
-              : `매출 32% − 운영비 ₩${formatRevenue(game.finance.todayOperatingCost)} − 집행비`
+            ? `매출 32% − 운영비 ₩${formatRevenue(game.finance.todayOperatingCost)} − 집행비`
             : "오늘 결정 제출 후 정산"}
           value={formatSignedRevenue(game.finance.todayOperatingCash)}
         />
@@ -5907,10 +5390,7 @@ function OperationsView({
                 game.operations.records.some((record) =>
                   isStrategicBusinessAction(record.type)
                 );
-              const guidedLocked = guided && guidedActionTarget !== action.type;
-              const reason = guidedLocked
-                ? "인수인계에서는 강조된 액션만 집행할 수 있습니다."
-                : availability.reason;
+              const reason = availability.reason;
               const descriptionId = `business-action-${action.type}-status`;
               return (
                 <article
@@ -6036,10 +5516,7 @@ function OperationsView({
                     <button
                       aria-describedby={descriptionId}
                       className={action.tone === "danger" ? "danger-action" : "primary-action"}
-                      data-tutorial-target={
-                        guidedActionTarget === action.type ? "active" : undefined
-                      }
-                      disabled={!availability.available || guidedLocked}
+                      disabled={!availability.available}
                       onClick={() => onRunAction(action.type)}
                       type="button"
                     >

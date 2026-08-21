@@ -35,10 +35,13 @@ const ROLE_EXPONENT: Record<PartRole, number> = {
 };
 
 const BUSINESS_ACTION_PLAN = new Map<number, BusinessActionType>([
-  [180, "season-overhaul"],
-  [211, "reprint-campaign"],
-  [212, "local-league"],
-  [213, "collector-fair"],
+  [15, "championship"],
+  [60, "championship"],
+  [90, "championship"],
+  [120, "championship"],
+  [150, "championship"],
+  [180, "championship"],
+  [240, "season-overhaul"],
 ]);
 
 const SUPPORT_PLAN = new Map<
@@ -381,11 +384,11 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       title: ending.title,
     },
     {
-      cash: 15.1263,
-      endingCash: 15.1,
-      environmentHealth: 72.7,
+      cash: 20.2017,
+      endingCash: 20.2,
+      environmentHealth: 72.4,
       purchaseTrust: 87.3,
-      userRatio: 1.5829,
+      userRatio: 1.9904,
       bands: {
         cash: "reserve",
         environment: "stable",

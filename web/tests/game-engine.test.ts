@@ -2772,36 +2772,37 @@ test("keeps nine choices when a support-heavy strategy exhausts eligible themes"
   assert.equal(releaseReviews, 14);
 });
 
-test("keeps the DAY 31 handover free and charges operating costs from DAY 47", () => {
-  const handover = createInitialGame(20_999);
-  assert.equal(handover.day, TUTORIAL_END_DAY);
-  assert.equal(handover.finance.todayOperatingCost, 0);
-  assert.equal(handover.finance.cumulativeOperatingCosts, 0);
-
-  const graceEnd = reduceGame(handover, {
-    type: "ADVANCE_DAYS",
-    days: OPERATING_COST_START_DAY - 1 - handover.day,
-  });
-  assert.equal(graceEnd.day, OPERATING_COST_START_DAY - 1);
-  assert.equal(graceEnd.finance.todayOperatingCost, 0);
-  assert.equal(graceEnd.finance.cumulativeOperatingCosts, 0);
-  const next = reduceGame(graceEnd, { type: "ADVANCE_DAYS", days: 1 });
+test("charges recurring operating costs from DAY 1", () => {
+  const start = createCampaignStart(20_999);
   const activeUsers =
-    next.users.tier + next.users.casual + next.users.collector;
-  const expectedCost = getDailyOperatingCost(next.day, activeUsers);
+    start.users.tier + start.users.casual + start.users.collector;
+  const expectedCost = getDailyOperatingCost(start.day, activeUsers);
   const expectedNet =
     Math.round(
-      (next.finance.today * 0.32 - expectedCost + Number.EPSILON) * 10_000,
+      (start.finance.today * 0.32 - expectedCost + Number.EPSILON) * 10_000,
     ) / 10_000;
 
-  assert.equal(next.day, OPERATING_COST_START_DAY);
+  assert.equal(OPERATING_COST_START_DAY, 1);
+  assert.equal(start.day, OPERATING_COST_START_DAY);
   assert.ok(expectedCost > 0);
-  assert.equal(next.finance.todayOperatingCost, expectedCost);
-  assert.equal(next.finance.cumulativeOperatingCosts, expectedCost);
-  assert.equal(next.finance.todayOperatingCash, expectedNet);
+  assert.equal(start.finance.todayOperatingCost, expectedCost);
+  assert.equal(start.finance.cumulativeOperatingCosts, expectedCost);
+  assert.equal(start.finance.todayOperatingCash, expectedNet);
+  assert.equal(start.history[0].operatingCash, expectedNet);
+
+  const next = reduceGame(start, { type: "ADVANCE_DAYS", days: 1 });
+  const nextActiveUsers =
+    next.users.tier + next.users.casual + next.users.collector;
+  const nextCost = getDailyOperatingCost(next.day, nextActiveUsers);
+
+  assert.equal(next.finance.todayOperatingCost, nextCost);
+  assert.equal(
+    next.finance.cumulativeOperatingCosts,
+    Math.round((expectedCost + nextCost + Number.EPSILON) * 10_000) / 10_000,
+  );
   assert.equal(getMonthlyOperatingCost(10_000), 1.7);
-  assert.equal(getDailyOperatingCost(OPERATING_COST_START_DAY - 1, 10_000), 0);
-  assert.equal(getDailyOperatingCost(OPERATING_COST_START_DAY, 10_000), 0.0567);
+  assert.equal(getDailyOperatingCost(0, 10_000), 0);
+  assert.equal(getDailyOperatingCost(1, 10_000), 0.0567);
   assert.equal(getOperatingRunwayMonths(10, 10_000), 5.9);
 });
 
@@ -3327,6 +3328,7 @@ test("strategic projects snapshot context, use one campaign slot, and pay only o
   );
 
   const ready = advanceThroughDecisions(tooEarly, 120);
+  ready.finance.cash = 100;
   const profile = getStrategicProjectRiskProfile(ready, "season-overhaul");
   assert.ok(profile.risk >= 0.15 && profile.risk <= 0.85);
   assert.ok(profile.context.environmentHealth >= 0);

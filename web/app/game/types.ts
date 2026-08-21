@@ -320,7 +320,7 @@ export interface FinanceState {
   todayOperatingCash: number;
   /** Recurring organization and audience-service cost charged today. */
   todayOperatingCost: number;
-  /** Total recurring operating costs charged since the handover. */
+  /** Total recurring operating costs charged since the campaign began. */
   cumulativeOperatingCosts: number;
   /** Total discretionary business-action spend. */
   cumulativeExpenses: number;

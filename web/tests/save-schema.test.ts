@@ -576,6 +576,35 @@ test("migrates schema v4 saves without retroactively charging operating costs", 
   assert.deepEqual(parseGameState(jsonRoundTrip(migrated)), migrated);
 });
 
+test("continues a pre-rule schema v8 save without retroactive operating costs", () => {
+  const preRule = structuredClone(createCampaignStart(7308));
+  const skippedDayOneCost = preRule.finance.todayOperatingCost;
+  assert.ok(skippedDayOneCost > 0);
+
+  preRule.finance.todayOperatingCost = 0;
+  preRule.finance.cumulativeOperatingCosts = 0;
+  preRule.finance.todayOperatingCash = round4(
+    preRule.finance.todayOperatingCash + skippedDayOneCost,
+  );
+  preRule.finance.cash = round4(preRule.finance.cash + skippedDayOneCost);
+  preRule.history[0].operatingCash = preRule.finance.todayOperatingCash;
+  preRule.history[0].cash = preRule.finance.cash;
+
+  const loaded = parseGameState(jsonRoundTrip(preRule));
+  assert.equal(loaded.day, 1);
+  assert.equal(loaded.finance.todayOperatingCost, 0);
+  assert.equal(loaded.finance.cumulativeOperatingCosts, 0);
+
+  const continued = reduceGame(loaded, { type: "ADVANCE_DAYS", days: 1 });
+  assert.equal(continued.day, 2);
+  assert.ok(continued.finance.todayOperatingCost > 0);
+  assert.equal(
+    continued.finance.cumulativeOperatingCosts,
+    continued.finance.todayOperatingCost,
+    "DAY 1 must not be charged retroactively when the old save continues",
+  );
+});
+
 test("migrates strict schema v6 saves to neutral business-event state", () => {
   const source = createInitialGame(7305);
   const legacy = asLegacyV6(source);
@@ -1429,6 +1458,7 @@ test("round-trips business-action lifecycles and permits net-negative daily cash
 
 test("round-trips strategic risk snapshots and rejects forged project results", () => {
   let active = advanceThroughDecisions(createInitialGame(6203), 120);
+  active.finance.cash = 100;
   active = reduceGame(active, {
     type: "RUN_BUSINESS_ACTION",
     action: "season-overhaul",
@@ -1582,11 +1612,11 @@ test("rejects malformed business-action records and finance totals", () => {
   negativeOperatingTotal.finance.cumulativeOperatingCosts = -0.01;
   assert.throws(() => parseGameState(negativeOperatingTotal), SaveSchemaError);
 
-  const forgedPreHandoverCosts = createInitialGame(6204);
-  forgedPreHandoverCosts.finance.todayOperatingCost = 0.01;
-  forgedPreHandoverCosts.finance.cumulativeOperatingCosts = 0.01;
+  const forgedOperatingCost = createInitialGame(6204);
+  forgedOperatingCost.finance.todayOperatingCost = 0.01;
+  forgedOperatingCost.finance.cumulativeOperatingCosts = 0.01;
   assert.throws(
-    () => parseGameState(forgedPreHandoverCosts),
+    () => parseGameState(forgedOperatingCost),
     SaveSchemaError,
   );
 

@@ -238,10 +238,10 @@ export function TitleScreen({
                   !settings.tutorialGuidanceEnabled,
                 )
               }
-              title="ON으로 설정한 뒤 새 임기를 시작하면 튜토리얼을 다시 진행합니다."
+              title="각 화면을 처음 열 때 설명 팝업을 표시합니다."
               type="button"
             >
-              <span className="settings-screen__option-label">튜토리얼</span>
+              <span className="settings-screen__option-label">첫 방문 도움말</span>
               <strong className="settings-screen__option-value">
                 {settings.tutorialGuidanceEnabled ? "ON" : "OFF"}
               </strong>

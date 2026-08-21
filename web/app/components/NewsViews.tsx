@@ -67,6 +67,7 @@ export function DailyNewsView({ game }: { game: GameState }) {
               <div>
                 <strong>{item.headline}</strong>
                 <p>{item.detail}</p>
+                <small className="news-item-reason">← {item.reason}</small>
               </div>
             </li>
           ))}
@@ -103,6 +104,7 @@ export function ImpactMessageStack({
           <span>DAY {item.day}</span>
           <strong>{item.headline}</strong>
           <p>{item.detail}</p>
+          <small className="impact-message-reason">← {item.reason}</small>
           <button
             aria-label={`${item.headline} 알림 닫기`}
             onClick={() => onDismiss(item.id)}

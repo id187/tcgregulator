@@ -104,7 +104,7 @@ test("the first distribution tutorial explains the shared shell and distribution
     "금제위원회",
     "PLAY 화면",
     "+1일",
-    "+7일",
+    "다음 일정까지",
     "입상 점유율",
     "유저 비율",
     "오늘의 입상표",

@@ -18,6 +18,7 @@ import { TabTutorialPopup } from "./components/TabTutorialPopup";
 import {
   CardMarketQuote,
 } from "./components/CardMarketQuote";
+import { CampaignTimeDock } from "./components/CampaignTimeDock";
 import { DailyNewsView, ImpactMessageStack } from "./components/NewsViews";
 import { ReleasePackCard } from "./components/ReleasePackCard";
 import { ReleaseDecisionPanel } from "./components/ReleaseDecisionPanel";
@@ -1495,7 +1496,6 @@ function GameSession({
     key: number;
     tone: "positive" | "negative" | "caution";
   } | null>(null);
-  const [advisorOpen, setAdvisorOpen] = useState(true);
   const [advisorPulseKey, setAdvisorPulseKey] = useState(1);
   const [packOddsConfirmOpen, setPackOddsConfirmOpen] = useState(false);
   const [strategicConfirmAction, setStrategicConfirmAction] =
@@ -1742,6 +1742,28 @@ function GameSession({
       : settlementPeriod
         ? "결산 관찰"
         : "임기 진행률";
+  const nextMilestone = [
+    hasFutureRelease && nextReleaseDay > game.day
+      ? { day: nextReleaseDay, label: "정기 발매" }
+      : null,
+    hasFutureBan && nextBanDay > game.day
+      ? { day: nextBanDay, label: "금제위원회" }
+      : null,
+    game.day < SETTLEMENT_START_DAY
+      ? { day: SETTLEMENT_START_DAY, label: "결산 관찰" }
+      : null,
+    game.day < CAMPAIGN_END_DAY
+      ? { day: CAMPAIGN_END_DAY, label: "임기 종료" }
+      : null,
+  ]
+    .filter((entry): entry is { day: number; label: string } => Boolean(entry))
+    .sort((left, right) => left.day - right.day)[0];
+  const nextCampaignMilestone = nextMilestone
+    ? {
+        days: nextMilestone.day - game.day,
+        label: nextMilestone.label,
+      }
+    : null;
   const total = totalUsers(game);
   const gameOver = total <= 0;
   const campaignComplete = game.phase === "ended" && !gameOver;
@@ -2364,7 +2386,7 @@ function GameSession({
           <>
         <aside
           aria-label="로터스 상황 브리핑"
-          className={`advisor-brief ${advisorBrief.tone} ${advisorOpen ? "open" : "collapsed"}`}
+          className={`advisor-brief ${advisorBrief.tone} open`}
           key={advisorPulseKey}
         >
           <LotusSymbol tone={advisorBrief.tone} />
@@ -2373,14 +2395,6 @@ function GameSession({
             <p>{advisorBrief.message}</p>
             {advisorBrief.submessage ? <small>{advisorBrief.submessage}</small> : null}
           </div>
-          <button
-            aria-controls="advisor-brief-message"
-            aria-expanded={advisorOpen}
-            onClick={() => setAdvisorOpen((current) => !current)}
-            type="button"
-          >
-            {advisorOpen ? "접기" : "LOTUS"}
-          </button>
         </aside>
 
         {activeTab === "cards" ? (
@@ -2467,48 +2481,18 @@ function GameSession({
         )}
       </main>
 
-      <footer className="time-dock">
-        <div
-          className="campaign-progress"
-          aria-label={`${progressLabel} ${displayedProgress.toFixed(1)}%`}
-          aria-valuemax={100}
-          aria-valuemin={0}
-          aria-valuenow={Number(displayedProgress.toFixed(1))}
-          role="progressbar"
-        >
-          <div className="progress-copy">
-            <span>{progressLabel}</span>
-            <strong>{displayedProgress.toFixed(1)}%</strong>
-          </div>
-          <div className="progress-track">
-            <span style={{ width: `${displayedProgress}%` }} />
-          </div>
-        </div>
-        <div className="time-actions">
-          <button
-            className="time-step-action"
-            disabled={
-              game.phase !== "running" ||
-              Boolean(game.operations.pendingEvent)
-            }
-            onClick={() => advance(1)}
-            type="button"
-          >
-            +1일
-          </button>
-          <button
-            className="time-step-action is-week"
-            disabled={
-              game.phase !== "running" ||
-              Boolean(game.operations.pendingEvent)
-            }
-            onClick={() => advance(7)}
-            type="button"
-          >
-            +7일
-          </button>
-        </div>
-      </footer>
+      <CampaignTimeDock
+        disabled={
+          game.phase !== "running" ||
+          Boolean(game.operations.pendingEvent)
+        }
+        milestone={nextCampaignMilestone}
+        onAdvance={(days) => {
+          advance(days);
+        }}
+        progress={displayedProgress}
+        progressLabel={progressLabel}
+      />
 
       {game.operations.pendingEvent ? (
         <BusinessEventDialog
@@ -3724,6 +3708,8 @@ function DistributionView({
     useState<DistributionMode>("top-cut");
   const [hoveredEntryId, setHoveredEntryId] = useState<string | null>(null);
   const [focusedEntryId, setFocusedEntryId] = useState<string | null>(null);
+  const [placementExpanded, setPlacementExpanded] = useState(false);
+  const placementVisible = placementExpanded || guidedPlacementInspection;
   const latestPlacementDay = game.history.at(-1);
   const dailyPlacementRows = useMemo(() => {
     if (!latestPlacementDay) return [];
@@ -3956,18 +3942,26 @@ function DistributionView({
 
       <section
         aria-label={`DAY ${latestPlacementDay?.day ?? game.day} 대회 입상표`}
-        className="daily-placement-board"
+        className={`daily-placement-board ${
+          placementVisible ? "is-expanded" : "is-collapsed"
+        }`}
         data-tutorial-term="placement"
         data-tutorial-target={guidedPlacementInspection ? "active" : undefined}
-        role={guidedPlacementInspection ? "button" : undefined}
-        tabIndex={guidedPlacementInspection ? 0 : undefined}
       >
         <header>
           <div>
-            <span className="eyebrow">PLACEMENT RESULTS</span>
             <strong>오늘의 입상표</strong>
           </div>
-          <span>DAY {latestPlacementDay?.day ?? game.day} · TOP {dailyPlacementRows.reduce((sum, row) => sum + row.count, 0)}</span>
+          <span>
+            DAY {latestPlacementDay?.day ?? game.day} · TOP {dailyPlacementRows.reduce((sum, row) => sum + row.count, 0)}
+          </span>
+          <button
+            aria-expanded={placementVisible}
+            onClick={() => setPlacementExpanded((current) => !current)}
+            type="button"
+          >
+            {placementVisible ? "접기" : `${dailyPlacementRows.length}개 결과 보기`}
+          </button>
         </header>
         <div className="daily-placement-list" role="list">
           {dailyPlacementRows.map((row) => (
@@ -4102,7 +4096,7 @@ function DistributionView({
             <div>
               <span>상위 3개 집중</span>
               <strong>{formatPercent(topThreeShare)}</strong>
-              <small>{distributionMode === "top-cut" ? "최근 14일 입상 기준" : "활성 유저 기준"}</small>
+              <small>{distributionMode === "top-cut" ? "14일 입상 기준" : "활성 유저 기준"}</small>
             </div>
             <div data-tutorial-term="purchase-trust">
               <span>구매 신뢰</span>
@@ -4252,20 +4246,21 @@ function DistributionView({
 
       <div className="distribution-footer">
         <span>
-          <RevenueIcon size={16} /> 최근 30일 매출
+          <RevenueIcon size={16} />
+          <span className="distribution-footer-label">최근 30일 매출</span>
           <strong>₩{formatRevenue(game.finance.rolling30)}</strong>
         </span>
         <span>
-          <CalendarIcon size={16} /> 임기 종료
+          <CalendarIcon size={16} />
+          <span className="distribution-footer-label">임기 종료</span>
           <strong>
             DAY {CAMPAIGN_END_DAY} · {Math.max(0, CAMPAIGN_END_DAY - game.day)}일 남음
           </strong>
         </span>
-        <span>
-          <TrendIcon size={16} /> 결산 평가
-          <strong>
-            자금 여력 · 환경 안정 · 장기 운영 기록을 종합 반영
-          </strong>
+        <span aria-label="결산 평가: 자금 여력, 환경 안정, 장기 운영 기록 종합 반영">
+          <TrendIcon size={16} />
+          <span className="distribution-footer-label">결산 평가</span>
+          <strong>자금 · 환경 · 운영 기록 종합</strong>
         </span>
       </div>
     </section>
@@ -5222,6 +5217,7 @@ function OperationsView({
   game: GameState;
   onRunAction: (action: BusinessActionType) => void;
 }) {
+  const [showUnavailableActions, setShowUnavailableActions] = useState(false);
   const environmentHealth = getBusinessEnvironmentHealth(game);
   const supportNeglect = getSupportNeglectPressure(game);
   const supportNeglectNames = supportNeglect.neglectedThemeIds
@@ -5268,6 +5264,11 @@ function OperationsView({
   ]
     .sort((left, right) => right.day - left.day)
     .slice(0, 8);
+  const hasLedgerData =
+    activeRecords.length + pendingEventResults.length + recentDecisions.length > 0;
+  const unavailableActionCount = BUSINESS_ACTIONS.filter(
+    (action) => !getBusinessActionAvailability(game, action.type).available,
+  ).length;
 
   return (
     <section className="subpage operations-page">
@@ -5316,7 +5317,11 @@ function OperationsView({
         />
       </div>
 
-      <div className="operations-workspace">
+      <div
+        className={`operations-workspace ${
+          hasLedgerData ? "has-ledger" : "is-action-only"
+        }`}
+      >
         <section className="operations-action-panel" aria-labelledby="business-actions-title">
           <div className="operations-section-heading">
             <div>
@@ -5325,7 +5330,22 @@ function OperationsView({
                 집행 가능한 사업 액션
               </h2>
             </div>
-            <span>비용 단위 · 원</span>
+            <div className="operations-section-tools">
+              <span>비용 단위 · 원</span>
+              {unavailableActionCount > 0 ? (
+                <button
+                  aria-expanded={showUnavailableActions}
+                  onClick={() =>
+                    setShowUnavailableActions((current) => !current)
+                  }
+                  type="button"
+                >
+                  {showUnavailableActions
+                    ? "사용 불가 숨기기"
+                    : `사용 불가 ${unavailableActionCount}개 보기`}
+                </button>
+              ) : null}
+            </div>
           </div>
           <div
             className="business-action-grid"
@@ -5336,6 +5356,9 @@ function OperationsView({
                 game,
                 action.type,
               );
+              if (!showUnavailableActions && !availability.available) {
+                return null;
+              }
               const latest = records.find(
                 (record) => record.type === action.type,
               );
@@ -5392,6 +5415,11 @@ function OperationsView({
                 );
               const reason = availability.reason;
               const descriptionId = `business-action-${action.type}-status`;
+              const statusText = reason
+                ? reason
+                : latest
+                  ? `최근 DAY ${latest.startedDay} · ${getBusinessRecordStatus(latest, game.day)}`
+                  : null;
               return (
                 <article
                   className={`business-action-card tone-${action.tone}${
@@ -5506,15 +5534,9 @@ function OperationsView({
                     </dl>
                   ) : null}
                   <div className="business-action-footer">
-                    <small id={descriptionId}>
-                      {reason
-                        ? reason
-                        : latest
-                          ? `최근 DAY ${latest.startedDay} · ${getBusinessRecordStatus(latest, game.day)}`
-                          : "집행 이력 없음 · 오늘 실행 가능"}
-                    </small>
+                    {statusText ? <small id={descriptionId}>{statusText}</small> : null}
                     <button
-                      aria-describedby={descriptionId}
+                      aria-describedby={statusText ? descriptionId : undefined}
                       className={action.tone === "danger" ? "danger-action" : "primary-action"}
                       disabled={!availability.available}
                       onClick={() => onRunAction(action.type)}
@@ -5541,6 +5563,7 @@ function OperationsView({
           </div>
         </section>
 
+        {hasLedgerData ? (
         <aside className="operations-ledger" aria-label="사업 액션 진행 및 최근 기록">
           <section className="operations-active-records">
             <div className="operations-section-heading compact">
@@ -5670,6 +5693,7 @@ function OperationsView({
             )}
           </section>
         </aside>
+        ) : null}
       </div>
     </section>
   );

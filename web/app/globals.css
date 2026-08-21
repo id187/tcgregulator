@@ -2257,6 +2257,79 @@ input:focus-visible,
   }
 }
 
+/* Tutorial dialogs size to their current page instead of reserving a blank
+   document-sized canvas. Longer pages still scroll inside the viewport. */
+.tab-tutorial-popup {
+  width: min(740px, 100%);
+  height: auto;
+  max-height: calc(100dvh - 24px);
+  grid-template-rows: auto minmax(0, auto) auto;
+}
+
+.tab-tutorial-popup__header {
+  padding: 16px 20px 15px;
+}
+
+.tab-tutorial-popup__header h2 {
+  font-size: clamp(20px, 2.3vw, 25px);
+}
+
+.tab-tutorial-popup__body {
+  max-height: calc(100dvh - 180px);
+  padding: 18px 20px;
+  scrollbar-gutter: auto;
+}
+
+.tab-tutorial-popup__content {
+  color: var(--ink-800);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.tab-tutorial-popup__terms {
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.tab-tutorial-popup__terms > div {
+  padding: 12px 13px;
+}
+
+.tab-tutorial-popup__terms > div:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
+.tab-tutorial-popup__terms dt {
+  font-size: 12px;
+}
+
+.tab-tutorial-popup__terms dd {
+  margin-top: 4px;
+  color: var(--ink-700);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tab-tutorial-popup__footer {
+  min-height: 54px;
+  justify-content: flex-end;
+  padding: 8px 12px;
+}
+
+.tab-tutorial-popup__page-status {
+  display: none;
+}
+
+@media (max-width: 560px) {
+  .tab-tutorial-popup__body {
+    padding: 15px;
+  }
+
+  .tab-tutorial-popup__terms {
+    gap: 7px;
+  }
+}
+
 /* Live users, meta fatigue, community shock, and finance market view ----- */
 
 .header-user-metric small {
@@ -5035,7 +5108,7 @@ body {
 .distribution-footer {
   min-height: 42px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr) minmax(0, 1.3fr);
   background: #fff;
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
@@ -5043,13 +5116,15 @@ body {
 
 .distribution-footer > span {
   min-width: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto max-content minmax(0, 1fr);
   align-items: center;
   gap: 6px;
   padding: 8px 11px;
   color: var(--ink-500);
   border-right: 1px solid var(--line);
   font-size: 9px;
+  white-space: nowrap;
 }
 
 .distribution-footer > span:last-child {
@@ -5061,13 +5136,17 @@ body {
   color: var(--blue);
 }
 
+.distribution-footer-label {
+  white-space: nowrap;
+}
+
 .distribution-footer strong {
   min-width: 0;
-  margin-left: auto;
-  overflow: hidden;
+  justify-self: end;
+  overflow: visible;
   color: var(--ink-950);
   font-size: 10px;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -11452,5 +11531,419 @@ body {
     min-height: 22px;
     padding: 2px 4px;
     font-size: 7px;
+  }
+}
+
+/* Readability pass -------------------------------------------------------
+   Keep the default surface focused on state, choice and next action. Extra
+   explanations stay available through tutorials, logs and explicit reveals. */
+
+.eyebrow,
+.subpage-heading p,
+.distribution-heading p,
+.distribution-schedule,
+.operations-cadence,
+.header-metric small {
+  display: none;
+}
+
+.header-metric {
+  font-size: 12px;
+}
+
+.header-metric strong {
+  font-size: 14px;
+}
+
+.nav-item {
+  font-size: 13px;
+}
+
+.workspace > .advisor-brief {
+  min-height: 48px;
+  grid-template-columns: 30px minmax(0, 1fr);
+}
+
+.workspace {
+  position: relative;
+}
+
+.workspace > .advisor-brief.collapsed {
+  position: absolute;
+  z-index: 12;
+  top: 12px;
+  right: clamp(12px, 2vw, 26px);
+  min-height: 40px;
+  margin: 0;
+}
+
+.advisor-brief-copy > span {
+  font-size: 10px;
+}
+
+.advisor-brief-copy > p,
+.advisor-brief-copy > small {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.advisor-brief-copy > small {
+  font-size: 11px;
+}
+
+.advisor-brief > button {
+  min-width: 52px;
+  font-size: 10px;
+}
+
+.daily-placement-board {
+  min-height: 44px;
+  grid-template-columns: 1fr;
+}
+
+.daily-placement-board > header {
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  align-content: center;
+  gap: 10px;
+  border-right: 0;
+}
+
+.daily-placement-board > header > div {
+  display: block;
+}
+
+.daily-placement-board > header strong {
+  font-size: 12px;
+}
+
+.daily-placement-board > header > span {
+  font-size: 10px;
+}
+
+.daily-placement-board > header > button {
+  justify-self: end;
+  min-height: 28px;
+  padding: 4px 9px;
+  color: var(--blue);
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.daily-placement-board.is-collapsed .daily-placement-list {
+  display: none;
+}
+
+.daily-placement-board.is-expanded .daily-placement-list {
+  border-top: 1px solid var(--line);
+}
+
+.daily-placement-list strong,
+.daily-placement-list b,
+.daily-placement-list span {
+  font-size: 10px;
+}
+
+.distribution-legend-copy small,
+.distribution-ranking-copy small,
+.legend-theme small,
+.legend-share small,
+.distribution-summary span,
+.distribution-summary small,
+.distribution-footer > span {
+  font-size: 10px;
+}
+
+.distribution-legend-copy strong,
+.distribution-ranking-copy strong,
+.legend-theme strong {
+  font-size: 12px;
+}
+
+.legend-share strong,
+.distribution-share,
+.distribution-summary strong,
+.distribution-footer strong {
+  font-size: 13px;
+}
+
+.overview-card > span {
+  font-size: 11px;
+}
+
+.overview-card > small {
+  font-size: 10px;
+}
+
+.card-registry-table th,
+.card-registry-table td {
+  font-size: 10px;
+}
+
+.card-name-cell strong,
+.card-market-quote strong {
+  font-size: 12px;
+}
+
+.card-name-cell small,
+.card-market-quote small,
+.card-row-meta {
+  font-size: 10px !important;
+}
+
+.card-registry-table tbody tr {
+  min-height: 58px;
+}
+
+.operations-workspace.is-action-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.business-action-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px;
+}
+
+.business-action-card {
+  gap: 9px;
+  padding: 13px;
+}
+
+.business-action-title {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.business-action-title > span,
+.business-action-title > small {
+  display: none;
+}
+
+.business-action-title > strong {
+  font-size: 16px;
+}
+
+.business-action-model {
+  font-size: 9px;
+}
+
+.business-action-facts dt,
+.business-action-return,
+.business-action-risk,
+.business-action-footer > small,
+.business-action-challenge dt,
+.operations-section-heading > span {
+  font-size: 10px;
+}
+
+.business-action-facts dd,
+.business-action-effect,
+.business-action-return strong,
+.business-action-risk strong,
+.business-action-challenge dd {
+  font-size: 12px;
+}
+
+.business-action-return small {
+  display: none;
+}
+
+.business-action-footer:has(> button:only-child) {
+  grid-template-columns: 1fr;
+}
+
+.business-action-footer:has(> button:only-child) > button {
+  justify-self: end;
+}
+
+.business-action-footer > button {
+  min-height: 36px;
+  padding: 7px 10px;
+  font-size: 11px;
+}
+
+.operations-section-heading h2 {
+  font-size: 14px;
+}
+
+.operations-section-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.operations-section-tools > span {
+  display: none;
+}
+
+.operations-section-tools > button {
+  min-height: 30px;
+  padding: 5px 9px;
+  color: var(--blue);
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.news-item {
+  grid-template-columns: 78px minmax(0, 1fr);
+  padding: 12px 14px;
+}
+
+.news-item-day,
+.daily-news-summary > span,
+.news-day-controls button {
+  font-size: 10px;
+}
+
+.news-item strong {
+  font-size: 13px;
+}
+
+.news-item p {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.news-item-reason {
+  display: block;
+  margin-top: 5px;
+  color: var(--blue);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.impact-message {
+  min-height: 84px;
+  grid-template-rows: auto auto auto;
+}
+
+.impact-message > span {
+  grid-row: 1 / 4;
+  font-size: 9px;
+}
+
+.impact-message > strong {
+  font-size: 12px;
+}
+
+.impact-message > p {
+  overflow: visible;
+  font-size: 10px;
+  line-height: 1.4;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.impact-message-reason {
+  grid-column: 2;
+  overflow: visible;
+  color: #83b6e8;
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.impact-message > button {
+  grid-row: 1 / 4;
+}
+
+.time-actions > .time-major-action,
+.time-actions > .time-major-action:not(.primary-action) {
+  min-width: 172px;
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  color: #fff;
+  background: var(--blue);
+  border-color: var(--blue);
+  text-align: left;
+}
+
+.time-major-action > span {
+  font-size: 9px;
+  opacity: 0.78;
+}
+
+.time-major-action > strong {
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .header-metric span {
+    display: none;
+  }
+
+  .header-metric strong {
+    flex: 0 0 auto;
+    overflow: visible;
+    font-size: 11px;
+    text-overflow: clip;
+    white-space: nowrap;
+  }
+
+  .advisor-brief-copy {
+    max-height: none;
+    grid-template-columns: max-content minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    overflow: visible;
+  }
+
+  .advisor-brief-copy > span {
+    grid-row: 1 / -1;
+  }
+
+  .business-action-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .time-actions > .time-major-action,
+  .time-actions > .time-major-action:not(.primary-action) {
+    min-width: 148px;
+  }
+}
+
+@media (max-width: 620px) {
+  .header-metric {
+    font-size: 10px;
+  }
+
+  .header-metric strong {
+    font-size: 11px;
+  }
+
+  .daily-placement-board > header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .daily-placement-board > header > span {
+    display: none;
+  }
+
+  .campaign-progress {
+    width: min(160px, 38vw);
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .time-actions > .time-major-action,
+  .time-actions > .time-major-action:not(.primary-action) {
+    min-width: 118px;
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .time-major-action > span {
+    display: none;
   }
 }

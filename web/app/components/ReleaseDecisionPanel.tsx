@@ -15,6 +15,7 @@ import type {
   ReleaseOption,
   ReleaseSelection,
 } from "../game/types.ts";
+import { RegulatorCardFace } from "./RegulatorCardFace.tsx";
 
 const POWER_ADJUSTMENTS = [-3, -2, -1, 0, 1, 2, 3] as const satisfies
   readonly PowerAdjustment[];
@@ -23,7 +24,14 @@ function optionName(option: ReleaseOption): string {
   if (option.kind === "generic") {
     return getGenericCard(option.genericCardId)?.name ?? "범용 카드";
   }
-  if (option.kind === "reprint") return `재판 · ${option.cardId}`;
+  if (option.kind === "reprint") {
+    const themePart = THEME_BY_ID[option.themeId]?.parts.find(
+      (part) => part.id === option.cardId,
+    );
+    return `재판 · ${
+      themePart?.name ?? getGenericCard(option.cardId)?.name ?? "출시 카드"
+    }`;
+  }
   const theme = THEME_BY_ID[option.themeId];
   if (option.kind === "new-theme") return theme?.name ?? "신테마";
   return theme?.shortName ?? "테마";
@@ -62,6 +70,30 @@ function optionRole(option: ReleaseOption): string {
   if (option.kind === "support") return "지원";
   if (option.kind === "generic") return "범용";
   return "예약 재판";
+}
+
+function optionEffect(game: GameState, option: ReleaseOption): string {
+  if (option.kind === "generic") {
+    return (
+      getGenericCard(option.genericCardId)?.description ??
+      "여러 테마가 공유할 수 있는 범용 선택지를 추가합니다."
+    );
+  }
+  if (option.kind === "reprint") {
+    return "절판된 핵심 카드의 접근성을 회복하고 보유가치의 방향을 바꿉니다.";
+  }
+  const theme = THEME_BY_ID[option.themeId];
+  if (option.kind === "new-theme") {
+    return theme?.playstyle ?? "새로운 덱과 플레이 흐름을 환경에 추가합니다.";
+  }
+  const keyword = getProspectiveSupportKeyword(
+    game,
+    option.themeId,
+    option.direction,
+  );
+  return keyword
+    ? `${getPlayKeyword(keyword).label} 성향을 강화하는 ${theme?.shortName ?? "테마"} 전용 지원입니다.`
+    : `${theme?.shortName ?? "테마"}의 기존 플랜을 강화하는 전용 지원입니다.`;
 }
 
 export function ReleaseDecisionPanel({
@@ -162,6 +194,11 @@ export function ReleaseDecisionPanel({
                   const selected = selectedOptionIds.includes(option.id);
                   const nameLines = optionNameLines(option);
                   const keywordLabels = optionKeywordLabels(game, option);
+                  const faceThemeId =
+                    option.kind === "generic" ? undefined : option.themeId;
+                  const faceAccent = faceThemeId
+                    ? THEME_BY_ID[faceThemeId]?.color
+                    : "#4b86a6";
                   const atCapacity = !selected && selectedCount >= expectedCount;
                   const preservesRequiredMix = canToggleReleaseOption(
                     options,
@@ -189,15 +226,14 @@ export function ReleaseDecisionPanel({
                       }
                       type="button"
                     >
-                      <span>{optionRole(option)}</span>
-                      <strong className="release-option-name">
-                        {nameLines.map((line) => <span key={line}>{line}</span>)}
-                      </strong>
-                      {keywordLabels.length > 0 ? (
-                        <small className="release-option-keywords">
-                          {keywordLabels.join(" · ")}
-                        </small>
-                      ) : null}
+                      <RegulatorCardFace
+                        accent={faceAccent}
+                        effect={optionEffect(game, option)}
+                        footer={keywordLabels.join(" · ")}
+                        overline={optionRole(option)}
+                        themeId={faceThemeId}
+                        title={nameLines.join(" ")}
+                      />
                     </button>
                   );
                 })}
@@ -206,17 +242,21 @@ export function ReleaseDecisionPanel({
         ))}
       </div>
 
-      {selectedDirectOptions.length > 0 ? (
-        <section
-          aria-label="선택한 발매 카드 파워 조정"
-          className="release-power-adjustments"
-        >
-          <header>
-            <strong>파워 조정</strong>
-            <span>-3은 약하게 · 0은 기본 · +3은 강하게</span>
-          </header>
-          <div>
-            {selectedDirectOptions.map((option) => {
+      <section
+        aria-label="선택한 발매 카드 파워 조정"
+        className="release-power-adjustments"
+      >
+        <header>
+          <strong>파워 조정</strong>
+          <span>-3은 약하게 · 0은 기본 · +3은 강하게</span>
+        </header>
+        <div>
+          {selectedDirectOptions.length === 0 ? (
+            <p className="release-power-adjustments-empty" role="status">
+              선택한 카드가 없습니다. 위 후보를 선택하면 이곳에서 파워를 조정할 수 있습니다.
+            </p>
+          ) : (
+            selectedDirectOptions.map((option) => {
               const currentAdjustment =
                 powerAdjustments[option.id] ?? 0;
               return (
@@ -249,10 +289,10 @@ export function ReleaseDecisionPanel({
                   </div>
                 </div>
               );
-            })}
-          </div>
-        </section>
-      ) : null}
+            })
+          )}
+        </div>
+      </section>
 
       {lockedReprint ? (
         <div className="release-locked-reprint" role="status">
@@ -265,14 +305,14 @@ export function ReleaseDecisionPanel({
       <footer>
         <p>
           {complete
-            ? `필수 구성이 완성됐습니다. 제출하면 DAY ${game.day} 발매 기록에 즉시 반영됩니다.`
+            ? `필수 구성이 완성됐습니다. DAY ${game.day} 생산안으로 봉인하고 DAY ${game.day + 1}에 정식 출시합니다.`
             : hasGenericRules
               ? "신테마·지원·범용을 각각 1종 이상 선택해주세요."
               : "신테마가 1종 이상 필요합니다."}
         </p>
         <button
           className="primary-action"
-          data-sound="release"
+          data-sound="click"
           data-tutorial-control="release-submit"
           disabled={disabled || !complete}
           onClick={() => {
@@ -287,7 +327,7 @@ export function ReleaseDecisionPanel({
           }}
           type="button"
         >
-          발매 확정
+          생산안 확정
         </button>
       </footer>
     </section>

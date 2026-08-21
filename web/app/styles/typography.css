@@ -1,0 +1,66 @@
+/* Semantic information never drops below the size of a readable caption. */
+.theme-statline,
+.theme-metrics small,
+.detail-facts,
+.parts-table thead th,
+.parts-table tbody th span,
+.parts-table tbody th small,
+.generic-restriction-heading p,
+.generic-table-keyword,
+.generic-restriction-table .generic-researching,
+.official-limit .restriction-tenure,
+.change-note,
+.community-observation-hold span,
+.fatigue-signal-ribbon > span,
+.fatigue-signal-ribbon em,
+.fatigue-badge,
+.reaction-headline > span,
+.reaction-heat > div span,
+.reaction-chips span,
+.community-heat-summary,
+.restriction-reaction-copy > span,
+.restriction-relaxation-chip,
+.restriction-reaction-meter > span,
+.pack-odds-confirm-copy > span,
+.pack-odds-confirm-facts dt,
+.pack-odds-confirm-warning span,
+.pack-odds-confirm-actions > small,
+.release-locked-reprint,
+.guided-mandate-copy > span,
+.guided-mandate-actions > span,
+.guided-coach-copy > span,
+.guided-coach-footer > span,
+.guided-status-copy > span {
+  font-size: var(--fs-micro) !important;
+  line-height: 1.45;
+}
+
+.community-observation-hold strong,
+.restriction-reaction-copy > p,
+.guided-mandate-copy > p,
+.guided-coach-copy > p {
+  font-size: var(--fs-meta) !important;
+  line-height: 1.55;
+}
+
+.guided-mandate-actions > button,
+.guided-coach-confirm,
+.guided-tutorial-actions > button,
+.guided-status-actions > button,
+.copy-control > button,
+.release-power-scale > button {
+  min-height: 36px;
+  font-size: var(--fs-control) !important;
+}
+
+@media (max-width: 620px), (max-height: 520px) {
+  .header-metric,
+  .header-metric strong,
+  .nav-item,
+  .time-step-action,
+  .time-major-action > span,
+  .time-major-action > strong,
+  .time-major-action > small {
+    font-size: var(--fs-micro) !important;
+  }
+}

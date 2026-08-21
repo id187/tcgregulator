@@ -1,0 +1,17 @@
+:root {
+  --fs-micro: 11px;
+  --fs-meta: 12px;
+  --fs-body: 13px;
+  --fs-control: 12px;
+  --chrome-950: #07111d;
+  --chrome-900: #0a1928;
+  --chrome-800: #10263a;
+  --chrome-700: #17344d;
+  --chrome-line: #29445e;
+  --chrome-text: #edf5fb;
+  --chrome-muted: #9db2c5;
+  --chrome-gold: #d8bd72;
+  --chrome-cyan: #65c9d0;
+  --decision-release: #63d1c7;
+  --decision-restriction: #e0a253;
+}

@@ -1,0 +1,32 @@
+.player-segment-guide > div {
+  padding-block: 8px 9px;
+}
+
+.player-segment-guide .player-segment-guide-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 3px;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.player-segment-guide-heading > i {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 0.9);
+}
+
+.player-segment-guide > div > small {
+  display: block;
+  overflow: visible;
+  color: var(--ink-600);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: keep-all;
+}

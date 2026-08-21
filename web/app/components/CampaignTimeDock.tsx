@@ -2,12 +2,14 @@ import type { CampaignMilestone } from "../game/campaign-milestone.ts";
 
 export function CampaignTimeDock({
   disabled,
+  fastForwardLocked = false,
   milestone,
   onAdvance,
   progress,
   progressLabel,
 }: {
   disabled: boolean;
+  fastForwardLocked?: boolean;
   milestone: CampaignMilestone | null;
   onAdvance: (days: number) => void;
   progress: number;
@@ -45,7 +47,7 @@ export function CampaignTimeDock({
         </button>
         <button
           className="time-step-action primary-action time-major-action"
-          disabled={disabled || !milestone}
+          disabled={disabled || fastForwardLocked || !milestone}
           onClick={() => milestone && onAdvance(milestone.days)}
           type="button"
         >
@@ -53,9 +55,21 @@ export function CampaignTimeDock({
             <circle cx="16" cy="16" r="12" />
             <path d="M16 9v7l5 3M16 2v4M30 16h-4" />
           </svg>
-          <span>다음 일정</span>
-          <strong>{milestone ? milestone.label : "예정 없음"}</strong>
-          <small>{milestone ? `${milestone.days}일 후` : "종료"}</small>
+          <span>{fastForwardLocked ? "후일 관측" : "다음 일정"}</span>
+          <strong>
+            {fastForwardLocked
+              ? "반응 확인 필요"
+              : milestone
+                ? milestone.label
+                : "예정 없음"}
+          </strong>
+          <small>
+            {fastForwardLocked
+              ? "+1일로 진행"
+              : milestone
+                ? `${milestone.days}일 후`
+                : "종료"}
+          </small>
         </button>
       </div>
     </footer>

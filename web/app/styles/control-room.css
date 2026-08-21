@@ -1,0 +1,430 @@
+html,
+body,
+.app-shell {
+  background: var(--chrome-950);
+}
+
+.topbar {
+  color: var(--chrome-text);
+  background:
+    linear-gradient(90deg, rgb(101 201 208 / 0.05), transparent 28%),
+    linear-gradient(180deg, #10263a, #0a1827);
+  border-bottom-color: var(--chrome-line);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.2);
+}
+
+.header-reference-buttons > button,
+.header-controls button,
+.header-settings > summary {
+  color: var(--chrome-text);
+  background: rgb(255 255 255 / 0.035);
+  border-color: var(--chrome-line);
+}
+
+.header-reference-buttons > button:hover,
+.header-reference-buttons > button:focus-visible,
+.header-reference-buttons > button.is-active,
+.header-controls button:hover,
+.header-settings > summary:hover {
+  color: #fff;
+  background: var(--chrome-700);
+  border-color: #55738e;
+}
+
+.header-settings .settings-options > button {
+  color: #405169;
+  background: #f7f9fc;
+  border-color: #aebdcd;
+}
+
+.header-settings .settings-options > button span {
+  color: inherit;
+  font-weight: 750;
+}
+
+.header-settings .settings-options > button strong {
+  color: #2f68ae;
+  font-weight: 850;
+}
+
+.header-settings .settings-options > button:disabled {
+  color: #65758a;
+  background: #edf1f5;
+  border-color: #b7c3d1;
+  opacity: 1;
+}
+
+.header-settings .settings-options > button:disabled strong {
+  color: #65758a;
+}
+
+.header-metric {
+  color: var(--chrome-muted);
+  border-color: var(--chrome-line);
+}
+
+.header-metric svg {
+  color: var(--chrome-cyan);
+}
+
+.header-metric strong {
+  color: var(--chrome-text);
+}
+
+.header-cash-metric,
+.header-cash-metric strong {
+  color: #9de0bd;
+  background: rgb(61 142 105 / 0.08);
+}
+
+.primary-nav {
+  color: var(--chrome-muted);
+  background: #0b1724;
+  border-bottom-color: var(--chrome-line);
+}
+
+.nav-item,
+.reset-button {
+  color: var(--chrome-muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+.nav-item:hover,
+.nav-item.active {
+  color: var(--chrome-text);
+  background: linear-gradient(180deg, rgb(101 201 208 / 0.1), transparent);
+}
+
+.nav-item.active::after {
+  background: var(--chrome-gold);
+  box-shadow: 0 0 16px rgb(216 189 114 / 0.55);
+}
+
+.reset-button:hover {
+  color: #fff;
+}
+
+.workspace {
+  width: min(1580px, 100%);
+  background:
+    linear-gradient(90deg, rgb(8 28 47 / 0.08) 1px, transparent 1px),
+    linear-gradient(rgb(8 28 47 / 0.08) 1px, transparent 1px),
+    #e8eef4;
+  background-size: 24px 24px;
+}
+
+.workspace > .advisor-brief,
+.workspace > .advisor-brief.collapsed,
+.workspace > .advisor-brief.calm,
+.workspace > .advisor-brief.info,
+.workspace > .advisor-brief.caution,
+.workspace > .advisor-brief.critical {
+  color: var(--chrome-text);
+  background:
+    radial-gradient(circle at 30px 50%, rgb(101 201 208 / 0.14), transparent 72px),
+    linear-gradient(90deg, #10283c, #0c1c2c);
+  border-color: #34536e;
+  box-shadow: 0 9px 22px rgb(6 18 30 / 0.18);
+}
+
+.advisor-brief-copy > span {
+  color: var(--chrome-cyan);
+}
+
+.advisor-brief-copy > p,
+.advisor-brief-copy > small {
+  color: var(--chrome-text);
+}
+
+.time-dock {
+  color: var(--chrome-text);
+  background:
+    linear-gradient(90deg, rgb(216 189 114 / 0.05), transparent 32%),
+    #091725;
+  border-top-color: var(--chrome-line);
+  box-shadow: 0 -12px 28px rgb(0 0 0 / 0.16);
+}
+
+.progress-copy,
+.time-major-action > span,
+.time-major-action > small {
+  color: var(--chrome-muted);
+}
+
+.progress-copy strong,
+.time-major-action > strong {
+  color: var(--chrome-text);
+}
+
+.progress-track {
+  background: #183149;
+}
+
+.progress-track > span {
+  background: linear-gradient(90deg, var(--chrome-cyan), var(--chrome-gold));
+}
+
+.time-actions > .time-step-action:not(.primary-action) {
+  color: var(--chrome-text);
+  background: var(--chrome-800);
+  border-color: #48657f;
+}
+
+.time-actions > .time-major-action,
+.time-actions > .time-major-action:not(.primary-action) {
+  color: #07111d;
+  background: linear-gradient(135deg, #e0ca89, #71c9cb);
+  border-color: #b7d7cb;
+  box-shadow: 0 8px 24px rgb(49 128 139 / 0.2);
+}
+
+.time-actions > .time-major-action > span,
+.time-actions > .time-major-action > strong,
+.time-actions > .time-major-action > small {
+  color: #07111d;
+}
+
+/* LOTUS now behaves like an optional cockpit terminal. It floats above the
+   time controls and never takes height away from the active game surface. */
+.lotus-advisor-terminal {
+  --lotus-terminal-accent: #7eb8c5;
+  position: fixed;
+  z-index: 150;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: calc(92px + env(safe-area-inset-bottom));
+  display: grid;
+  justify-items: end;
+  pointer-events: none;
+}
+
+.lotus-advisor-terminal.info {
+  --lotus-terminal-accent: var(--chrome-cyan);
+}
+
+.lotus-advisor-terminal.caution {
+  --lotus-terminal-accent: var(--chrome-gold);
+}
+
+.lotus-advisor-terminal.critical {
+  --lotus-terminal-accent: #ef756c;
+}
+
+/* Decision screens keep their primary submit action in the lower-right.
+   Lift LOTUS above that action instead of letting a helper cover the verdict. */
+.app-shell[data-phase="release-edit"] .lotus-advisor-terminal,
+.app-shell[data-phase="ban-edit"] .lotus-advisor-terminal {
+  bottom: calc(152px + env(safe-area-inset-bottom));
+}
+
+.lotus-advisor-trigger,
+.lotus-advisor-panel {
+  pointer-events: auto;
+}
+
+.lotus-advisor-trigger {
+  position: relative;
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  padding: 7px;
+  color: var(--lotus-terminal-accent);
+  background:
+    radial-gradient(circle at 50% 44%, rgb(255 255 255 / 0.08), transparent 58%),
+    linear-gradient(145deg, #142f46, #081522 70%);
+  border: 1px solid color-mix(in srgb, var(--lotus-terminal-accent) 68%, #29445e);
+  border-radius: 14px;
+  box-shadow:
+    0 12px 30px rgb(0 0 0 / 0.32),
+    inset 0 0 18px color-mix(in srgb, var(--lotus-terminal-accent) 10%, transparent);
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.lotus-advisor-trigger:hover,
+.lotus-advisor-trigger:focus-visible,
+.lotus-advisor-terminal.is-open .lotus-advisor-trigger {
+  border-color: var(--lotus-terminal-accent);
+  box-shadow:
+    0 14px 34px rgb(0 0 0 / 0.38),
+    0 0 0 3px color-mix(in srgb, var(--lotus-terminal-accent) 18%, transparent),
+    inset 0 0 22px color-mix(in srgb, var(--lotus-terminal-accent) 16%, transparent);
+  transform: translateY(-2px);
+}
+
+.lotus-advisor-trigger:focus-visible,
+.lotus-advisor-close:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--lotus-terminal-accent) 42%, transparent);
+  outline-offset: 3px;
+}
+
+.lotus-advisor-trigger-symbol,
+.lotus-advisor-trigger-symbol > .lotus-symbol {
+  width: 38px;
+  height: 38px;
+}
+
+.lotus-advisor-trigger-copy {
+  display: none;
+}
+
+.lotus-advisor-status-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  background: var(--lotus-terminal-accent);
+  border: 2px solid #0b1927;
+  border-radius: 50%;
+  box-shadow: 0 0 10px var(--lotus-terminal-accent);
+}
+
+.lotus-advisor-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 11px);
+  width: min(390px, calc(100vw - 24px));
+  max-height: min(360px, calc(100dvh - 190px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  color: var(--chrome-text);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--lotus-terminal-accent) 10%, transparent), transparent 42%),
+    linear-gradient(155deg, #10283c, #081522 78%);
+  border: 1px solid color-mix(in srgb, var(--lotus-terminal-accent) 52%, #29445e);
+  border-radius: 8px;
+  box-shadow: 0 20px 54px rgb(0 0 0 / 0.42);
+  scrollbar-gutter: stable;
+  animation: lotus-terminal-open 170ms cubic-bezier(0.2, 0.82, 0.2, 1) both;
+}
+
+.lotus-advisor-panel::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--lotus-terminal-accent), transparent);
+}
+
+.lotus-advisor-panel-heading {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  grid-template-rows: auto auto;
+  gap: 1px 12px;
+  align-items: center;
+  padding: 11px 12px 10px 14px;
+  border-bottom: 1px solid var(--chrome-line);
+}
+
+.lotus-advisor-panel-heading > span {
+  color: var(--lotus-terminal-accent);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.09em;
+}
+
+.lotus-advisor-panel-heading > strong {
+  overflow-wrap: anywhere;
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.lotus-advisor-close {
+  width: 34px;
+  height: 34px;
+  grid-column: 2;
+  grid-row: 1 / -1;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: var(--chrome-muted);
+  background: rgb(255 255 255 / 0.04);
+  border: 1px solid var(--chrome-line);
+  border-radius: 6px;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.lotus-advisor-close:hover {
+  color: #fff;
+  border-color: var(--lotus-terminal-accent);
+}
+
+.lotus-advisor-copy {
+  display: grid;
+  gap: 7px;
+  padding: 14px;
+}
+
+.lotus-advisor-copy > p,
+.lotus-advisor-copy > small {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.lotus-advisor-copy > p {
+  color: #edf5fb;
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.6;
+}
+
+.lotus-advisor-copy > small {
+  color: #a9bdce;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+@keyframes lotus-terminal-open {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 620px) {
+  .lotus-advisor-terminal {
+    right: max(8px, env(safe-area-inset-right));
+    bottom: calc(80px + env(safe-area-inset-bottom));
+  }
+
+  .app-shell[data-phase="release-edit"] .lotus-advisor-terminal,
+  .app-shell[data-phase="ban-edit"] .lotus-advisor-terminal {
+    bottom: calc(132px + env(safe-area-inset-bottom));
+  }
+
+  .lotus-advisor-trigger {
+    width: 48px;
+    height: 48px;
+    padding: 6px;
+  }
+
+  .lotus-advisor-trigger-symbol,
+  .lotus-advisor-trigger-symbol > .lotus-symbol {
+    width: 34px;
+    height: 34px;
+  }
+
+  .lotus-advisor-panel {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 160px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lotus-advisor-terminal *,
+  .lotus-advisor-terminal *::before,
+  .lotus-advisor-terminal *::after {
+    animation: none;
+    transition: none;
+  }
+}

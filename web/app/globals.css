@@ -10564,7 +10564,7 @@ body {
 }
 
 .app-shell.impact-positive .impact-screen-flash {
-  --impact-color: 38 134 107;
+  --impact-color: 44 143 198;
 }
 
 .app-shell.impact-negative .impact-screen-flash {
@@ -10573,6 +10573,33 @@ body {
 
 .app-shell.impact-caution .impact-screen-flash {
   --impact-color: 209 138 36;
+}
+
+.app-shell.is-impact-observing {
+  --impact-shake-x: 2px;
+  --impact-shake-x-negative: -2px;
+  --impact-shake-y: 1px;
+  --impact-shake-y-negative: -1px;
+}
+
+.app-shell.is-impact-observing.impact-caution {
+  --impact-shake-x: 3px;
+  --impact-shake-x-negative: -3px;
+}
+
+.app-shell.is-impact-observing.impact-negative {
+  --impact-shake-x: 5px;
+  --impact-shake-x-negative: -5px;
+  --impact-shake-y: 2px;
+  --impact-shake-y-negative: -2px;
+}
+
+.app-shell.is-impact-observing .topbar,
+.app-shell.is-impact-observing .primary-nav,
+.app-shell.is-impact-observing .workspace,
+.app-shell.is-impact-observing .time-dock {
+  animation: impact-screen-jolt 520ms cubic-bezier(0.22, 0.8, 0.25, 1) both;
+  will-change: transform;
 }
 
 .is-impact-observing .header-metric strong {
@@ -10607,6 +10634,40 @@ body {
     border-width: 0;
     box-shadow: inset 0 0 0 0 rgb(var(--impact-color) / 0);
     opacity: 0;
+  }
+}
+
+@keyframes impact-screen-jolt {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  14% {
+    transform: translate3d(
+      var(--impact-shake-x-negative),
+      var(--impact-shake-y),
+      0
+    );
+  }
+  29% {
+    transform: translate3d(
+      var(--impact-shake-x),
+      var(--impact-shake-y-negative),
+      0
+    );
+  }
+  45% {
+    transform: translate3d(
+      var(--impact-shake-x-negative),
+      0,
+      0
+    );
+  }
+  62% {
+    transform: translate3d(var(--impact-shake-x), 0, 0);
+  }
+  78% {
+    transform: translate3d(var(--impact-shake-x-negative), 0, 0);
   }
 }
 
@@ -10871,6 +10932,10 @@ body {
     display: none !important;
   }
 
+  .app-shell.is-impact-observing .topbar,
+  .app-shell.is-impact-observing .primary-nav,
+  .app-shell.is-impact-observing .workspace,
+  .app-shell.is-impact-observing .time-dock,
   .is-impact-observing .header-metric strong {
     animation: none !important;
     transition: none !important;

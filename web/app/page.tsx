@@ -13,20 +13,40 @@ import {
   UsersIcon,
 } from "./components/MetricGlyphs";
 import { HeaderReferenceTools } from "./components/HeaderReferenceTools";
+import { CurrentBanList } from "./components/CurrentBanList";
+import {
+  GenericAdopterNames,
+  getReleasedGenericCardReferences,
+} from "./components/GenericCardReferences";
+import {
+  LotusBrief,
+  type LotusBriefContent,
+} from "./components/LotusBrief";
 import { LotusSymbol } from "./components/LotusSymbol";
 import { TabTutorialPopup } from "./components/TabTutorialPopup";
 import {
   CardMarketQuote,
 } from "./components/CardMarketQuote";
 import { CampaignTimeDock } from "./components/CampaignTimeDock";
+import { DecisionEventHero } from "./components/DecisionEventHero";
+import {
+  DecisionOutcomeOverlay,
+  type DecisionOutcome,
+} from "./components/DecisionOutcomeOverlay";
+import { PrimaryNavigation } from "./components/PrimaryNavigation";
+import { PlayerSegmentGuide } from "./components/PlayerSegmentGuide";
+import { PlayKeywordGlossary } from "./components/PlayKeywordGlossary";
+import { RestrictionConfirmationSeal } from "./components/RestrictionConfirmationSeal";
+import {
+  loadPendingDecisionAftermath,
+  savePendingDecisionAftermath,
+  type PendingDecisionAftermath,
+} from "./components/decision-aftermath-client";
 import { DailyNewsView, ImpactMessageStack } from "./components/NewsViews";
-import { ReleasePackCard } from "./components/ReleasePackCard";
-import { ReleaseDecisionPanel } from "./components/ReleaseDecisionPanel";
+import { ReleasesView } from "./components/ReleasesView";
 import { ThemeEmblem } from "./components/ThemeEmblem";
 import { TitleScreen } from "./components/TitleScreen";
 import {
-  INITIAL_THEME_PART_COUNT,
-  SUPPORT_PARTS_PER_RELEASE,
   THEME_BY_ID,
   THEMES,
 } from "./game/content";
@@ -99,14 +119,11 @@ import {
 import { isInitialGenericReleaseBatch } from "./game/initial-generic-cards";
 import {
   getPlayKeyword,
-  PLAY_KEYWORD_IDS,
 } from "./game/play-keywords";
 import {
-  getGenericCard,
-  type GenericCardCatalogEntry,
   type GenericCardId,
 } from "./game/generic-card-catalog";
-import type { GenericCardMetaEntry } from "./game/generic-card-meta";
+import { getPartReleaseLabel } from "./game/release-display";
 import { getSupportNeglectPressure } from "./game/support-continuity";
 import {
   getPlacementTier,
@@ -149,7 +166,6 @@ import {
   createCampaignStart,
   formatCommunityEvent,
   getCommittedSupportCount,
-  getCurrentGenericMetaModel,
   getEffectiveThemePlayKeywords,
   getNextBanDay,
   getNextReleaseDay,
@@ -168,6 +184,10 @@ import {
   type RestrictionPolicyProfile,
 } from "./game/restriction-policy";
 import { getRestrictionChangeCapacity } from "./game/restriction-cap";
+import {
+  getCurrentRestrictionCards,
+  getRestrictionCardDisplay,
+} from "./game/restriction-display";
 import type {
   BusinessActionRecord,
   BusinessActionType,
@@ -178,7 +198,6 @@ import type {
   GameCommand,
   GameState,
   PartRole,
-  PowerAdjustment,
   ReleaseSelection,
   RestrictionLimit,
   SupportDirection,
@@ -189,18 +208,13 @@ import type {
 
 type TabId = TabTutorialTabId;
 
-const NAV_ITEMS: { id: TabId; label: string }[] = [
-  { id: "distribution", label: "분포" },
-  { id: "cards", label: "카드" },
-  { id: "releases", label: "발매" },
-  { id: "operations", label: "사업 운영" },
-  { id: "community", label: "커뮤니티" },
-  { id: "news", label: "소식" },
-  { id: "finance", label: "재무" },
-];
-
 type MotionPreference = "system" | "reduced";
 type GameSoundKind = "click" | "release" | "restriction" | "event" | "impact";
+
+type RestrictionDecisionOutcome = Extract<
+  DecisionOutcome,
+  { kind: "restriction" }
+>;
 
 type InterfaceSettings = {
   soundEnabled: boolean;
@@ -612,212 +626,6 @@ function GenericCardMark({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function PlayKeywordGlossary({ expanded = false }: { expanded?: boolean }) {
-  return (
-    <details className="play-keyword-glossary" open={expanded}>
-      <summary>플레이 키워드 도감</summary>
-      <p className="play-keyword-guide">
-        테마는 기본 3종으로 시작하며 지원 발매마다 1종을 얻어 최대 6종으로
-        확장됩니다. 유불리 수치는 공개되지 않으므로 설명·입상 변화·커뮤니티 연구로
-        상성을 추론하십시오.
-      </p>
-      <div>
-        {PLAY_KEYWORD_IDS.map((keyword) => {
-          const entry = getPlayKeyword(keyword);
-          return (
-            <article key={keyword}>
-              <strong>{entry.label}</strong>
-              <p>{entry.description}</p>
-            </article>
-          );
-        })}
-      </div>
-    </details>
-  );
-}
-
-function buildPageGenericMeta(game: GameState) {
-  return getCurrentGenericMetaModel(game);
-}
-
-type ReleasedGenericCardReference = {
-  card: GenericCardCatalogEntry;
-  releaseDay: number;
-  powerAdjustment: PowerAdjustment;
-  legalLimit: RestrictionLimit;
-  meta: GenericCardMetaEntry | null;
-};
-
-function getReleasedGenericCardReferences(
-  game: GameState,
-): ReleasedGenericCardReference[] {
-  const meta = buildPageGenericMeta(game);
-  const releases = new Map<
-    GenericCardId,
-    { day: number; powerAdjustment: PowerAdjustment }
-  >();
-  for (const batch of game.releaseHistory) {
-    for (const product of batch.products) {
-      if (product.kind !== "generic" || releases.has(product.genericCardId)) {
-        continue;
-      }
-      releases.set(product.genericCardId, {
-        day: batch.day,
-        powerAdjustment: product.powerAdjustment,
-      });
-    }
-  }
-  return [...releases.entries()]
-    .flatMap(([cardId, release]) => {
-      const card = getGenericCard(cardId);
-      if (!card) return [];
-      return [{
-        card,
-        releaseDay: release.day,
-        powerAdjustment: release.powerAdjustment,
-        legalLimit: game.genericLimits[cardId] ?? 3,
-        meta: meta.cardMetaById[cardId] ?? null,
-      }];
-    })
-    .sort(
-      (left, right) =>
-        right.releaseDay - left.releaseDay ||
-        left.card.name.localeCompare(right.card.name),
-    );
-}
-
-function getGenericAdopterThemeIds(
-  game: GameState,
-  meta: GenericCardMetaEntry | null,
-  limit = 4,
-): ThemeId[] {
-  if (!meta || meta.legalLimit === 0) return [];
-  return Object.entries(meta.adoptionByTheme)
-    .filter(([, adoption]) => adoption >= 0.12)
-    .sort(
-      ([leftId, leftAdoption], [rightId, rightAdoption]) =>
-        rightAdoption - leftAdoption ||
-        (game.themes[rightId]?.share ?? 0) -
-          (game.themes[leftId]?.share ?? 0) ||
-        leftId.localeCompare(rightId),
-    )
-    .slice(0, limit)
-    .map(([themeId]) => themeId);
-}
-
-function GenericAdopterNames({
-  game,
-  meta,
-  limit = 4,
-}: {
-  game: GameState;
-  meta: GenericCardMetaEntry | null;
-  limit?: number;
-}) {
-  const themeIds = getGenericAdopterThemeIds(game, meta, limit);
-  if (themeIds.length === 0) {
-    return <span className="generic-researching">채용 연구 중</span>;
-  }
-  return (
-    <span className="generic-adopter-names">
-      {themeIds.map((themeId) => THEME_BY_ID[themeId]?.shortName ?? themeId).join(" · ")}
-    </span>
-  );
-}
-
-function getLastRestrictionDay(game: GameState, cardId: string): string {
-  const lastDay = game.community.reduce((latest, event) => {
-    const isCardChange =
-      event.category === "restriction" &&
-      (event.type === "restriction-applied" || event.type === "cosmetic-restriction") &&
-      (event.partId === cardId || event.genericCardId === cardId);
-    return isCardChange ? Math.max(latest, event.day) : latest;
-  }, -1);
-  return lastDay >= 0 ? `DAY ${lastDay}` : "—";
-}
-
-function CurrentBanList({
-  expanded = false,
-  game,
-}: {
-  expanded?: boolean;
-  game: GameState;
-}) {
-  const themeEntries = game.activeThemeIds
-    .flatMap((themeId) => {
-      const theme = THEME_BY_ID[themeId];
-      const runtime = game.themes[themeId];
-      if (!theme || !runtime) return [];
-      return theme.parts
-        .filter((part) => runtime.releasedPartIds.includes(part.id))
-        .flatMap((part) => {
-          const limit = runtime.legalLimits[part.id] ?? 3;
-          return limit < 3 ? [{ theme, part, limit }] : [];
-        });
-    })
-    .sort(
-      (left, right) =>
-        left.limit - right.limit ||
-        left.theme.shortName.localeCompare(right.theme.shortName) ||
-        left.part.name.localeCompare(right.part.name),
-    );
-  const genericEntries = getReleasedGenericCardReferences(game)
-    .filter((entry) => entry.legalLimit < 3)
-    .sort(
-      (left, right) =>
-        left.legalLimit - right.legalLimit ||
-        left.card.name.localeCompare(right.card.name),
-    );
-  const entryCount = themeEntries.length + genericEntries.length;
-
-  return (
-    <details className="current-banlist-reference" open={expanded}>
-      <summary>
-        현재 밴리스트 <span>{entryCount}장</span>
-      </summary>
-      {entryCount > 0 ? (
-        <div className="current-banlist-reference-table">
-          <div className="current-banlist-reference-head" role="row">
-            <span>테마 / 카드</span>
-            <span>출시</span>
-            <span>최종 금제일</span>
-            <span>현행</span>
-          </div>
-          {themeEntries.map(({ theme, part, limit }) => (
-            <div className="current-banlist-reference-row" key={part.id} role="row">
-              <span>
-                <small>{theme.shortName}</small>
-                <strong>{part.name}</strong>
-              </span>
-              <span>{getPartReleaseLabel(game, theme, part.id)}</span>
-              <span>{getLastRestrictionDay(game, part.id)}</span>
-              <strong>{LIMIT_LABELS[limit]}</strong>
-            </div>
-          ))}
-          {genericEntries.map((entry) => (
-            <div
-              className="current-banlist-reference-row generic-banlist-row"
-              key={entry.card.id}
-              role="row"
-            >
-              <span>
-                <small>범용 · {getPlayKeyword(entry.card.keyword).label}</small>
-                <strong>{entry.card.name}</strong>
-                <GenericAdopterNames game={game} limit={3} meta={entry.meta} />
-              </span>
-              <span>DAY {entry.releaseDay}</span>
-              <span>{getLastRestrictionDay(game, entry.card.id)}</span>
-              <strong>{LIMIT_LABELS[entry.legalLimit]}</strong>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="current-banlist-empty">현재 금제된 카드는 없습니다.</p>
-      )}
-    </details>
-  );
-}
-
 const SUPPORT_DIRECTIONS: {
   value: SupportDirection;
   label: string;
@@ -1038,12 +846,7 @@ function getFatigueSignal(runtime: ThemeRuntime): FatigueSignal {
   return { level: "none", label: "피로 안정" };
 }
 
-type AdvisorBrief = {
-  tone: "calm" | "info" | "caution" | "critical";
-  kicker: string;
-  message: string;
-  submessage?: string;
-};
+type AdvisorBrief = LotusBriefContent;
 
 function getAdvisorBrief(
   game: GameState,
@@ -1173,8 +976,10 @@ function getAdvisorBrief(
   if (releasePublishedToday || restrictionPublishedToday) {
     return withActiveTabHint({
       tone: restrictionPublishedToday ? "caution" : "info",
-      kicker: restrictionPublishedToday ? "금제안 공표" : "신제품 발매 공표",
-      message: `결정이 공표되었습니다. 티어와 커뮤니티 반응 관측은 DAY ${game.day + 1}부터 시작됩니다.`,
+      kicker: restrictionPublishedToday ? "금제안 봉인" : "생산안 봉인",
+      message: restrictionPublishedToday
+        ? `위원회 의결을 마쳤습니다. 공식 금제표와 커뮤니티 반응은 DAY ${game.day + 1}에 공개됩니다.`
+        : `카드팩 생산을 확정했습니다. 정식 출시와 커뮤니티 반응은 DAY ${game.day + 1}에 공개됩니다.`,
     });
   }
   if (game.phase === "running" && game.day > LAST_DECISION_DAY) {
@@ -1254,36 +1059,6 @@ function hasConcentratedRestrictionRisk(
       return current - (draft[part.id] ?? current) >= 2;
     }) || highDependencyCuts.length >= 2
   );
-}
-
-function getPartReleaseLabel(
-  game: GameState,
-  theme: ThemeContent,
-  partId: string,
-): string {
-  const partIndex = theme.parts.findIndex((part) => part.id === partId);
-  if (partIndex < 0) return "출시 기록 없음";
-
-  if (partIndex < INITIAL_THEME_PART_COUNT) {
-    const debut = game.releaseHistory.find((batch) =>
-      batch.products.some(
-        (product) =>
-          product.kind === "new-theme" && product.themeId === theme.id,
-      ),
-    );
-    return debut ? `DAY ${debut.day}` : "DAY 0";
-  }
-
-  const supportWave = Math.floor(
-    (partIndex - INITIAL_THEME_PART_COUNT) / SUPPORT_PARTS_PER_RELEASE,
-  );
-  const supportReleases = game.releaseHistory.filter((batch) =>
-    batch.products.some(
-      (product) => product.kind === "support" && product.themeId === theme.id,
-    ),
-  );
-  const release = supportReleases[supportWave];
-  return release ? `DAY ${release.day}` : "출시 기록 없음";
 }
 
 function withKoreanObjectParticle(value: string) {
@@ -1508,7 +1283,22 @@ function GameSession({
     key: number;
     tone: "positive" | "negative" | "caution";
   } | null>(null);
-  const [advisorPulseKey, setAdvisorPulseKey] = useState(1);
+  const [initialDecisionAftermath] = useState(() =>
+    loadPendingDecisionAftermath(initialGame),
+  );
+  const [decisionOutcome, setDecisionOutcome] =
+    useState<DecisionOutcome | null>(() =>
+      initialDecisionAftermath &&
+      initialGame.day >= initialDecisionAftermath.decisionDay + 1
+        ? initialDecisionAftermath.outcome
+        : null,
+    );
+  const [pendingDecisionAftermath, setPendingDecisionAftermath] =
+    useState<PendingDecisionAftermath | null>(initialDecisionAftermath);
+  const [restrictionConfirmation, setRestrictionConfirmation] = useState<{
+    changeCount: number;
+    day: number;
+  } | null>(null);
   const [packOddsConfirmOpen, setPackOddsConfirmOpen] = useState(false);
   const [strategicConfirmAction, setStrategicConfirmAction] =
     useState<StrategicBusinessActionType | null>(null);
@@ -1574,6 +1364,10 @@ function GameSession({
         setToast(unavailable.message);
       });
   }, [game, persistence]);
+
+  useEffect(() => {
+    savePendingDecisionAftermath(game, pendingDecisionAftermath);
+  }, [game, pendingDecisionAftermath]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1809,7 +1603,9 @@ function GameSession({
     game.operations.pendingEvent ||
       supportTarget ||
       packOddsConfirmOpen ||
-      strategicConfirmAction,
+      strategicConfirmAction ||
+      decisionOutcome ||
+      restrictionConfirmation,
   );
   const tutorialPopup = tutorialPopupBlocked
     ? null
@@ -1826,7 +1622,6 @@ function GameSession({
   function activateTab(nextTab: TabId, important = false) {
     if (important || !seenAdvisorTabsRef.current.has(nextTab)) {
       seenAdvisorTabsRef.current.add(nextTab);
-      setAdvisorPulseKey((current) => current + 1);
     }
     setTutorialPageIndex(0);
     setActiveTab(nextTab);
@@ -1845,14 +1640,16 @@ function GameSession({
       const arrivalTimer = window.setTimeout(() => {
         setImpactItems((current) => [...current, item].slice(-6));
         emitGameSound("impact");
-        setAdvisorPulseKey((current) => current + 1);
         if (
           interfaceSettings.impactEffectsEnabled &&
           interfaceSettings.motionPreference !== "reduced"
         ) {
           setImpactFx({
             key: Date.now() + index,
-            tone: item.tone === "negative" ? "negative" : item.tone === "positive" ? "positive" : "caution",
+            tone:
+              item.tone === "negative"
+                ? "negative"
+                : "positive",
           });
         }
         const dismissTimer = window.setTimeout(() => {
@@ -1880,23 +1677,37 @@ function GameSession({
       if (game.phase === "release-edit") activateTab("releases", true);
       return null;
     }
-    let next = reduceGame(game, { type: "ADVANCE_DAYS", days });
+    const allowedDays = pendingDecisionAftermath ? Math.min(days, 1) : days;
+    let next = reduceGame(game, { type: "ADVANCE_DAYS", days: allowedDays });
     if (!next.handoverComplete && isHandoverReady(next)) {
       next = reduceGame(next, { type: "COMPLETE_HANDOVER" });
     }
+    const aftermathToReveal =
+      pendingDecisionAftermath &&
+      game.day <= pendingDecisionAftermath.decisionDay &&
+      next.day >= pendingDecisionAftermath.decisionDay + 1
+        ? pendingDecisionAftermath
+        : null;
     setGame(next);
     const businessToast = getBusinessTransitionToast(game, next);
     const eventResultToast = getBusinessEventTransitionToast(game, next);
     const eventArrived =
       !game.operations.pendingEvent && next.operations.pendingEvent;
-    showImpact(game.day, next);
-    if (reactionFlashDay === next.day) {
+    if (!aftermathToReveal) showImpact(game.day, next);
+    if (!aftermathToReveal && reactionFlashDay === next.day) {
       triggerImpactObservation(next.day, "caution");
     }
     if (eventResultToast) {
       triggerImpactObservation(next.day, "caution");
     }
-    if (eventArrived) {
+    if (aftermathToReveal) {
+      setDecisionOutcome(aftermathToReveal.outcome);
+      setToast(
+        aftermathToReveal.kind === "release"
+          ? `DAY ${next.day} 신제품이 정식 출시되었습니다. 수록 카드와 커뮤니티 반응을 확인하세요.`
+          : `DAY ${next.day} 금제 리스트가 공식 공표되었습니다. 인장과 커뮤니티 반응을 확인하세요.`,
+      );
+    } else if (eventArrived) {
       const definition = BUSINESS_EVENT_BY_TYPE[eventArrived.type];
       setToast(
         [
@@ -2099,7 +1910,6 @@ function GameSession({
     const next = dispatch({ type: "RUN_BUSINESS_ACTION", action });
     const record = next.operations.records.at(-1);
     clearImpactMessages();
-    setAdvisorPulseKey((current) => current + 1);
     if (isProbabilisticBusinessAction(action) && successProbability !== null) {
       setToast(
         `${withKoreanObjectParticle(definition.title)} 집행했습니다. 현재 상태 기준 성공 확률 ${Math.round(successProbability * 100)}%가 확정됐고 결과는 DAY ${game.day + 1}에 발표됩니다.`,
@@ -2139,6 +1949,10 @@ function GameSession({
       !game.handoverComplete &&
       (game.day === FIRST_BAN_DAY ||
         (game.day === 45 && !newCalendarMandatePublished));
+    const publishedChanges = restrictionChanges.map(([cardId, after]) => {
+      const card = getRestrictionCardDisplay(game, cardId);
+      return { ...card, before: card.limit, after };
+    });
     const published = reduceGame(game, {
       type: "SUBMIT_BAN",
       changes,
@@ -2147,14 +1961,46 @@ function GameSession({
         : {}),
     });
     const next = published;
+    const previousLimitByCardId = new Map(
+      publishedChanges.map((change) => [change.cardId, change.before]),
+    );
+    const currentRestrictions = getCurrentRestrictionCards(next).map((card) => ({
+      ...card,
+      previousLimit: previousLimitByCardId.get(card.cardId),
+    }));
+    const releasedCards = publishedChanges
+      .filter((change) => change.after === 3)
+      .map((change) => ({
+        card: getRestrictionCardDisplay(next, change.cardId),
+        previousLimit: change.before,
+      }));
     setGame(next);
     clearImpactMessages();
     setReactionFlashDay(next.day + 1);
     setToast(
       restrictionChanges.length > 0
-        ? `${restrictionChanges.length}건의 금제 변경을 시행했습니다.`
-        : "변경 없음으로 금제안을 제출했습니다.",
+        ? `${restrictionChanges.length}건의 금제안을 봉인했습니다. DAY ${next.day + 1}에 공식 공표됩니다.`
+        : `현행 유지안을 봉인했습니다. DAY ${next.day + 1}에 공식 공표됩니다.`,
     );
+    const outcome: RestrictionDecisionOutcome = {
+      kind: "restriction",
+      day: next.day,
+      changes: publishedChanges,
+      currentRestrictions,
+      impact: restrictionPolicy.totalImpact,
+      releasedCards,
+      unaddressedThreats:
+        restrictionPolicy.unaddressedThreatThemeIds.length,
+    };
+    setPendingDecisionAftermath({
+      kind: "restriction",
+      decisionDay: next.day,
+      outcome,
+    });
+    setRestrictionConfirmation({
+      changeCount: restrictionChanges.length,
+      day: next.day,
+    });
     if (next.phase !== "ban-edit") setBanDraft({});
     return next;
   }
@@ -2162,15 +2008,26 @@ function GameSession({
   function submitReleaseSelections(selections: ReleaseSelection[]) {
     if (game.phase !== "release-edit" || !game.releaseSlate) return null;
     const next = dispatch({ type: "SUBMIT_RELEASE", selections });
+    const publishedBatch = next.releaseHistory.at(-1);
     impactTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     impactTimersRef.current = [];
     setImpactItems([]);
     setReleaseDraft([]);
     setReactionFlashDay(next.day + 1);
-    setAdvisorPulseKey((current) => current + 1);
-    triggerImpactObservation(next.day, "caution");
-    setToast(`DAY ${next.day} 카드팩 ${next.releaseHistory.at(-1)?.products.length ?? 0}종을 발매했습니다.`);
-    emitGameSound("release");
+    setToast(
+      `DAY ${next.day} 카드팩 생산안을 봉인했습니다. DAY ${next.day + 1}에 정식 출시됩니다.`,
+    );
+    if (publishedBatch && publishedBatch.day === next.day) {
+      setPendingDecisionAftermath({
+        kind: "release",
+        decisionDay: next.day,
+        outcome: {
+          kind: "release",
+          day: next.day,
+          batch: publishedBatch,
+        },
+      });
+    }
     return next;
   }
 
@@ -2181,6 +2038,7 @@ function GameSession({
           ? " force-reduced-motion"
           : ""
       }${impactFx ? ` is-impact-observing impact-${impactFx.tone}` : ""}`}
+      data-phase={game.phase}
     >
       {impactFx ? (
         <div
@@ -2291,64 +2149,14 @@ function GameSession({
         </div>
       </header>
 
-      <nav className="primary-nav" aria-label="주요 메뉴">
-        <div className="nav-scroll">
-          {NAV_ITEMS.map((item) => (
-            <button
-              className={activeTab === item.id ? "nav-item active" : "nav-item"}
-              data-tutorial-control={`nav-${item.id}`}
-              disabled={gameOver || campaignComplete}
-              key={item.id}
-              onClick={() => activateTab(item.id)}
-              type="button"
-            >
-              <span className="nav-item-label">{item.label}</span>
-              {item.id === "community" ? (
-                <span className="nav-count">20</span>
-              ) : null}
-              {item.id === "cards" ? (
-                <span
-                  aria-hidden={game.phase !== "ban-edit"}
-                  className={`nav-count nav-alert${
-                    game.phase === "ban-edit" ? "" : " is-placeholder"
-                  }`}
-                >
-                  !
-                </span>
-              ) : null}
-              {item.id === "releases" ? (
-                <span
-                  aria-hidden={game.phase !== "release-edit"}
-                  className={`nav-count nav-alert${
-                    game.phase === "release-edit" ? "" : " is-placeholder"
-                  }`}
-                >
-                  !
-                </span>
-              ) : null}
-              {item.id === "operations" ? (
-                <span
-                  aria-hidden={!game.operations.pendingEvent}
-                  className={`nav-count nav-alert${
-                    game.operations.pendingEvent ? "" : " is-placeholder"
-                  }`}
-                >
-                  !
-                </span>
-              ) : null}
-            </button>
-          ))}
-        </div>
-        <button
-          className="reset-button"
-          data-tutorial-control="home"
-          onClick={() => onExit(game, persistence)}
-          type="button"
-        >
-          <span aria-hidden="true">←</span>
-          PLAY 화면
-        </button>
-      </nav>
+      <PrimaryNavigation
+        activeTab={activeTab}
+        disabled={gameOver || campaignComplete}
+        hasBusinessEvent={Boolean(game.operations.pendingEvent)}
+        onActivate={activateTab}
+        onReturnToTitle={() => onExit(game, persistence)}
+        phase={game.phase}
+      />
 
       <main
         className={`workspace ${
@@ -2368,48 +2176,58 @@ function GameSession({
           />
         ) : (
           <>
-        <aside
-          aria-label="로터스 상황 브리핑"
-          className={`advisor-brief ${advisorBrief.tone} open`}
-          key={advisorPulseKey}
-        >
-          <LotusSymbol tone={advisorBrief.tone} />
-          <div aria-live="polite" className="advisor-brief-copy" id="advisor-brief-message">
-            <span>LOTUS · {advisorBrief.kicker}</span>
-            <p>{advisorBrief.message}</p>
-            {advisorBrief.submessage ? <small>{advisorBrief.submessage}</small> : null}
-          </div>
-        </aside>
-
         {activeTab === "cards" ? (
-          <MetaWorkspace
-            banDraft={banDraft}
-            game={game}
-            highlightedPartId={highlightedPartId}
-            mobileDetail={mobileDetail}
-            nextBanDay={nextBanDay}
-            rankedThemes={rankedThemes}
-            placementReport={placementReport}
-            restrictionChanges={restrictionChanges}
-            selectedRuntime={selectedRuntime}
-            selectedTheme={selectedTheme}
-            detailHeadingRef={detailHeadingRef}
-            onBackToThemes={() => setMobileDetail(false)}
-            onDraftChange={(partId, limit) => {
-              const nextDraft = { ...banDraft, [partId]: limit };
-              const projected = getRestrictionChangeCapacity(game, nextDraft);
-              if (!projected.withinLimit) {
-                setToast("현재 카드풀에서 더 이상 금제할 수 없습니다.");
-                return;
-              }
-              setBanDraft(nextDraft);
-            }}
-            onOpenSupport={openSupport}
-            onRequestThemeRelease={requestThemeRelease}
-            onResetDraft={() => setBanDraft(makeRestrictionDraft(game))}
-            onSelectTheme={selectTheme}
-            onSubmitRestriction={submitRestriction}
-          />
+          <>
+            {game.phase === "ban-edit" ? (
+              <DecisionEventHero
+                currentStep={restrictionChanges.length > 0 ? 2 : 1}
+                day={game.day}
+                description="카드 한 장의 허용 매수가 플레이어의 덱과 보유가치, 다음 메타를 동시에 바꿉니다."
+                kind="restriction"
+                metrics={[
+                  {
+                    label: "판결 작성",
+                    value: `${restrictionChanges.length}건`,
+                  },
+                  {
+                    label: "예상 충격",
+                    value: `${Math.round(restrictionPolicy.totalImpact)}`,
+                  },
+                  { label: "효과 관측", value: `DAY ${game.day + 1}` },
+                ]}
+                steps={["위협 검토", "판결 작성", "금제 공표"]}
+                title="금제위원회 개회"
+              />
+            ) : null}
+            <MetaWorkspace
+              banDraft={banDraft}
+              game={game}
+              highlightedPartId={highlightedPartId}
+              mobileDetail={mobileDetail}
+              nextBanDay={nextBanDay}
+              rankedThemes={rankedThemes}
+              placementReport={placementReport}
+              restrictionChanges={restrictionChanges}
+              selectedRuntime={selectedRuntime}
+              selectedTheme={selectedTheme}
+              detailHeadingRef={detailHeadingRef}
+              onBackToThemes={() => setMobileDetail(false)}
+              onDraftChange={(partId, limit) => {
+                const nextDraft = { ...banDraft, [partId]: limit };
+                const projected = getRestrictionChangeCapacity(game, nextDraft);
+                if (!projected.withinLimit) {
+                  setToast("현재 카드풀에서 더 이상 금제할 수 없습니다.");
+                  return;
+                }
+                setBanDraft(nextDraft);
+              }}
+              onOpenSupport={openSupport}
+              onRequestThemeRelease={requestThemeRelease}
+              onResetDraft={() => setBanDraft(makeRestrictionDraft(game))}
+              onSelectTheme={selectTheme}
+              onSubmitRestriction={submitRestriction}
+            />
+          </>
         ) : null}
 
         {activeTab === "distribution" ? (
@@ -2469,6 +2287,7 @@ function GameSession({
           game.phase !== "running" ||
           Boolean(game.operations.pendingEvent)
         }
+        fastForwardLocked={Boolean(pendingDecisionAftermath)}
         milestone={nextCampaignMilestone}
         onAdvance={(days) => {
           advance(days);
@@ -2476,6 +2295,10 @@ function GameSession({
         progress={displayedProgress}
         progressLabel={progressLabel}
       />
+
+      {!gameOver && !campaignComplete ? (
+        <LotusBrief brief={advisorBrief} />
+      ) : null}
 
       {game.operations.pendingEvent ? (
         <BusinessEventDialog
@@ -2540,6 +2363,28 @@ function GameSession({
           setImpactItems((current) => current.filter((item) => item.id !== id))
         }
       />
+
+      {restrictionConfirmation ? (
+        <RestrictionConfirmationSeal
+          changeCount={restrictionConfirmation.changeCount}
+          day={restrictionConfirmation.day}
+          onComplete={() => setRestrictionConfirmation(null)}
+        />
+      ) : null}
+
+      {decisionOutcome ? (
+        <DecisionOutcomeOverlay
+          onContinue={() => {
+            showImpact(decisionOutcome.day, game);
+            triggerImpactObservation(game.day, "caution");
+            setReactionFlashDay(game.day);
+            setDecisionOutcome(null);
+            setPendingDecisionAftermath(null);
+            activateTab("community", true);
+          }}
+          outcome={decisionOutcome}
+        />
+      ) : null}
 
       {tutorialPopup ? (
         <TabTutorialPopup
@@ -3215,7 +3060,9 @@ function MetaWorkspace({
   }
 
   return (
-    <section className="meta-workspace cards">
+    <section
+      className={`meta-workspace cards${editing ? " restrictions" : ""}`}
+    >
       <header className="subpage-heading cards-heading">
         <div>
           <span className="eyebrow">CARD REGISTRY</span>
@@ -4094,7 +3941,9 @@ function DistributionView({
               <small>100점 기준</small>
             </div>
           </div>
-          ) : null}
+          ) : (
+            <PlayerSegmentGuide entries={chartEntries} />
+          )}
         </article>
 
         <ol
@@ -4259,60 +4108,6 @@ function DistributionView({
 
 function OverviewCard({ className = "", dataTutorialTerm, icon, label, value, note }: { className?: string; dataTutorialTerm?: string; icon: React.ReactNode; label: string; value: string; note: string }) {
   return <article className={`overview-card ${className}`.trim()} data-tutorial-term={dataTutorialTerm}><div className="overview-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{note}</small></article>;
-}
-
-function ReleasesView({
-  game,
-  onReleaseDraftChange,
-  onSubmitRelease,
-  releaseDraft,
-}: {
-  game: GameState;
-  onReleaseDraftChange: (optionIds: string[]) => void;
-  onSubmitRelease: (selections: ReleaseSelection[]) => void;
-  releaseDraft: readonly string[];
-}) {
-  const releaseBatches = [...game.releaseHistory]
-    .filter((batch) => !isInitialGenericReleaseBatch(batch))
-    .reverse();
-  return (
-    <section
-      className="subpage release-history-page"
-      data-tutorial-control="release-archive"
-    >
-      <header className="subpage-heading">
-        <div>
-          <span className="eyebrow">RELEASE ARCHIVE</span>
-          <h1>발매</h1>
-          <p>출시일, 카드팩, 신테마 상징을 중심으로 발매 기록을 확인합니다.</p>
-        </div>
-        <div className="release-history-count" aria-label="발매 기록 수">
-          <ReleaseIcon size={18} />
-          <span>발매 기록</span>
-          <strong>{releaseBatches.length}회</strong>
-        </div>
-      </header>
-      {game.phase === "release-edit" && game.releaseSlate ? (
-        <ReleaseDecisionPanel
-          game={game}
-          onChange={onReleaseDraftChange}
-          onSubmit={onSubmitRelease}
-          selectedOptionIds={releaseDraft}
-        />
-      ) : null}
-      {releaseBatches.length > 0 ? (
-        <div className="release-pack-list">
-          {releaseBatches.map((batch) => (
-            <ReleasePackCard batch={batch} key={batch.day} />
-          ))}
-        </div>
-      ) : (
-        <div className="empty-state">
-          아직 발매 기록이 없습니다.
-        </div>
-      )}
-    </section>
-  );
 }
 
 function getPostReactionTone(

@@ -23,6 +23,13 @@ export const INITIAL_GENERIC_CARD_IDS = Object.freeze([
 
 export const INITIAL_GENERIC_RELEASE_DAY = 0;
 
+/**
+ * The handover includes the two weeks of live-play observation collected
+ * before DAY 0. Baseline generics therefore begin the campaign with mature
+ * adoption data even though their bookkeeping release batch lives on DAY 0.
+ */
+export const INITIAL_GENERIC_OBSERVATION_DAYS = 14;
+
 function expectedTierForPower(power: number): ExpectedTier {
   if (power >= 80) return "Tier 0";
   if (power >= 71) return "Tier 1";

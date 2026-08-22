@@ -559,7 +559,7 @@ export interface GameState {
   nextCommunityId: number;
   currentTopThemeId: ThemeId;
   purchaseTrust: number;
-  /** False while the guided DAY 0-7 emergency handover needs acknowledgement. */
+  /** True after the DAY 0-7 handover or when player-wide guidance was already completed. */
   handoverComplete: boolean;
 }
 

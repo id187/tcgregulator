@@ -216,14 +216,16 @@ function getPreCampaignMarketSnapshots(
 function normalizedPreCampaignShares(
   state: GameState,
   day: number,
+  themeIds: readonly ThemeId[],
+  referenceShares: Readonly<Record<ThemeId, number>>,
 ): Record<ThemeId, number> {
-  const weighted = state.activeThemeIds.map((themeId, index) => {
-    const current = state.themes[themeId].share;
+  const weighted = themeIds.map((themeId, index) => {
+    const current = referenceShares[themeId] ?? 0;
     const chronologicalDrift =
       ((day - PRE_CAMPAIGN_START_DAY) /
         Math.max(1, PRE_CAMPAIGN_HISTORY_DAYS - 1) -
         1) *
-      (index === 0 ? 0.035 : -0.035 / Math.max(1, state.activeThemeIds.length - 1));
+      (index === 0 ? 0.035 : -0.035 / Math.max(1, themeIds.length - 1));
     const noise =
       (keyedRandom(state.seed, "pre-campaign-share", day, themeId) - 0.5) *
       0.018;
@@ -243,7 +245,15 @@ function normalizedPreCampaignShares(
 export function getPreCampaignHistory(state: GameState): DailyHistory[] {
   const settledReference =
     state.history.find((entry) => entry.day === 0) ?? state.history.at(0);
-  const totalUsers =
+  const referenceShares = (settledReference?.shares ?? Object.fromEntries(
+    state.activeThemeIds.map((themeId) => [themeId, state.themes[themeId].share]),
+  )) as Record<ThemeId, number>;
+  const themeIds = Object.keys(referenceShares)
+    .filter((themeId): themeId is ThemeId => Boolean(state.themes[themeId]));
+  const referenceWinRates = (settledReference?.winRates ?? Object.fromEntries(
+    themeIds.map((themeId) => [themeId, state.themes[themeId].winRate]),
+  )) as Record<ThemeId, number>;
+  const totalUsers = settledReference?.totalUsers ??
     state.users.tier + state.users.casual + state.users.collector;
   const referenceRevenue = settledReference?.revenue ?? state.finance.today;
   const marketSnapshots = getPreCampaignMarketSnapshots(
@@ -255,16 +265,21 @@ export function getPreCampaignHistory(state: GameState): DailyHistory[] {
   for (let day = PRE_CAMPAIGN_START_DAY; day < 0; day += 1) {
     const marketSnapshot =
       marketSnapshots[day - PRE_CAMPAIGN_START_DAY];
-    const shares = normalizedPreCampaignShares(state, day);
+    const shares = normalizedPreCampaignShares(
+      state,
+      day,
+      themeIds,
+      referenceShares,
+    );
     const winRates = Object.fromEntries(
-      state.activeThemeIds.map((themeId) => [
+      themeIds.map((themeId) => [
         themeId,
         round(
           Math.max(
             0,
             Math.min(
               1,
-              state.themes[themeId].winRate +
+              (referenceWinRates[themeId] ?? 0.5) +
                 (keyedRandom(state.seed, "pre-campaign-win", day, themeId) -
                   0.5) *
                   0.012,
@@ -274,7 +289,7 @@ export function getPreCampaignHistory(state: GameState): DailyHistory[] {
         ),
       ]),
     ) as Record<ThemeId, number>;
-    const topThemeId = state.activeThemeIds.reduce((leader, themeId) =>
+    const topThemeId = themeIds.reduce((leader, themeId) =>
       shares[themeId] > shares[leader] ? themeId : leader
     );
     const marketNoise =

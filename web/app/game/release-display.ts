@@ -19,7 +19,7 @@ export function getPartReleaseLabel(
           product.kind === "new-theme" && product.themeId === theme.id,
       ),
     );
-    return debut ? `DAY ${debut.day}` : "DAY 0";
+    return debut ? `DAY ${debut.day}` : "취임 전 출시";
   }
 
   const supportWave = Math.floor(

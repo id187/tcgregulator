@@ -3,22 +3,30 @@ import { PLAYER_START_DAY } from "./campaign.ts";
 import type { GameState } from "./types.ts";
 
 /** Monetary values are in eok won (KRW 100,000,000). */
-export type CampaignCashBand = "crisis" | "tight" | "reserve";
+export type CampaignCashBand = "crisis" | "tight" | "reserve" | "prosperous";
 
 export type CampaignEnvironmentBand = "danger" | "caution" | "stable";
 
 export type CampaignTrustBand = "low" | "guarded" | "trusted";
 
-export type CampaignUserBand = "contracted" | "steady" | "grown";
+export type CampaignUserBand =
+  | "collapsed"
+  | "contracted"
+  | "steady"
+  | "grown"
+  | "breakout";
 
-export const CAMPAIGN_CASH_TIGHT_MIN = 5;
-export const CAMPAIGN_CASH_RESERVE_MIN = 14;
+export const CAMPAIGN_CASH_TIGHT_MIN = 3;
+export const CAMPAIGN_CASH_RESERVE_MIN = 10;
+export const CAMPAIGN_CASH_PROSPEROUS_MIN = 50;
 export const CAMPAIGN_ENVIRONMENT_CAUTION_MIN = 50;
 export const CAMPAIGN_ENVIRONMENT_STABLE_MIN = 65;
 export const CAMPAIGN_TRUST_GUARDED_MIN = 65;
 export const CAMPAIGN_TRUST_TRUSTED_MIN = 80;
-export const CAMPAIGN_USER_STEADY_MIN = 0.9;
-export const CAMPAIGN_USER_GROWN_MIN = 1.1;
+export const CAMPAIGN_USER_CONTRACTED_MIN = 0.5;
+export const CAMPAIGN_USER_STEADY_MIN = 0.85;
+export const CAMPAIGN_USER_GROWN_MIN = 1.25;
+export const CAMPAIGN_USER_BREAKOUT_MIN = 8.5;
 
 export type CampaignEndingEvaluation = {
   scores: {
@@ -111,6 +119,20 @@ const ENDING_COPY = {
       body: "운영자금과 환경 건강도가 모두 안정권이다. 다음 시즌을 이어갈 기반을 갖춘 결산이다.",
     },
   },
+  prosperous: {
+    danger: {
+      title: "거대한 매출, 망가진 게임",
+      body: "사업 규모는 크게 불어났지만 환경은 위험 수위다. 흥행의 숫자와 실제 플레이 경험이 완전히 갈라졌다.",
+    },
+    caution: {
+      title: "대성공 직전의 균열",
+      body: "회사는 강한 현금 창출력을 갖췄지만 환경에는 불안이 남았다. 다음 운영이 흥행의 지속 여부를 결정한다.",
+    },
+    stable: {
+      title: "시장을 넓힌 TCG",
+      body: "충분한 운영자금과 건강한 환경이 함께 남았다. 이 TCG는 생존을 넘어 시장 자체를 확장했다.",
+    },
+  },
 } as const satisfies Record<
   CampaignCashBand,
   Record<CampaignEnvironmentBand, EndingCopy>
@@ -126,29 +148,39 @@ const TRUST_RESULT_COPY: Record<CampaignTrustBand, string> = {
 };
 
 const USER_RESULT_COPY: Record<CampaignUserBand, string> = {
+  collapsed:
+    "활성 유저 기반은 인수 당시의 절반 아래로 붕괴해 공식 운영의 존속 자체가 위태롭다.",
   contracted:
     "활성 유저는 인수 시점보다 줄어 안정적인 표면 뒤에 이탈이 남았다.",
   steady:
     "활성 유저는 인수 시점의 규모를 지켜 리그의 기반이 유지됐다.",
   grown:
-    "활성 유저는 인수 시점보다 늘어 성장이 실제 저변 확대로 이어졌다.",
+    "활성 유저는 인수 시점보다 뚜렷하게 늘어 성장이 실제 저변 확대로 이어졌다.",
+  breakout:
+    "활성 유저는 인수 당시의 여덟 배를 훌쩍 넘어 이 TCG가 전국적인 흥행작으로 자리 잡았다.",
 };
 
 const STABLE_FOUNDATION_TITLE = {
   low: {
+    collapsed: "신뢰도 관중도 사라진 판",
     contracted: "빈 관중석의 안정",
     steady: "안정된 판, 무너진 신뢰",
     grown: "성장에 남은 불신",
+    breakout: "폭발한 흥행, 무너진 믿음",
   },
   guarded: {
+    collapsed: "회복되지 못한 관중석",
     contracted: "조용해진 안정권",
     steady: "회복을 기다리는 리그",
     grown: "성장과 남은 경계",
+    breakout: "대흥행과 남은 의심",
   },
   trusted: {
+    collapsed: "좋은 판, 사라진 시장",
     contracted: "좋은 판, 줄어든 관중",
     steady: "지속 가능한 리그",
     grown: "함께 커진 리그",
+    breakout: "시대를 만든 TCG",
   },
 } as const satisfies Record<
   CampaignTrustBand,
@@ -164,7 +196,8 @@ export function getCampaignCashBand(cash: number): CampaignCashBand {
   const score = round(cash, 1);
   if (score < CAMPAIGN_CASH_TIGHT_MIN) return "crisis";
   if (score < CAMPAIGN_CASH_RESERVE_MIN) return "tight";
-  return "reserve";
+  if (score < CAMPAIGN_CASH_PROSPEROUS_MIN) return "reserve";
+  return "prosperous";
 }
 
 export function getCampaignEnvironmentBand(
@@ -187,9 +220,11 @@ export function getCampaignTrustBand(
 
 export function getCampaignUserBand(userRatio: number): CampaignUserBand {
   const score = round(userRatio, 4);
+  if (score < CAMPAIGN_USER_CONTRACTED_MIN) return "collapsed";
   if (score < CAMPAIGN_USER_STEADY_MIN) return "contracted";
   if (score < CAMPAIGN_USER_GROWN_MIN) return "steady";
-  return "grown";
+  if (score < CAMPAIGN_USER_BREAKOUT_MIN) return "grown";
+  return "breakout";
 }
 
 /** Environment quality is scored independently from the purchase-trust axis. */
@@ -342,7 +377,8 @@ function getResultCopy(
   users: CampaignUserBand,
 ): EndingCopy {
   const base = ENDING_COPY[cash][environment];
-  const stableFoundation = cash === "reserve" && environment === "stable";
+  const stableFoundation =
+    (cash === "reserve" || cash === "prosperous") && environment === "stable";
   return {
     title: stableFoundation
       ? STABLE_FOUNDATION_TITLE[trust][users]
@@ -373,10 +409,10 @@ export function evaluateCampaignEnding(
   const userBand = getCampaignUserBand(userRatio);
   const stewardship = getStewardshipRecord(state);
   const finalAxesQualified =
-    cashBand === "reserve" &&
+    (cashBand === "reserve" || cashBand === "prosperous") &&
     environmentBand === "stable" &&
     trustBand === "trusted" &&
-    userBand !== "contracted";
+    (userBand === "grown" || userBand === "breakout");
   const qualifiedForBestEnding =
     finalAxesQualified && stewardship.historicallySustainable;
   const copy = getResultCopy(cashBand, environmentBand, trustBand, userBand);
@@ -416,7 +452,7 @@ export function getCampaignEndingHints(
   if (ending.qualifiedForBestEnding) return [];
 
   const hints: CampaignEndingHint[] = [];
-  if (ending.bands.cash !== "reserve") {
+  if (ending.bands.cash !== "reserve" && ending.bands.cash !== "prosperous") {
     hints.push({
       id: "cash",
       title: "회사의 완충력",
@@ -443,11 +479,19 @@ export function getCampaignEndingHints(
         : "구매 신뢰가 경계권이라 좋은 환경과 매출도 장기 확신으로 연결되지 못했습니다.",
     });
   }
-  if (ending.bands.users === "contracted") {
+  if (
+    ending.bands.users === "collapsed" ||
+    ending.bands.users === "contracted" ||
+    ending.bands.users === "steady"
+  ) {
     hints.push({
       id: "users",
-      title: "남은 유저 기반",
-      body: `활성 유저가 DAY ${PLAYER_START_DAY} 인수 시점보다 줄어 리그의 실질적인 저변이 좁아졌습니다.`,
+      title: ending.bands.users === "collapsed"
+        ? "붕괴한 유저 기반"
+        : "성장하지 못한 저변",
+      body: ending.bands.users === "collapsed"
+        ? `활성 유저가 DAY ${PLAYER_START_DAY} 인수 시점의 절반 아래로 줄어 공식 운영 존속이 위태롭습니다.`
+        : `활성 유저가 DAY ${PLAYER_START_DAY} 인수 시점에서 뚜렷하게 성장하지 못했습니다.`,
     });
   }
   if (!ending.stewardship.historicallySustainable) {

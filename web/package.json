@@ -1,6 +1,6 @@
 {
   "name": "tcg-regulator",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -12,7 +12,7 @@
     "start": "vite preview",
     "typecheck": "tsc --noEmit --incremental false",
     "test:redesign": "node --experimental-strip-types --test tests/campaign-redesign.test.ts tests/handover.test.ts",
-    "test": "npm run build && node --experimental-strip-types --test tests/campaign-milestone.test.ts tests/campaign-redesign.test.ts tests/decision-reports.test.ts tests/handover.test.ts tests/primary-navigation.test.ts tests/game-engine.test.ts tests/guided-release.test.ts tests/tab-tutorial.test.ts tests/initial-generic-cards.test.ts tests/automatic-release.test.ts tests/release-requests.test.ts tests/release-pack-name.test.ts tests/business-actions.test.ts tests/business-challenges.test.ts tests/business-result-overlay.test.ts tests/strategy-diversity.test.ts tests/save-schema.test.ts tests/restriction-cap.test.ts tests/daily-community.test.ts tests/community-sentiment.test.ts tests/community-engagement.test.ts tests/daily-news.test.ts tests/card-market.test.ts tests/distribution-model.test.ts tests/campaign-ending.test.ts tests/campaign-balance.test.ts tests/persistence-client.test.ts tests/content-originality.test.ts tests/restriction-considerations.test.ts tests/theme-emblem.test.ts tests/korean-particles.test.ts tests/meta-tiers.test.ts tests/placement-meta.test.ts tests/environment-health.test.ts tests/play-keywords.test.ts tests/keyword-community.test.ts tests/optimization-support-tools.test.ts tests/support-continuity.test.ts tests/generic-card-catalog.test.ts tests/generic-card-meta.test.ts tests/generic-cards.test.ts tests/emergent-narratives.test.ts",
+    "test": "npm run build && node --experimental-strip-types --test tests/campaign-milestone.test.ts tests/campaign-redesign.test.ts tests/decision-reports.test.ts tests/handover.test.ts tests/primary-navigation.test.ts tests/game-engine.test.ts tests/guided-release.test.ts tests/tab-tutorial.test.ts tests/initial-generic-cards.test.ts tests/automatic-release.test.ts tests/release-requests.test.ts tests/release-pack-name.test.ts tests/business-actions.test.ts tests/business-challenges.test.ts tests/business-result-overlay.test.ts tests/strategy-diversity.test.ts tests/organization-health.test.ts tests/save-schema.test.ts tests/restriction-cap.test.ts tests/daily-community.test.ts tests/community-sentiment.test.ts tests/community-engagement.test.ts tests/daily-news.test.ts tests/card-market.test.ts tests/distribution-model.test.ts tests/campaign-ending.test.ts tests/campaign-balance.test.ts tests/persistence-client.test.ts tests/content-originality.test.ts tests/restriction-considerations.test.ts tests/theme-emblem.test.ts tests/korean-particles.test.ts tests/meta-tiers.test.ts tests/placement-meta.test.ts tests/environment-health.test.ts tests/play-keywords.test.ts tests/keyword-community.test.ts tests/optimization-support-tools.test.ts tests/support-continuity.test.ts tests/generic-card-catalog.test.ts tests/generic-card-meta.test.ts tests/generic-cards.test.ts tests/emergent-narratives.test.ts",
     "lint": "eslint . --ignore-pattern dist"
   },
   "dependencies": {

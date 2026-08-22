@@ -4,7 +4,10 @@ import {
   BUSINESS_EVENT_BY_TYPE,
   getBusinessEventResult,
 } from "../game/business-events.ts";
-import type { DecisionReport } from "../game/decision-reports.ts";
+import type {
+  DecisionReport,
+  DecisionReportMetric,
+} from "../game/decision-reports.ts";
 import type { BusinessEventRecord } from "../game/types.ts";
 
 function useOverlayFocus(open: boolean) {
@@ -22,6 +25,20 @@ function useOverlayFocus(open: boolean) {
     };
   }, [open]);
   return actionRef;
+}
+
+function ReportMetricValue({ metric }: { metric: DecisionReportMetric }) {
+  if (metric.before === undefined || metric.after === undefined) {
+    return <dd>{metric.value}</dd>;
+  }
+  return (
+    <dd className="report-metric-comparison">
+      <span>{metric.before}</span>
+      <b aria-hidden="true">→</b>
+      <strong>{metric.after}</strong>
+      <small>{metric.value}</small>
+    </dd>
+  );
 }
 
 export function FormalDecisionReportOverlay({
@@ -47,16 +64,45 @@ export function FormalDecisionReportOverlay({
           <strong>DAY {report.reportDay} · 공식 문서 도착</strong>
           <h2 id="formal-report-title">{report.title}</h2>
         </header>
-        <div className="report-arrival-verdict">
-          <span>7일 관측 판정</span>
-          <strong>{report.verdict}</strong>
-          <p>{report.summary}</p>
+        <section
+          className={`report-arrival-growth tone-${report.growth.tone}`}
+          data-growth-band={report.growth.band}
+        >
+          <div className="report-arrival-growth-heading">
+            <span>MANDATE TRAJECTORY · DAY 0 대비 종합 성장</span>
+            <strong>{report.growth.label}</strong>
+            <p>{report.growth.summary}</p>
+          </div>
+          <div
+            aria-label={`회사 성장지수 ${report.growth.index}, ${report.growth.comparison} 대비 ${report.growth.change}`}
+            className="report-arrival-growth-index"
+            role="status"
+          >
+            <span>회사 성장지수</span>
+            <strong>{report.growth.index}</strong>
+            <b>{report.growth.comparison} · {report.growth.change}</b>
+            <p>{report.growth.basis}</p>
+          </div>
+          <small>성장 판정은 활성 유저와 일평균 매출만 반영 · 투자 지출과 보유자금은 제외</small>
+        </section>
+        <div className="report-arrival-causal-chain">
+          <section className="report-arrival-decision">
+            <span>YOUR DECISION · 플레이어 결정</span>
+            <strong>{report.decision.headline}</strong>
+            <p>{report.decision.detail}</p>
+          </section>
+          <span aria-hidden="true" className="report-arrival-causal-arrow">→</span>
+          <section className="report-arrival-verdict">
+            <span>7일 관측 결과</span>
+            <strong>{report.verdict}</strong>
+            <p>{report.summary}</p>
+          </section>
         </div>
         <dl className="report-arrival-metrics">
           {report.metrics.map((metric) => (
             <div key={metric.label}>
               <dt>{metric.label}</dt>
-              <dd>{metric.value}</dd>
+              <ReportMetricValue metric={metric} />
             </div>
           ))}
         </dl>

@@ -10,7 +10,7 @@ export const HANDOVER_TAB_UNLOCK_DAY = {
   distribution: 0,
   cards: 0,
   community: 1,
-  news: 2,
+  news: 1,
   finance: 3,
   operations: 4,
   releases: FIRST_RELEASE_DAY,
@@ -19,6 +19,8 @@ export const HANDOVER_TAB_UNLOCK_DAY = {
 export type HandoverAccessContext = Readonly<{
   day: number;
   handoverComplete: boolean;
+  /** Player-wide onboarding completion unlocks the full workspace on DAY 0. */
+  tutorialSeriesComplete?: boolean;
 }>;
 
 export type HandoverTabAvailability = Readonly<{
@@ -52,15 +54,15 @@ export const HANDOVER_DAY_BRIEFINGS: readonly HandoverBriefing[] = [
     day: 1,
     tab: "community",
     kicker: "금제 D+1",
-    title: "플레이어 반응이 쏟아지고 있습니다",
-    message: "커뮤니티에서 누가 왜 반기는지, 누가 보유가치를 걱정하는지 읽으십시오.",
+    title: "플레이어 반응과 큰 변화가 함께 도착했습니다",
+    message: "커뮤니티에서 여론을 읽고, 느낌표가 붙은 소식 탭에서 기록할 만한 변화를 직접 확인하십시오.",
   },
   {
     day: 2,
-    tab: "news",
+    tab: null,
     kicker: "인과 확인",
-    title: "결정과 결과를 한 줄로 연결합니다",
-    message: "소식 탭에서 금제 이후 발생한 큰 변화의 순서를 확인하십시오.",
+    title: "첫 반응과 큰 변화를 대조합니다",
+    message: "커뮤니티의 여론과 소식의 사건 기록을 오가며 금제 이후 변화의 순서를 확인하십시오.",
   },
   {
     day: 3,
@@ -106,6 +108,7 @@ export function getHandoverTabUnlockDay(tab: TabTutorialTabId): number {
 export function getHandoverBriefing(
   context: HandoverAccessContext,
 ): HandoverBriefing | null {
+  if (context.tutorialSeriesComplete) return null;
   if (
     context.handoverComplete &&
     context.day !== TUTORIAL_END_DAY
@@ -137,9 +140,11 @@ export function getHandoverTabAvailability(
   context: HandoverAccessContext,
 ): HandoverTabAvailability {
   const unlockDay = getHandoverTabUnlockDay(tab);
-  const unlocked = tab === "releases"
-    ? context.day >= unlockDay
-    : context.handoverComplete || context.day >= unlockDay;
+  const unlocked = context.tutorialSeriesComplete || (
+    tab === "releases"
+      ? context.day >= unlockDay
+      : context.handoverComplete || context.day >= unlockDay
+  );
   return {
     tab,
     unlockDay,

@@ -70,6 +70,8 @@ test("generic cards begin on D+1 and remain usable outside their own keyword", (
   const card = dPlusOne.cardMetaById[cardId];
   assert.ok(card);
   assert.ok(card.researchProgress > 0);
+  assert.ok(card.averageCopies > 0);
+  assert.ok(card.averageCopies <= card.legalLimit);
   assert.ok(card.adoptionByTheme.sprinter > 0);
   assert.ok(card.adoptionByTheme.conductor > 0, "generic use must be universal");
   assert.ok(
@@ -217,6 +219,9 @@ test("limit previews include replacement and diminishing net power loss", () => 
   const limited = buildGenericMetaModel(state, keywords, state.day, {
     [targetId]: 1,
   });
+  const forbidden = buildGenericMetaModel(state, keywords, state.day, {
+    [targetId]: 0,
+  });
   const impacts = selectGenericLimitThemeImpacts(
     state,
     keywords,
@@ -227,6 +232,8 @@ test("limit previews include replacement and diminishing net power loss", () => 
 
   assert.ok(targetContribution > 0);
   assert.equal(limited.cardMetaById[targetId]?.legalLimit, 1);
+  assert.ok((limited.cardMetaById[targetId]?.averageCopies ?? 0) <= 1);
+  assert.equal(forbidden.cardMetaById[targetId]?.averageCopies, 0);
   assert.ok(limited.themePowerBonusById.pilot < before.themePowerBonusById.pilot);
   assert.ok(impact);
   assert.equal(impact.afterAdoption, 0);

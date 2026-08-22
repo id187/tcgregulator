@@ -34,6 +34,7 @@ function LockIcon() {
 
 export function PrimaryNavigation({
   activeTab,
+  attentionTabs = [],
   disabled,
   hasBusinessEvent,
   phase,
@@ -43,6 +44,7 @@ export function PrimaryNavigation({
   tabAvailability,
 }: {
   activeTab: TabTutorialTabId;
+  attentionTabs?: readonly TabTutorialTabId[];
   disabled: boolean;
   hasBusinessEvent: boolean;
   phase: "running" | "ban-edit" | "release-edit" | "ended";
@@ -64,9 +66,14 @@ export function PrimaryNavigation({
             ? `primary-nav-${item.id}-lock`
             : undefined;
           const alert =
+            attentionTabs.includes(item.id) ||
             (item.id === "cards" && phase === "ban-edit") ||
             (item.id === "releases" && phase === "release-edit") ||
             (item.id === "operations" && hasBusinessEvent);
+          const keepsAlertSlot =
+            item.id === "cards" ||
+            item.id === "releases" ||
+            item.id === "operations";
           const className = [
             "nav-item",
             activeTab === item.id ? "active" : "",
@@ -99,9 +106,7 @@ export function PrimaryNavigation({
                 <span aria-hidden="true" className="nav-lock-indicator">
                   <LockIcon />
                 </span>
-              ) : item.id === "cards" ||
-                item.id === "releases" ||
-                item.id === "operations" ? (
+              ) : alert || keepsAlertSlot ? (
                 <span
                   aria-hidden={!alert}
                   className={`nav-count nav-alert${alert ? "" : " is-placeholder"}`}

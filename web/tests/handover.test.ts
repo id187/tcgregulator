@@ -19,7 +19,7 @@ test("the emergency handover opens Distribution and Cards on DAY 0, then reveals
     distribution: 0,
     cards: 0,
     community: 1,
-    news: 2,
+    news: 1,
     finance: 3,
     operations: 4,
     releases: 10,
@@ -74,13 +74,28 @@ test("tab availability exposes a readable lock reason and resolves unsafe restor
   }), "finance");
 });
 
+test("completed player-wide guidance opens every tab from DAY 0", () => {
+  const freeMode = {
+    day: 0,
+    handoverComplete: true,
+    tutorialSeriesComplete: true,
+  } as const;
+
+  assert.deepEqual(
+    new Set(getUnlockedHandoverTabs(freeMode)),
+    new Set(Object.keys(HANDOVER_TAB_UNLOCK_DAY)),
+  );
+  assert.equal(resolveHandoverTab("releases", freeMode), "releases");
+  assert.equal(getHandoverBriefing(freeMode), null);
+});
+
 test("newly unlocked tabs are returned in handover order", () => {
   assert.deepEqual(
     getNewlyUnlockedHandoverTabs(
+      { day: 0, handoverComplete: false },
       { day: 1, handoverComplete: false },
-      { day: 2, handoverComplete: false },
     ),
-    ["news"],
+    ["community", "news"],
   );
   assert.deepEqual(
     getNewlyUnlockedHandoverTabs(

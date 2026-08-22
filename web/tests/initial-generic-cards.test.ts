@@ -49,6 +49,16 @@ test("DAY 0 starts with exactly three live, market-visible generic cards", () =>
   const meta = getCurrentGenericMetaModel(state);
   assert.deepEqual(meta.cards.map((entry) => entry.cardId).sort(), expectedIds);
   assert.ok(meta.cards.every((entry) => entry.releaseDay === 0));
+  assert.ok(
+    meta.cards.every((entry) => entry.researchProgress === 1),
+    "the inherited 14-day observation window should mature baseline adoption",
+  );
+  assert.ok(
+    meta.cards.every((entry) =>
+      Object.values(entry.adoptionByTheme).some((adoption) => adoption >= 0.12)
+    ),
+    "every baseline generic should expose at least one established adopter",
+  );
   for (const entry of meta.cards) {
     const quote = getGenericCardMarketQuote(
       state,

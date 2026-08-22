@@ -3,12 +3,16 @@ import {
   getGenericCard,
   type GenericCardCatalogEntry,
   type GenericCardId,
+  type GenericCardRole,
 } from "./generic-card-catalog.ts";
 import {
   getKeywordMatchupEdgeScore,
   type PlayKeyword,
 } from "./play-keywords.ts";
-import { isInitialGenericReleaseBatch } from "./initial-generic-cards.ts";
+import {
+  INITIAL_GENERIC_OBSERVATION_DAYS,
+  isInitialGenericReleaseBatch,
+} from "./initial-generic-cards.ts";
 import type {
   PowerAdjustment,
   ReleaseBatch,
@@ -22,6 +26,14 @@ export const GENERIC_THEME_POWER_BONUS_CAP = 7.5;
 export const GENERIC_MATCHUP_LOGIT_CAP = 0.16;
 
 const POWER_PER_ADJUSTMENT = 2.2;
+const GENERIC_ROLE_BASE_AVERAGE_COPIES = {
+  enabler: 2.75,
+  extender: 2.35,
+  interaction: 2.25,
+  defense: 2.45,
+  recovery: 1.8,
+  payoff: 1.25,
+} as const satisfies Record<GenericCardRole, number>;
 const COPY_EFFECT_BY_LIMIT: Readonly<Record<RestrictionLimit, number>> = {
   0: 0,
   1: 0.52,
@@ -67,6 +79,8 @@ export interface GenericCardMetaEntry {
   readonly researchProgress: number;
   /** Share-weighted adoption across the current field, from 0 to 1. */
   readonly marketReach: number;
+  /** Average copies among decks that adopt the card, capped by its legal limit. */
+  readonly averageCopies: number;
   /** Share-weighted adoption attributable to same-theme mirror preparation. */
   readonly mirrorDemand: number;
   readonly adoptionByTheme: Readonly<Record<ThemeId, number>>;
@@ -174,7 +188,11 @@ function collectReleasedGenericCards(
 ): readonly ReleasedGenericCard[] {
   const releaseByCard = new Map<
     GenericCardId,
-    { releaseDay: number; powerAdjustment: PowerAdjustment }
+    {
+      releaseDay: number;
+      powerAdjustment: PowerAdjustment;
+      inheritedObservationDays: number;
+    }
   >();
 
   for (const batch of state.releaseHistory) {
@@ -189,6 +207,9 @@ function collectReleasedGenericCards(
       releaseByCard.set(product.genericCardId, {
         releaseDay: batch.day,
         powerAdjustment: product.powerAdjustment,
+        inheritedObservationDays: isInitialGenericReleaseBatch(batch)
+          ? INITIAL_GENERIC_OBSERVATION_DAYS
+          : 0,
       });
     }
   }
@@ -198,7 +219,10 @@ function collectReleasedGenericCards(
     const release = releaseByCard.get(catalogCard.id);
     if (!release) continue;
 
-    const elapsedDays = observationDay - release.releaseDay;
+    const elapsedDays =
+      observationDay -
+      release.releaseDay +
+      release.inheritedObservationDays;
     const researchProgress = clamp(
       elapsedDays / catalogCard.optimizationDays,
       0,
@@ -396,6 +420,14 @@ export function buildGenericMetaModel(
         weightedAdoption * (loadoutEntry?.mirrorUtility ?? 0);
     }
 
+    const unrestrictedAverageCopies =
+      GENERIC_ROLE_BASE_AVERAGE_COPIES[released.card.role] +
+      (released.effectivePower - 70) * 0.006 +
+      (marketReach - 0.4) * 0.18;
+    const averageCopies = released.legalLimit === 0
+      ? 0
+      : clamp(unrestrictedAverageCopies, 0.5, released.legalLimit);
+
     return Object.freeze({
       cardId: released.card.id,
       card: released.card,
@@ -405,6 +437,7 @@ export function buildGenericMetaModel(
       legalLimit: released.legalLimit,
       researchProgress: round(released.researchProgress),
       marketReach: round(clamp(marketReach, 0, 1)),
+      averageCopies: round(averageCopies, 2),
       mirrorDemand: round(clamp(mirrorDemand, 0, 1)),
       adoptionByTheme: Object.freeze(adoptionByTheme),
     });

@@ -33,6 +33,7 @@ import {
   parseGameState,
 } from "../app/game/save-schema.ts";
 import { INITIAL_GENERIC_CARD_IDS } from "../app/game/initial-generic-cards.ts";
+import { getServiceFailureReason } from "../app/game/organization-health.ts";
 import {
   getReleaseBatchKind,
   getReleaseSlateKind,
@@ -548,11 +549,10 @@ test("round-trips every guided prologue gate without tutorial-only save data", (
   parseGameState(jsonRoundTrip(state));
 });
 
-test("round-trips the completed DAY 7 handover and rejects an early completion", () => {
+test("round-trips player-wide handover skips and the completed DAY 7 handover", () => {
   const review = createFirstBanGame(1_002);
-  const forged = structuredClone(review);
-  forged.handoverComplete = true;
-  assert.throws(() => parseGameState(forged), SaveSchemaError);
+  const replay = createCampaignStart(1_002, { skipHandover: true });
+  assert.equal(parseGameState(jsonRoundTrip(replay)).handoverComplete, true);
 
   let published = reduceGame(review, { type: "SUBMIT_BAN", changes: {} });
   assert.throws(
@@ -1049,7 +1049,10 @@ test("accepts every decision gate through campaign termination", () => {
     parseGameState(jsonRoundTrip(game));
   }
   assert.equal(checkedLatePackOdds, true);
-  assert.equal(game.day, CAMPAIGN_END_DAY);
+  assert.ok(
+    game.day === CAMPAIGN_END_DAY || getServiceFailureReason(game) !== null,
+    "the campaign must end by settlement or a validated service failure",
+  );
   assert.ok(
     game.releaseHistory
       .filter((batch) => batch.releaseKind !== "baseline")
@@ -1463,9 +1466,6 @@ test("rejects legacy v2, extra fields, active-theme mismatches, and invalid runt
   unreleasedLimit.themes.cycle.legalLimits[unreleasedPartId] = 3;
   assert.throws(() => parseGameState(unreleasedLimit), SaveSchemaError);
 
-  const earlyHandover = createCampaignStart(44);
-  earlyHandover.handoverComplete = true;
-  assert.throws(() => parseGameState(earlyHandover), SaveSchemaError);
 });
 
 test("rejects invalid support cooldowns, slate options, and request links", () => {

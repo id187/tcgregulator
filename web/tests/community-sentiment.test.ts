@@ -170,11 +170,42 @@ function noChangeState(
     atReview.themes[topThemeId].topStreakDays = 100;
     atReview.purchaseTrust = 25;
   }
-  return resolveFirstRestrictionImpact(
+  const resolved = resolveFirstRestrictionImpact(
     atReview,
     {},
     health === "healthy" ? 0x3000 : 0x4000,
   );
+  const decision = resolved.history.find((entry) => entry.day === FIRST_BAN_DAY);
+  assert.ok(decision);
+  const themeIds = Object.keys(decision.shares);
+  decision.shares = Object.fromEntries(
+    themeIds.map((themeId) => [
+      themeId,
+      health === "healthy"
+        ? 1 / themeIds.length
+        : themeId === resolved.activeThemeIds[0]
+          ? 0.55
+          : 0.45 / (themeIds.length - 1),
+    ]),
+  );
+  decision.winRates = Object.fromEntries(
+    themeIds.map((themeId) => [
+      themeId,
+      health === "healthy"
+        ? 0.5
+        : themeId === resolved.activeThemeIds[0] ? 0.64 : 0.46,
+    ]),
+  );
+  decision.topCutPlacements = Object.fromEntries(
+    themeIds.map((themeId, index) => [
+      themeId,
+      health === "healthy"
+        ? index < 2 ? 7 : 6
+        : themeId === resolved.activeThemeIds[0] ? 20 : 3,
+    ]),
+  );
+  decision.topThemeId = resolved.activeThemeIds[0];
+  return resolved;
 }
 
 test("weighted Korean phrases keep positive, neutral, and negated copy aligned", () => {
@@ -239,7 +270,7 @@ test("lower-only and upper-ignored D+1 boards are clearly more negative", () => 
   );
 });
 
-test("healthy no-change is positive while unhealthy no-change is negative", () => {
+test("healthy no-change stays skeptical while unhealthy no-change turns hostile", () => {
   const impactDay = FIRST_BAN_DAY + 1;
   const healthy = getDailyCommunitySentiment(noChangeState("healthy"), impactDay);
   const unhealthy = getDailyCommunitySentiment(
@@ -247,13 +278,13 @@ test("healthy no-change is positive while unhealthy no-change is negative", () =
     impactDay,
   );
 
-  assert.ok(healthy.score >= 20, JSON.stringify(healthy));
-  assert.ok(healthy.positive > healthy.negative);
-  assert.match(healthy.label, /긍정적/);
+  assert.ok(healthy.score >= -15, JSON.stringify(healthy));
+  assert.ok(healthy.score < 20, JSON.stringify(healthy));
+  assert.match(healthy.label, /중립/);
   assert.ok(unhealthy.score <= -25, JSON.stringify(unhealthy));
   assert.ok(unhealthy.negative > unhealthy.positive);
   assert.match(unhealthy.label, /부정적/);
-  assert.ok(healthy.score >= unhealthy.score + 45);
+  assert.ok(healthy.score >= unhealthy.score + 20);
 });
 
 test("historical sentiment is stable after current runtime mutation", () => {

@@ -4,13 +4,32 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  classifyCampaignGrowth,
   classifyRegularReleaseReport,
   classifyReprintReleaseReport,
   classifyRestrictionReport,
+  getCampaignGrowthIndex,
   type RegularReleaseReportSignals,
   type ReprintReleaseReportSignals,
   type RestrictionReportSignals,
 } from "../app/game/decision-reports.ts";
+
+test("company growth uses users and revenue without treating investment cash drawdown as decline", () => {
+  assert.deepEqual(
+    [
+      { userRate: 0.4, revenueRate: 0.8 },
+      { userRate: 0.2, revenueRate: 0.2 },
+      { userRate: 0.03, revenueRate: -0.03 },
+      { userRate: -0.2, revenueRate: -0.25 },
+      { userRate: -0.4, revenueRate: -0.55 },
+    ].map(classifyCampaignGrowth),
+    ["breakout", "growing", "holding", "declining", "critical"],
+  );
+  assert.equal(
+    getCampaignGrowthIndex({ userRate: 0.2, revenueRate: 0.2 }),
+    120,
+  );
+});
 
 test("restriction reports branch across stable, costly, failed, replacement, and mixed outcomes", () => {
   const base = {
@@ -146,4 +165,9 @@ test("formal report UI renders the branch id and a follow-up recommendation", ()
   assert.match(overlaySource, /data-report-type=\{report\.reportType\}/);
   assert.match(overlaySource, /report-arrival-recommendation/);
   assert.match(overlaySource, /\{report\.recommendation\}/);
+  assert.match(overlaySource, /회사 성장지수/);
+  assert.match(overlaySource, /report\.growth\.index/);
+  assert.match(overlaySource, /report\.growth\.comparison/);
+  assert.match(overlaySource, /report\.decision\.headline/);
+  assert.match(overlaySource, /ReportMetricValue/);
 });

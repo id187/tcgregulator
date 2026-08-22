@@ -94,6 +94,10 @@ import { getEmergentNarrativesForDay } from "./emergent-narratives.ts";
 import { ENVIRONMENT_HEALTH_MODEL } from "./environment-health.ts";
 import { getSupportNeglectPressure } from "./support-continuity.ts";
 import {
+  getOrganizationAudienceRate,
+  getServiceFailureReason,
+} from "./organization-health.ts";
+import {
   GENERIC_CARD_CATALOG,
   getGenericCard,
 } from "./generic-card-catalog.ts";
@@ -2091,20 +2095,24 @@ function updateUsers(state: GameState): void {
 
   const tierBefore = state.users.tier;
   const businessRates = getBusinessUserRateModifiers(state);
+  const organizationRate = getOrganizationAudienceRate(state);
   const shockRate = restrictionTierShock(state);
   const shockedTierUsers = tierBefore * shockRate;
   const movedToCasual = shockedTierUsers * 0.25;
   state.users.tier = round(
     Math.max(
       0,
-      tierBefore * (1 + tierRate + businessRates.tier) - shockedTierUsers,
+      tierBefore *
+        (1 + tierRate + businessRates.tier + organizationRate) -
+        shockedTierUsers,
     ),
     2,
   );
   state.users.casual = round(
     Math.max(
       0,
-      state.users.casual * (1 + casualRate + businessRates.casual) +
+      state.users.casual *
+        (1 + casualRate + businessRates.casual + organizationRate) +
         movedToCasual,
     ),
     2,
@@ -2113,7 +2121,7 @@ function updateUsers(state: GameState): void {
     Math.max(
       0,
       state.users.collector *
-        (1 + collectorRate + businessRates.collector),
+        (1 + collectorRate + businessRates.collector + organizationRate),
     ),
     2,
   );
@@ -3333,7 +3341,7 @@ function assignMandateSeed(state: GameState, campaignSeed: number): void {
   ) {
     throw new Error("Campaign seed must be a uint32 integer.");
   }
-  if (state.day !== FIRST_BAN_DAY || state.handoverComplete) {
+  if (state.day !== FIRST_BAN_DAY) {
     throw new Error("The mandate seed can only be assigned after the first restriction review.");
   }
 
@@ -3425,9 +3433,9 @@ function assertState(state: GameState): void {
   if (
     state.phase === "ended" &&
     state.day < CAMPAIGN_END_DAY &&
-    totalUsers(state) > 0
+    getServiceFailureReason(state) === null
   ) {
-    throw new Error("The campaign cannot end early while players remain.");
+    throw new Error("The campaign cannot end early before a service-failure challenge is lost.");
   }
   for (const [name, value] of Object.entries({
     today: state.finance.today,
@@ -3956,7 +3964,7 @@ function settleDecisionDay(state: GameState): void {
   updateBusinessLifecycle(state);
   updateFinance(state);
   recordHistory(state);
-  if (state.day >= CAMPAIGN_END_DAY || totalUsers(state) <= 0) {
+  if (state.day >= CAMPAIGN_END_DAY || getServiceFailureReason(state) !== null) {
     state.phase = "ended";
     state.operations.nextEventDay = null;
   }
@@ -3982,7 +3990,7 @@ function resolveCurrentDay(state: GameState): void {
   applyRestrictionOutcomeForCurrentDay(state);
   appendEmergentNarrativesForCurrentDay(state);
 
-  if (state.day >= CAMPAIGN_END_DAY || totalUsers(state) <= 0) {
+  if (state.day >= CAMPAIGN_END_DAY || getServiceFailureReason(state) !== null) {
     state.phase = "ended";
     state.operations.nextEventDay = null;
   }
@@ -4016,7 +4024,7 @@ function advanceDays(state: GameState, days: number): void {
   for (let elapsed = 0; elapsed < days; elapsed += 1) {
     if (state.phase !== "running" || state.day >= CAMPAIGN_END_DAY) break;
     state.day += 1;
-    if (totalUsers(state) <= 0) {
+    if (getServiceFailureReason(state) !== null) {
       updateFinance(state);
       recordHistory(state);
       state.phase = "ended";
@@ -4477,7 +4485,10 @@ export function formatCommunityEvent(
   }
 }
 
-export function createCampaignStart(seed = 0x5eed1234): GameState {
+export function createCampaignStart(
+  seed = 0x5eed1234,
+  { skipHandover = false }: { skipHandover?: boolean } = {},
+): GameState {
   if (THEMES.length !== 150) {
     throw new Error(`The campaign requires exactly 150 themes; received ${THEMES.length}.`);
   }
@@ -4561,7 +4572,7 @@ export function createCampaignStart(seed = 0x5eed1234): GameState {
     nextCommunityId: 1,
     currentTopThemeId,
     purchaseTrust: 80,
-    handoverComplete: false,
+    handoverComplete: skipHandover,
   };
   refreshThemeBases(state);
   computeWinRates(state);

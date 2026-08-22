@@ -16,6 +16,19 @@ test("the guided handover advances one briefing day at a time", () => {
   );
 });
 
+test("a replay with completed guidance skips handover stops", () => {
+  assert.deepEqual(
+    getNextCampaignMilestone({
+      day: 1,
+      handoverComplete: true,
+      nextBanDay: 40,
+      nextReleaseDay: 10,
+      phase: "running",
+    }),
+    { days: 9, label: "정기 발매" },
+  );
+});
+
 test("the nearest release is selected after the guided handover", () => {
   assert.deepEqual(
     getNextCampaignMilestone({ day: 31, nextBanDay: 75, nextReleaseDay: 60, phase: "running" }),

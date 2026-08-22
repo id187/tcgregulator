@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 
+import { RESTRICTION_REPORT_DELAY_DAYS } from "../game/campaign.ts";
 import type { RestrictionCardDisplay } from "../game/restriction-display.ts";
 import type {
   ReleaseBatch,
@@ -28,7 +29,6 @@ export type DecisionOutcome =
         before: RestrictionLimit;
         after: RestrictionLimit;
       }[];
-      impact: number;
       currentRestrictions: readonly (RestrictionCardDisplay & {
         previousLimit?: RestrictionLimit;
       })[];
@@ -36,7 +36,6 @@ export type DecisionOutcome =
         card: RestrictionCardDisplay;
         previousLimit: RestrictionLimit;
       }[];
-      unaddressedThreats: number;
     };
 
 const LIMIT_LABELS: Record<RestrictionLimit, string> = {
@@ -198,12 +197,12 @@ export function DecisionOutcomeOverlay({
             </div>
             <div className="restriction-outcome-summary">
               <div>
-                <span>정책 충격</span>
-                <strong>{Math.round(outcome.impact)}</strong>
+                <span>공표 변경</span>
+                <strong>{outcome.changes.length}건</strong>
               </div>
               <div>
-                <span>미대응 위협</span>
-                <strong>{outcome.unaddressedThreats}</strong>
+                <span>정책 평가</span>
+                <strong>DAY {outcome.day + RESTRICTION_REPORT_DELAY_DAYS}</strong>
               </div>
             </div>
           </div>

@@ -4,6 +4,7 @@ import {
 } from "./campaign.ts";
 import { THEME_BY_ID } from "./content.ts";
 import { isBanDay } from "./engine.ts";
+import { getGenericCard } from "./generic-card-catalog.ts";
 import { getReleaseBatchKind } from "./release-kind.ts";
 import { getReprintImpactPreview } from "./release-requests.ts";
 import {
@@ -48,6 +49,36 @@ export type DecisionReportMetric = {
   label: string;
   value: string;
   delta?: number;
+  before?: string;
+  after?: string;
+};
+
+export type DecisionReportDecision = {
+  headline: string;
+  detail: string;
+};
+
+export type CampaignGrowthBand =
+  | "breakout"
+  | "growing"
+  | "holding"
+  | "declining"
+  | "critical";
+
+export interface CampaignGrowthSignals {
+  userRate: number;
+  revenueRate: number;
+}
+
+export type CampaignGrowth = {
+  band: CampaignGrowthBand;
+  label: string;
+  summary: string;
+  tone: DecisionReportTone;
+  index: number;
+  comparison: string;
+  change: string;
+  basis: string;
 };
 
 export type DecisionReport = {
@@ -62,6 +93,8 @@ export type DecisionReport = {
   summary: string;
   recommendation: string;
   tone: DecisionReportTone;
+  decision: DecisionReportDecision;
+  growth: CampaignGrowth;
   metrics: DecisionReportMetric[];
 };
 
@@ -100,6 +133,254 @@ type ReportProfile = {
 function signed(value: number, digits = 1): string {
   const rounded = value.toFixed(digits);
   return value > 0 ? `+${rounded}` : rounded;
+}
+
+function percent(value: number, digits = 1): string {
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
+function points(value: number, digits = 1): string {
+  return value.toFixed(digits);
+}
+
+function formatUsers(value: number): string {
+  return `${Math.round(value).toLocaleString("ko-KR")}명`;
+}
+
+function won(value: number): string {
+  const sign = value < 0 ? "-" : "";
+  return `${sign}₩${Math.abs(value).toFixed(2)}억`;
+}
+
+function rate(value: number): string {
+  return `${signed(value * 100)}%`;
+}
+
+export function classifyCampaignGrowth(
+  signals: CampaignGrowthSignals,
+): CampaignGrowthBand {
+  const score = campaignGrowthScore(signals);
+  const bothCoreSignalsCollapsed =
+    signals.userRate <= -0.3 && signals.revenueRate <= -0.45;
+
+  if (bothCoreSignalsCollapsed || score <= -0.38) return "critical";
+  if (score <= -0.14) return "declining";
+  if (score >= 0.48 && signals.userRate > 0 && signals.revenueRate > 0) {
+    return "breakout";
+  }
+  if (score >= 0.14) return "growing";
+  return "holding";
+}
+
+function campaignGrowthScore(signals: CampaignGrowthSignals): number {
+  return signals.userRate * 0.55 +
+    Math.max(-1, Math.min(2, signals.revenueRate)) * 0.45;
+}
+
+export function getCampaignGrowthIndex(
+  signals: CampaignGrowthSignals,
+): number {
+  return Math.max(0, Math.round(100 * (1 + campaignGrowthScore(signals))));
+}
+
+const CAMPAIGN_GROWTH_COPY: Record<
+  CampaignGrowthBand,
+  Pick<CampaignGrowth, "label" | "summary" | "tone">
+> = {
+  breakout: {
+    label: "폭발적 성장",
+    summary: "취임 당시보다 이용자와 매출 기반이 함께 크게 확대됐습니다. 시장이 이 TCG의 부활을 체감하고 있습니다.",
+    tone: "positive",
+  },
+  growing: {
+    label: "뚜렷한 성장",
+    summary: "DAY 0 대비 사업 규모가 확장되고 있습니다. 현재 운영 방향이 장기 성장으로 연결되는 중입니다.",
+    tone: "positive",
+  },
+  holding: {
+    label: "정체 · 관망",
+    summary: "취임 이후 사업 규모가 결정적으로 움직이지 않았습니다. 다음 검토까지 성장 동력이 필요합니다.",
+    tone: "caution",
+  },
+  declining: {
+    label: "하락세 진입",
+    summary: "DAY 0보다 이용자·수익 기반이 약해지고 있습니다. 개별 성과와 별개로 회사의 체력이 빠지는 중입니다.",
+    tone: "negative",
+  },
+  critical: {
+    label: "붕괴 위험",
+    summary: "복수의 핵심 사업 지표가 취임 당시보다 크게 악화됐습니다. 다음 의사결정에서 생존을 우선해야 합니다.",
+    tone: "negative",
+  },
+};
+
+function campaignGrowthPoint(
+  state: GameState,
+  reportDay: number,
+): CampaignGrowthSignals & { index: number } {
+  const dayZero = snapshot(state, 0) ?? snapshot(state, reportDay)!;
+  const current = snapshot(state, reportDay) ?? dayZero;
+  const baselineRows = state.history.filter(
+    (row) => row.day >= -14 && row.day <= 0,
+  );
+  const currentRows = state.history.filter(
+    (row) => row.day >= reportDay - 6 && row.day <= reportDay,
+  );
+  const baselineRevenueWon = average(baselineRows, (row) => row.revenue) ?? 0;
+  const currentRevenueWon = average(currentRows, (row) => row.revenue) ?? 0;
+  const baselineRevenue = baselineRevenueWon / WON_PER_EOK;
+  const currentRevenue = currentRevenueWon / WON_PER_EOK;
+  const userRate = dayZero.totalUsers > 0
+    ? (current.totalUsers - dayZero.totalUsers) / dayZero.totalUsers
+    : 0;
+  const revenueRate = baselineRevenue > 0
+    ? (currentRevenue - baselineRevenue) / baselineRevenue
+    : 0;
+  return {
+    userRate,
+    revenueRate,
+    index: getCampaignGrowthIndex({ userRate, revenueRate }),
+  };
+}
+
+function previousDecisionReportDay(
+  state: GameState,
+  reportDay: number,
+): number | null {
+  const restrictionReportDays = state.community
+    .filter(
+      (event) =>
+        event.type === "restriction-applied" ||
+        event.type === "cosmetic-restriction" ||
+        event.type === "restriction-no-change",
+    )
+    .map((event) => event.day + RESTRICTION_REPORT_DELAY_DAYS);
+  const releaseReportDays = state.releaseHistory
+    .filter((batch) => batch.releaseKind !== "baseline")
+    .map((batch) => batch.day + RELEASE_REPORT_DELAY_DAYS);
+  const candidates = [...new Set([
+    ...restrictionReportDays,
+    ...releaseReportDays,
+  ])].filter(
+    (day) => day < reportDay && snapshot(state, day) !== undefined,
+  );
+  return candidates.length > 0 ? Math.max(...candidates) : null;
+}
+
+function buildCampaignGrowth(
+  state: GameState,
+  reportDay: number,
+): CampaignGrowth {
+  const current = campaignGrowthPoint(state, reportDay);
+  const previousReportDay = previousDecisionReportDay(state, reportDay);
+  const previousIndex = previousReportDay === null
+    ? 100
+    : campaignGrowthPoint(state, previousReportDay).index;
+  const band = classifyCampaignGrowth(current);
+  const copy = CAMPAIGN_GROWTH_COPY[band];
+  const indexDelta = current.index - previousIndex;
+
+  return {
+    band,
+    ...copy,
+    index: current.index,
+    comparison: previousReportDay === null
+      ? "첫 보고서 · DAY 0 100"
+      : `직전 보고서 ${previousIndex}`,
+    change: `${indexDelta > 0 ? "+" : ""}${indexDelta}`,
+    basis: `활성 유저 ${rate(current.userRate)} · 일평균 매출 ${rate(current.revenueRate)}`,
+  };
+}
+
+function restrictionCardName(
+  state: GameState,
+  event: GameState["community"][number],
+): string {
+  if (event.genericCardId) {
+    return getGenericCard(event.genericCardId)?.name ?? event.genericCardId;
+  }
+  const theme = THEME_BY_ID[event.themeId];
+  return theme?.parts.find((part) => part.id === event.partId)?.name ??
+    event.partId ??
+    theme?.shortName ??
+    state.currentTopThemeId;
+}
+
+function restrictionDecision(
+  state: GameState,
+  decisionDay: number,
+): DecisionReportDecision {
+  const events = state.community.filter(
+    (event) =>
+      event.day === decisionDay &&
+      (event.type === "restriction-applied" ||
+        event.type === "cosmetic-restriction" ||
+        event.type === "restriction-no-change"),
+  );
+  const changes = events.filter(
+    (event) =>
+      Number.isInteger(event.previousValue) &&
+      Number.isInteger(event.value) &&
+      event.previousValue !== event.value,
+  );
+  if (changes.length === 0) {
+    return {
+      headline: "금제 변경 없음 제출",
+      detail: "기존 제한표를 유지한 채 7일간 환경의 자정 가능성을 관측했습니다.",
+    };
+  }
+  const visible = changes.slice(0, 4).map((event) =>
+    `${restrictionCardName(state, event)} ${event.previousValue}→${event.value}장`
+  );
+  const hiddenCount = changes.length - visible.length;
+  return {
+    headline: `카드 ${changes.length}장 제한 조정`,
+    detail: `${visible.join(" · ")}${hiddenCount > 0 ? ` · 외 ${hiddenCount}건` : ""}`,
+  };
+}
+
+const SUPPORT_DIRECTION_LABEL: Record<
+  Extract<ReleaseBatch["products"][number], { kind: "support" }>["direction"],
+  string
+> = {
+  consistency: "안정성",
+  counterplay: "대응력",
+  finisher: "결정력",
+  recovery: "복구력",
+};
+
+function releaseProductName(
+  product: ReleaseBatch["products"][number],
+): string {
+  switch (product.kind) {
+    case "new-theme":
+      return `${THEME_BY_ID[product.themeId]?.shortName ?? product.themeId} 신규 테마`;
+    case "support":
+      return `${THEME_BY_ID[product.themeId]?.shortName ?? product.themeId} ${SUPPORT_DIRECTION_LABEL[product.direction]} 지원`;
+    case "generic":
+      return getGenericCard(product.genericCardId)?.name ?? product.genericCardId;
+    case "reprint":
+      return getGenericCard(product.cardId)?.name ??
+        THEME_BY_ID[product.themeId]?.parts.find((part) => part.id === product.cardId)?.name ??
+        product.cardId;
+  }
+}
+
+function releaseDecision(batch: ReleaseBatch): DecisionReportDecision {
+  const kind = getReleaseBatchKind(batch);
+  const visible = batch.products.slice(0, 4).map((product) => {
+    const tuning = product.powerAdjustment === 0
+      ? ""
+      : ` (${product.powerAdjustment > 0 ? "+" : ""}${product.powerAdjustment})`;
+    return `${releaseProductName(product)}${tuning}`;
+  });
+  const hiddenCount = batch.products.length - visible.length;
+  return {
+    headline: kind === "reprint"
+      ? `재판 카드 ${batch.products.length}종 발매`
+      : `신제품 ${batch.products.length}종 발매`,
+    detail: `${visible.join(" · ")}${hiddenCount > 0 ? ` · 외 ${hiddenCount}종` : ""}`,
+  };
 }
 
 function snapshot(state: GameState, day: number): DailyHistory | undefined {
@@ -210,37 +491,52 @@ const RESTRICTION_REPORT_PROFILES: Record<RestrictionReportType, ReportProfile> 
 function restrictionMetrics(
   reportType: RestrictionReportType,
   outcome: ReturnType<typeof getRestrictionHistoricalOutcome>,
-  trustDelta: number,
+  trustBefore: number,
+  trustAfter: number,
 ): DecisionReportMetric[] {
+  const followup = outcome.followupMetrics ?? outcome.decisionMetrics;
   const topShare = {
     label: "최상위 점유율",
     value: `${signed(outcome.topShareDelta * 100)}%p`,
     delta: outcome.topShareDelta,
+    before: percent(outcome.decisionMetrics.topShare),
+    after: percent(followup.topShare),
   };
   const topThree = {
     label: "상위 3개 합계",
     value: `${signed(outcome.topThreeShareDelta * 100)}%p`,
     delta: outcome.topThreeShareDelta,
+    before: percent(outcome.decisionMetrics.topThreeShare),
+    after: percent(followup.topThreeShare),
   };
   const concentration = {
     label: "집중도 HHI",
     value: signed(outcome.hhiDelta, 3),
     delta: outcome.hhiDelta,
+    before: points(outcome.decisionMetrics.hhi, 3),
+    after: points(followup.hhi, 3),
   };
   const target = {
     label: "대상 테마 합계",
     value: `${signed(outcome.targetedShareDelta * 100)}%p`,
     delta: outcome.targetedShareDelta,
+    before: percent(outcome.decisionMetrics.targetedShare),
+    after: percent(followup.targetedShare),
   };
   const users = {
     label: "활성 유저",
     value: `${signed(outcome.userDelta, 0)}명`,
     delta: outcome.userDelta,
+    before: formatUsers(outcome.decisionMetrics.totalUsers),
+    after: formatUsers(followup.totalUsers),
   };
+  const trustDelta = trustAfter - trustBefore;
   const trust = {
     label: "구매 신뢰",
     value: `${signed(trustDelta)}점`,
     delta: trustDelta,
+    before: points(trustBefore),
+    after: points(trustAfter),
   };
 
   if (reportType === "restriction-replacement") {
@@ -308,7 +604,14 @@ function buildRestrictionReport(
     summary: `${targetedNames ? `${targetedNames} 판정 이후 ` : ""}${profile.summary}`,
     recommendation: profile.recommendation,
     tone: profile.tone,
-    metrics: restrictionMetrics(reportType, outcome, trustDelta),
+    decision: restrictionDecision(state, decisionDay),
+    growth: buildCampaignGrowth(state, reportDay),
+    metrics: restrictionMetrics(
+      reportType,
+      outcome,
+      trustBefore ?? state.purchaseTrust,
+      trustAfter ?? trustBefore ?? state.purchaseTrust,
+    ),
   };
 }
 
@@ -394,26 +697,46 @@ const REGULAR_RELEASE_REPORT_PROFILES: Record<RegularReleaseReportType, ReportPr
 function regularReleaseMetrics(
   reportType: RegularReleaseReportType,
   signals: RegularReleaseReportSignals,
+  before: {
+    revenue: number;
+    health: number;
+    users: number;
+    trust: number;
+  },
+  after: {
+    revenue: number;
+    health: number;
+    users: number;
+    trust: number;
+  },
 ): DecisionReportMetric[] {
   const revenue = {
     label: reportType === "regular-blockbuster" ? "매출 상승폭" : "일평균 매출",
     value: `${signed(signals.revenueDelta, 2)}억`,
     delta: signals.revenueDelta,
+    before: won(before.revenue),
+    after: won(after.revenue),
   };
   const health = {
     label: "생태계 건강",
     value: `${signed(signals.healthDelta)}점`,
     delta: signals.healthDelta,
+    before: points(before.health),
+    after: points(after.health),
   };
   const users = {
     label: reportType === "regular-ecosystem-builder" ? "순유입 유저" : "활성 유저",
     value: `${signed(signals.userDelta, 0)}명`,
     delta: signals.userDelta,
+    before: formatUsers(before.users),
+    after: formatUsers(after.users),
   };
   const trust = {
     label: "구매 신뢰",
     value: `${signed(signals.trustDelta)}점`,
     delta: signals.trustDelta,
+    before: points(before.trust),
+    after: points(after.trust),
   };
   return reportType === "regular-power-creep-crisis" ||
       reportType === "regular-commercial-backlash"
@@ -489,11 +812,23 @@ const REPRINT_REPORT_PROFILES: Record<ReprintReleaseReportType, ReportProfile> =
 function reprintMetrics(
   reportType: ReprintReleaseReportType,
   signals: ReprintReleaseReportSignals,
+  before: {
+    price: number;
+    users: number;
+    trust: number;
+  },
+  after: {
+    price: number;
+    users: number;
+    trust: number;
+  },
 ): DecisionReportMetric[] {
   const price = {
     label: reportType === "reprint-price-crash" ? "평균 시세 급락" : "평균 시세",
     value: `${signed(signals.averagePriceRate * 100)}%`,
     delta: signals.averagePriceRate,
+    before: `₩${Math.round(before.price).toLocaleString("ko-KR")}`,
+    after: `₩${Math.round(after.price).toLocaleString("ko-KR")}`,
   };
   const access = {
     label: "접근 유입",
@@ -509,17 +844,26 @@ function reprintMetrics(
     label: "구매 신뢰",
     value: `${signed(signals.trustDelta)}점`,
     delta: signals.trustDelta,
+    before: points(before.trust),
+    after: points(after.trust),
+  };
+  const activeUsers = {
+    label: "활성 유저",
+    value: `${signed(after.users - before.users, 0)}명`,
+    delta: after.users - before.users,
+    before: formatUsers(before.users),
+    after: formatUsers(after.users),
   };
   if (reportType === "reprint-access-restored") {
-    return [access, price, collectors, trust];
+    return [price, activeUsers, access, trust];
   }
   if (
     reportType === "reprint-price-crash" ||
     reportType === "reprint-collector-shock"
   ) {
-    return [price, collectors, trust, access];
+    return [price, activeUsers, collectors, trust];
   }
-  return [price, access, collectors, trust];
+  return [price, activeUsers, access, trust];
 }
 
 function buildReleaseReport(
@@ -549,6 +893,18 @@ function buildReleaseReport(
   const healthDelta =
     (observation.environmentHealth ?? 0) -
     (decision?.environmentHealth ?? 0);
+  const comparisonBefore = {
+    revenue: beforeRevenue / WON_PER_EOK,
+    health: decision?.environmentHealth ?? 0,
+    users: decision?.totalUsers ?? observation.totalUsers,
+    trust: decision?.purchaseTrust ?? state.purchaseTrust,
+  };
+  const comparisonAfter = {
+    revenue: afterRevenue / WON_PER_EOK,
+    health: observation.environmentHealth ?? 0,
+    users: observation.totalUsers,
+    trust: observation.purchaseTrust ?? state.purchaseTrust,
+  };
 
   if (kind === "reprint") {
     const reprints = batch.products.filter(
@@ -576,6 +932,19 @@ function buildReleaseReport(
     const averagePriceRate = priceRates.length > 0
       ? priceRates.reduce((sum, value) => sum + value, 0) / priceRates.length
       : 0;
+    const averagePriceBefore = reprints.length > 0
+      ? reprints.reduce((sum, product) => sum + product.referencePrice, 0) /
+        reprints.length
+      : 0;
+    const currentPrices = reprintPreviews.flatMap(({ preview }) =>
+      typeof preview?.referencePrice === "number"
+        ? [preview.referencePrice]
+        : []
+    );
+    const averagePriceAfter = currentPrices.length > 0
+      ? currentPrices.reduce((sum, value) => sum + value, 0) /
+        currentPrices.length
+      : averagePriceBefore * (1 + averagePriceRate);
     const signals: ReprintReleaseReportSignals = {
       averagePriceRate,
       totalAccess,
@@ -600,7 +969,22 @@ function buildReleaseReport(
       summary: `${cardNames} 공급 이후 ${profile.summary}`,
       recommendation: profile.recommendation,
       tone: profile.tone,
-      metrics: reprintMetrics(reportType, signals),
+      decision: releaseDecision(batch),
+      growth: buildCampaignGrowth(state, reportDay),
+      metrics: reprintMetrics(
+        reportType,
+        signals,
+        {
+          price: averagePriceBefore,
+          users: comparisonBefore.users,
+          trust: comparisonBefore.trust,
+        },
+        {
+          price: averagePriceAfter,
+          users: comparisonAfter.users,
+          trust: comparisonAfter.trust,
+        },
+      ),
     };
   }
 
@@ -633,7 +1017,14 @@ function buildReleaseReport(
     summary: `${productLead}${profile.summary}`,
     recommendation: profile.recommendation,
     tone: profile.tone,
-    metrics: regularReleaseMetrics(reportType, signals),
+    decision: releaseDecision(batch),
+    growth: buildCampaignGrowth(state, reportDay),
+    metrics: regularReleaseMetrics(
+      reportType,
+      signals,
+      comparisonBefore,
+      comparisonAfter,
+    ),
   };
 }
 

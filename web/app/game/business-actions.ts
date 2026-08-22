@@ -160,7 +160,7 @@ export const BUSINESS_ACTIONS = [
     cooldown: 60,
     tone: "danger",
     summary: "다음 정기 발매의 희소도를 몰래 높이는 고위험 결정",
-    effect: "해당 발매 매출 +25% · 적발 시 구매 신뢰 급락",
+    effect: "해당 발매 매출 큰 폭 상승 가능 · 적발 시 구매 신뢰 급락",
   },
   {
     type: "season-overhaul",
@@ -472,11 +472,11 @@ export const STRATEGIC_SUCCESS_BENEFIT_BY_TYPE = {
     grossRevenuePerCollectorWon: 0,
   },
   "global-launch": {
-    userRates: { tier: 0.00003, casual: 0.00009, collector: 0.00016 },
-    buyerRate: 0.005,
+    userRates: { tier: 0.00015, casual: 0.00055, collector: 0.0009 },
+    buyerRate: 0.009,
     trustPerDay: 0.004,
-    grossRevenuePerUserWon: 130,
-    grossRevenuePerCollectorWon: 300,
+    grossRevenuePerUserWon: 300,
+    grossRevenuePerCollectorWon: 900,
   },
   "organized-play-platform": {
     userRates: { tier: 0.00014, casual: 0.00008, collector: 0.00003 },

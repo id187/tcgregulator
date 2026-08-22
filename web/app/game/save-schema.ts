@@ -69,6 +69,7 @@ import {
 import { META_ADOPTION_SHARE_FLOOR } from "./meta-tiers.ts";
 import { DAILY_TOP_CUT_SLOTS } from "./placement-meta.ts";
 import { ENVIRONMENT_HEALTH_MODEL } from "./environment-health.ts";
+import { getServiceFailureReason } from "./organization-health.ts";
 import {
   getKeywordMatchupEdgeScore,
   PLAY_KEYWORD_IDS,
@@ -3344,10 +3345,17 @@ export function parseGameState(value: unknown): GameState {
   const redesignedHandoverReady =
     day >= TUTORIAL_END_DAY &&
     hasRestrictionDecisionAt(FIRST_BAN_DAY);
-  if (handoverComplete && !redesignedHandoverReady) {
+  const playerWideHandoverSkip =
+    day < TUTORIAL_END_DAY &&
+    (phase === "ban-edit" || hasRestrictionDecisionAt(FIRST_BAN_DAY));
+  if (
+    handoverComplete &&
+    !redesignedHandoverReady &&
+    !playerWideHandoverSkip
+  ) {
     fail(
       "$.handoverComplete",
-      `requires the DAY ${FIRST_BAN_DAY} restriction and DAY ${TUTORIAL_END_DAY} impact review`,
+      `requires either player-wide onboarding completion or the DAY ${TUTORIAL_END_DAY} impact review`,
     );
   }
 
@@ -3368,8 +3376,12 @@ export function parseGameState(value: unknown): GameState {
   if (day === CAMPAIGN_END_DAY && phase !== "ended") {
     fail("$.phase", `must be ended on DAY ${CAMPAIGN_END_DAY}`);
   }
-  if (phase === "ended" && day < CAMPAIGN_END_DAY && userTotal > 0) {
-    fail("$.phase", "cannot end early while players remain");
+  if (
+    phase === "ended" &&
+    day < CAMPAIGN_END_DAY &&
+    getServiceFailureReason(state as unknown as GameState) === null
+  ) {
+    fail("$.phase", "cannot end early before a service-failure challenge is lost");
   }
 
   return state as unknown as GameState;

@@ -17,6 +17,7 @@ import { CAMPAIGN_END_DAY } from "../app/game/campaign.ts";
 import {
   CAMPAIGN_CASH_RESERVE_MIN,
   CAMPAIGN_CASH_TIGHT_MIN,
+  evaluateCampaignEnding,
 } from "../app/game/campaign-ending.ts";
 import { createInitialGame, reduceGame } from "../app/game/engine.ts";
 import type {
@@ -47,6 +48,9 @@ type FullCampaignResult = StrategyResult & {
   safeActionCost: number;
   cumulativeRevenue: number;
   cumulativeOperatingCosts: number;
+  environmentHealth: number;
+  userRatio: number;
+  endingTitle: string;
 };
 
 const BUSINESS_SANDBOX_CACHE = new Map<number, GameState>();
@@ -210,6 +214,7 @@ function runCashMaxLowRiskCampaign(seed: number): FullCampaignResult {
   const safeRecords = state.operations.records.filter(
     (record) => !isStrategicBusinessAction(record.type),
   );
+  const ending = evaluateCampaignEnding(state);
   return {
     seed,
     cash: state.finance.cash,
@@ -219,6 +224,9 @@ function runCashMaxLowRiskCampaign(seed: number): FullCampaignResult {
     safeActionCost: safeRecords.reduce((sum, record) => sum + record.cost, 0),
     cumulativeRevenue: state.finance.cumulative,
     cumulativeOperatingCosts: state.finance.cumulativeOperatingCosts,
+    environmentHealth: ending.scores.environmentHealth,
+    userRatio: ending.scores.userRatio,
+    endingTitle: ending.title,
     strategicOutcome:
       strategic?.outcome === "success" || strategic?.outcome === "backlash"
         ? strategic.outcome
@@ -369,7 +377,7 @@ test("managed strategic projects preserve a real safety versus upside tradeoff",
   );
 });
 
-test("cash-maximizing low-risk full campaign stays below the reserve ending", () => {
+test("cash-maximizing low-risk full campaign remains viable without using the strategic slot", () => {
   const result = runCashMaxLowRiskCampaign(7);
 
   assert.equal(result.strategicOutcome, null);
@@ -377,10 +385,27 @@ test("cash-maximizing low-risk full campaign stays below the reserve ending", ()
     result.cash >= CAMPAIGN_CASH_TIGHT_MIN,
     "safe optimization should remain viable rather than collapse the company",
   );
-  assert.ok(
-    result.cash < CAMPAIGN_CASH_RESERVE_MIN,
-    `low-risk cash optimization reached the reserve ending with ${result.cash}`,
-  );
+  assert.ok(result.cash >= CAMPAIGN_CASH_RESERVE_MIN);
   assert.ok(result.actions > 1, "the route should use an available low-risk action");
   assert.ok(result.safeActionCost > 0);
+  assert.deepEqual(
+    {
+      cash: result.cash,
+      users: result.users,
+      trust: result.trust,
+      environmentHealth: result.environmentHealth,
+      userRatio: result.userRatio,
+      endingTitle: result.endingTitle,
+      cumulativeRevenue: result.cumulativeRevenue,
+    },
+    {
+      cash: 51.0529,
+      users: 76_187.36,
+      trust: 97.509,
+      environmentHealth: 72.2,
+      userRatio: 7.649,
+      endingTitle: "함께 커진 리그",
+      cumulativeRevenue: 303.4497,
+    },
+  );
 });

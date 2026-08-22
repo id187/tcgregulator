@@ -36,6 +36,10 @@ import type {
   ThemeId,
 } from "../app/game/types.ts";
 
+type CampaignStrategicPlan =
+  | "season-overhaul"
+  | "global-launch";
+
 const ROLE_EXPONENT: Record<PartRole, number> = {
   starter1: 0.65,
   starter2: 0.65,
@@ -46,14 +50,19 @@ const ROLE_EXPONENT: Record<PartRole, number> = {
 
 function choosePlannedBusinessAction(
   state: GameState,
+  plan: CampaignStrategicPlan = "season-overhaul",
 ): BusinessActionType | null {
+  const minimumDay = plan === "season-overhaul" ? 120 : 170;
+  const qualifying = plan === "season-overhaul"
+    ? getBusinessEnvironmentHealth(state) >= 64
+    : state.purchaseTrust >= 72;
   if (
-    state.day >= 120 &&
-    state.finance.cash + 1e-9 >= BUSINESS_ACTION_BY_TYPE["season-overhaul"].cost &&
-    getBusinessEnvironmentHealth(state) >= 64 &&
-    getBusinessActionAvailability(state, "season-overhaul").available
+    state.day >= minimumDay &&
+    state.finance.cash + 1e-9 >= BUSINESS_ACTION_BY_TYPE[plan].cost &&
+    qualifying &&
+    getBusinessActionAvailability(state, plan).available
   ) {
-    return "season-overhaul";
+    return plan;
   }
   return null;
 }
@@ -282,7 +291,12 @@ function submitPlannedRelease(state: GameState): GameState {
   });
 }
 
-test("seed 1000 can earn the fully qualified best ending through the real reducer", () => {
+function runManagedCampaign(
+  strategicPlan: CampaignStrategicPlan,
+): {
+  state: GameState;
+  publishedPolicies: RestrictionPolicyProfile[];
+} {
   let state = createInitialGame(1000);
   const publishedPolicies: RestrictionPolicyProfile[] = [];
 
@@ -316,7 +330,7 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       continue;
     }
 
-    const businessAction = choosePlannedBusinessAction(state);
+    const businessAction = choosePlannedBusinessAction(state, strategicPlan);
     if (businessAction) {
       assert.ok(
         state.finance.cash + 1e-9 >= BUSINESS_ACTION_BY_TYPE[businessAction].cost,
@@ -337,6 +351,12 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
     }
     state = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
   }
+
+  return { state, publishedPolicies };
+}
+
+test("seed 1000 can earn the fully qualified best ending through the real reducer", () => {
+  const { state, publishedPolicies } = runManagedCampaign("season-overhaul");
 
   assert.equal(state.day, CAMPAIGN_END_DAY);
   assert.equal(state.phase, "ended");
@@ -381,7 +401,7 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
   );
   assert.deepEqual(
     publishedPolicies.map((profile) => profile.changeCount),
-    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
   );
   assert.equal(
     publishedPolicies.reduce(
@@ -442,11 +462,11 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       title: ending.title,
     },
     {
-      cash: 19.8889,
-      endingCash: 19.9,
-      environmentHealth: 74.5,
-      purchaseTrust: 84.8,
-      userRatio: 1.7665,
+      cash: 38.6598,
+      endingCash: 38.7,
+      environmentHealth: 77.6,
+      purchaseTrust: 95.8,
+      userRatio: 5.2934,
       bands: {
         cash: "reserve",
         environment: "stable",
@@ -455,6 +475,39 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       },
       qualifiedForBestEnding: true,
       title: "함께 커진 리그",
+    },
+  );
+});
+
+test("a successful global launch creates a visibly higher commercial ceiling", () => {
+  const { state } = runManagedCampaign("global-launch");
+  const ending = evaluateCampaignEnding(state);
+  const strategic = state.operations.records.find(
+    (record) => record.type === "global-launch",
+  );
+
+  assert.equal(state.day, CAMPAIGN_END_DAY);
+  assert.equal(strategic?.outcome, "success");
+  assert.equal(ending.bands.users, "breakout");
+  assert.equal(ending.bands.cash, "prosperous");
+  assert.deepEqual(
+    {
+      cash: state.finance.cash,
+      cumulativeRevenue: state.finance.cumulative,
+      environmentHealth: ending.scores.environmentHealth,
+      purchaseTrust: ending.scores.purchaseTrust,
+      userRatio: ending.scores.userRatio,
+      totalUsers: ending.totalUsers,
+      title: ending.title,
+    },
+    {
+      cash: 73.0158,
+      cumulativeRevenue: 331.4247,
+      environmentHealth: 78.4,
+      purchaseTrust: 89.9,
+      userRatio: 8.834,
+      totalUsers: 87_995.87,
+      title: "시대를 만든 TCG",
     },
   );
 });

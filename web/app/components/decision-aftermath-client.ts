@@ -1,5 +1,3 @@
-import { getGenericCard } from "../game/generic-card-catalog.ts";
-import { getRestrictionPolicyProfile } from "../game/restriction-policy.ts";
 import {
   getCurrentRestrictionCards,
   getRestrictionCardDisplay,
@@ -50,9 +48,7 @@ function isDecisionOutcome(value: unknown): value is DecisionOutcome {
   return (
     Array.isArray(value.changes) &&
     Array.isArray(value.currentRestrictions) &&
-    Array.isArray(value.releasedCards) &&
-    typeof value.impact === "number" &&
-    typeof value.unaddressedThreats === "number"
+    Array.isArray(value.releasedCards)
   );
 }
 
@@ -120,22 +116,6 @@ function derivePendingDecisionAftermath(
     });
   }
 
-  const beforeDecision = structuredClone(game);
-  const changes: Record<string, RestrictionLimit> = {};
-  for (const [cardId, change] of changedByCardId) {
-    changes[cardId] = change.after;
-    const genericCard = getGenericCard(cardId);
-    if (genericCard) {
-      beforeDecision.genericLimits[genericCard.id] = change.before;
-      continue;
-    }
-    const owner = beforeDecision.activeThemeIds.find((themeId) =>
-      beforeDecision.themes[themeId]?.releasedPartIds.includes(cardId),
-    );
-    if (owner) beforeDecision.themes[owner].legalLimits[cardId] = change.before;
-  }
-
-  const policy = getRestrictionPolicyProfile(beforeDecision, changes);
   const publishedChanges = [...changedByCardId].map(([cardId, change]) => ({
     ...getRestrictionCardDisplay(game, cardId),
     before: change.before,
@@ -163,9 +143,7 @@ function derivePendingDecisionAftermath(
       day: game.day,
       changes: publishedChanges,
       currentRestrictions,
-      impact: policy.totalImpact,
       releasedCards,
-      unaddressedThreats: policy.unaddressedThreatThemeIds.length,
     },
   };
 }

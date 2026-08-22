@@ -48,6 +48,7 @@ export type TabTutorialContext = Readonly<{
   /** Omitted by standalone help callers that are not inside a campaign. */
   day?: number;
   handoverComplete?: boolean;
+  tutorialSeriesComplete?: boolean;
 }>;
 
 export const CONTEXTUAL_TUTORIAL_TOPIC_IDS = [
@@ -155,7 +156,7 @@ const DISTRIBUTION_TUTORIAL = {
         {
           label: "커뮤니티 여론",
           description:
-            "매일 올라온 글의 긍정·부정 반응을 점수로 모은 값입니다. 50점이 중립입니다.",
+            "매일 올라온 글의 긍정·부정 반응을 점수로 모은 값입니다. 50점이 중립입니다. 플레이 중 불쾌감은 별도 수치로 공개되지 않으며 커뮤니티 글을 통해서만 포착할 수 있습니다.",
         },
       ],
     },
@@ -261,7 +262,7 @@ const CARDS_TUTORIAL = {
       id: "cards-catalog",
       title: "테마와 범용 카드를 나누어 봅니다",
       body:
-        "테마 리스트는 테마별 전용 카드와 성과를, 범용 리스트는 여러 테마가 함께 쓰는 카드를 보여줍니다. 테마 이름을 누르면 오른쪽 상세 정보가 바뀝니다.",
+        "테마 리스트는 테마별 전용 카드와 성과를, 범용 리스트는 여러 테마가 함께 쓰는 카드를 보여줍니다. 범용 카드의 사용 테마는 채용률이 높은 순서로 표시되며, 목록에서 항목을 누르면 오른쪽 상세 정보가 바뀝니다.",
       terms: [
         {
           label: "테마 리스트",
@@ -271,7 +272,7 @@ const CARDS_TUTORIAL = {
         {
           label: "범용 리스트",
           description:
-            "출시된 범용 카드의 키워드, 출시일, 채용 테마, 시세와 현행 제한을 모아봅니다.",
+            "출시된 범용 카드의 키워드, 출시일, 필드 채용률과 평균 투입 매수, 채용 테마, 시세와 현행 금제를 모아봅니다. 사용 테마 이름은 해당 카드를 많이 채용한 순서입니다.",
         },
         {
           label: "플레이 키워드",
@@ -338,7 +339,7 @@ const CARDS_TUTORIAL = {
         {
           label: "금제 일정",
           description:
-            "평소에는 현행 제한만 열람하고, 금제위원회가 열린 날에는 표의 조정 영역과 제출 영역이 열립니다.",
+            "평소에는 현행 금제만 열람합니다. 금제위원회가 열린 날에는 3장 유지·2장 준제한·1장 제한·0장 금지 중 하나를 고르고 금제안을 제출합니다.",
         },
       ],
     },
@@ -469,7 +470,7 @@ const COMMUNITY_TUTORIAL = {
       id: "community-feed",
       title: "매일 올라온 플레이어 반응을 읽습니다",
       body:
-        "하루 20개 글은 메타 토론·덱 연구소·신제품·금제·시세 게시판으로 나뉩니다. 글은 공식 판정이 아니라 사람들이 보내는 수요와 불만의 신호입니다.",
+        "하루 20개 글은 메타 토론·덱 연구소·신제품·금제·시세 게시판으로 나뉩니다. 글은 공식 판정이 아니라 사람들이 보내는 수요와 불만의 신호입니다. 플레이 중 불쾌감은 다른 화면에 수치로 표시되지 않으므로 반복되는 커뮤니티 글을 통해서만 포착할 수 있습니다.",
       terms: [
         {
           label: "게시글",
@@ -484,6 +485,11 @@ const COMMUNITY_TUTORIAL = {
         {
           label: "열기",
           description: "그날 커뮤니티 반응이 얼마나 집중되고 격해졌는지를 나타냅니다.",
+        },
+        {
+          label: "불쾌감",
+          description:
+            "공개 수치가 없는 숨은 체감입니다. 특정 테마·카드·플레이 패턴을 향한 불만이 여러 글에서 반복되는지 읽어야 합니다.",
         },
       ],
     },
@@ -633,7 +639,7 @@ const FIRST_RESTRICTION_TUTORIAL = {
       targetTab: "distribution",
       title: "분포에서 조사할 테마를 고르십시오",
       body:
-        "입상 점유율은 최근 7일 대회 입상 자리 가운데 각 테마가 차지한 몫입니다. 상위권이 한 테마에 과도하게 몰렸는지, 여러 테마가 고르게 경쟁하는지 비교해 먼저 살펴볼 테마를 정하십시오.",
+        "입상 점유율은 최근 7일 대회 입상 자리 가운데 각 테마가 차지한 몫입니다. 상위권이 한 테마에 과도하게 몰렸는지 비교한 뒤, 안내를 닫고 상단의 느낌표가 붙은 카드 탭을 직접 여십시오.",
       terms: [
         {
           label: "입상 점유율",
@@ -641,39 +647,9 @@ const FIRST_RESTRICTION_TUTORIAL = {
             "어느 테마가 결과를 지배하는지 보여주지만, 어떤 카드가 원인인지는 알려주지 않습니다.",
         },
         {
-          label: "테마 선택",
+          label: "다음 조사",
           description:
-            "그래프 조각이나 테마 목록을 선택하면 카드 탭의 해당 테마로 이동합니다.",
-        },
-      ],
-    },
-    {
-      id: "first-restriction-cards",
-      sectionLabel: "카드",
-      targetTab: "cards",
-      title: "카드 데이터로 원인을 확인하고 허용 매수를 정하십시오",
-      body:
-        "선택한 테마의 전용 카드와 여러 테마가 쓰는 범용 카드를 비교하십시오. 채용률과 평균 투입 매수로 실제 핵심 카드인지 확인하고, 현행 제한에서 몇 장까지 허용할지 결정합니다. 시세는 보유가치와 후폭풍의 근거이지 카드가 강하다는 단독 증거는 아닙니다.",
-      terms: [
-        {
-          label: "채용률",
-          description:
-            "해당 테마 덱 가운데 이 카드를 사용하는 덱의 비율입니다.",
-        },
-        {
-          label: "평균 매수",
-          description:
-            "사용하는 덱이 평균 몇 장을 넣는지 보여줍니다. 제한 단계가 실제 덱에 줄 충격을 판단하는 기준입니다.",
-        },
-        {
-          label: "현행 제한",
-          description:
-            "현재 허용 매수입니다. 3은 유지, 2는 준제한, 1은 제한, 0은 금지입니다.",
-        },
-        {
-          label: "최종 확인",
-          description:
-            "높은 점유율의 원인 카드인지, 단순히 함께 쓰이는 카드인지 구분한 뒤 금제안을 제출하십시오.",
+            "분포를 충분히 확인한 다음 카드 ! 탭을 눌러 원인 카드의 채용률과 평균 투입 매수를 조사합니다. 범용 카드에 표시되는 사용 테마는 채용률이 높은 순서입니다.",
         },
       ],
     },
@@ -814,6 +790,7 @@ export function shouldOpenTabTutorial(
   const availability = getHandoverTabAvailability(tab, {
     day: context.day,
     handoverComplete: context.handoverComplete ?? false,
+    tutorialSeriesComplete: context.tutorialSeriesComplete,
   });
   if (!availability.unlocked) return false;
 

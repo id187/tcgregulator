@@ -49,11 +49,13 @@ function makeStableFoundation(): GameState {
   return state;
 }
 
-test("all four result bands use the intended inclusive boundaries", () => {
-  assert.equal(getCampaignCashBand(4.94), "crisis");
-  assert.equal(getCampaignCashBand(4.95), "tight");
-  assert.equal(getCampaignCashBand(13.94), "tight");
-  assert.equal(getCampaignCashBand(13.95), "reserve");
+test("all result axes use the intended inclusive boundaries", () => {
+  assert.equal(getCampaignCashBand(2.94), "crisis");
+  assert.equal(getCampaignCashBand(2.95), "tight");
+  assert.equal(getCampaignCashBand(9.94), "tight");
+  assert.equal(getCampaignCashBand(9.95), "reserve");
+  assert.equal(getCampaignCashBand(49.94), "reserve");
+  assert.equal(getCampaignCashBand(49.95), "prosperous");
 
   assert.equal(getCampaignEnvironmentBand(49.94), "danger");
   assert.equal(getCampaignEnvironmentBand(49.95), "caution");
@@ -65,10 +67,16 @@ test("all four result bands use the intended inclusive boundaries", () => {
   assert.equal(getCampaignTrustBand(79.94), "guarded");
   assert.equal(getCampaignTrustBand(79.95), "trusted");
 
-  assert.equal(getCampaignUserBand(0.89989), "contracted");
-  assert.equal(getCampaignUserBand(0.89995), "steady");
-  assert.equal(getCampaignUserBand(1.09989), "steady");
-  assert.equal(getCampaignUserBand(1.09995), "grown");
+  assert.equal(getCampaignUserBand(0.49989), "collapsed");
+  assert.equal(getCampaignUserBand(0.49995), "contracted");
+  assert.equal(getCampaignUserBand(0.84989), "contracted");
+  assert.equal(getCampaignUserBand(0.84995), "steady");
+  assert.equal(getCampaignUserBand(1.24989), "steady");
+  assert.equal(getCampaignUserBand(1.24995), "steady");
+  assert.equal(getCampaignUserBand(1.25), "grown");
+  assert.equal(getCampaignUserBand(8.49989), "grown");
+  assert.equal(getCampaignUserBand(8.49995), "breakout");
+  assert.equal(getCampaignUserBand(8.5), "breakout");
 });
 
 test("purchase trust is an independent axis and no longer lowers environment health twice", () => {
@@ -100,20 +108,20 @@ test("handover-day active users define the audience ratio and delta", () => {
   assert.equal(ending.bands.users, "grown");
 });
 
-test("the best ending uses only reserve, stable, trusted, and a non-contracted audience", () => {
+test("the best ending requires reserves, stability, trust, and visible audience growth", () => {
   const steady = makeStableFoundation();
   const steadyEnding = evaluateCampaignEnding(steady);
-  assert.equal(steadyEnding.qualifiedForBestEnding, true);
+  assert.equal(steadyEnding.qualifiedForBestEnding, false);
   assert.equal(steadyEnding.title, "지속 가능한 리그");
 
   const grown = structuredClone(steady);
-  setUserRatio(grown, 1.1);
+  setUserRatio(grown, 1.25);
   const grownEnding = evaluateCampaignEnding(grown);
   assert.equal(grownEnding.qualifiedForBestEnding, true);
   assert.equal(grownEnding.title, "함께 커진 리그");
 
   const contracted = structuredClone(steady);
-  setUserRatio(contracted, 0.89);
+  setUserRatio(contracted, 0.8);
   const contractedEnding = evaluateCampaignEnding(contracted);
   assert.equal(contractedEnding.qualifiedForBestEnding, false);
   assert.equal(contractedEnding.title, "좋은 판, 줄어든 관중");
@@ -134,11 +142,12 @@ test("the best ending uses only reserve, stable, trusted, and a non-contracted a
 test("high cash has no upper reserve penalty", () => {
   const state = makeStableFoundation();
   state.finance.cash = 1_000_000;
+  setUserRatio(state, 1.25);
 
   const ending = evaluateCampaignEnding(state);
-  assert.equal(ending.bands.cash, "reserve");
+  assert.equal(ending.bands.cash, "prosperous");
   assert.equal(ending.qualifiedForBestEnding, true);
-  assert.equal(ending.title, "지속 가능한 리그");
+  assert.equal(ending.title, "함께 커진 리그");
 });
 
 test("identical final results ignore support, policy, business, and event checklists", () => {
@@ -222,7 +231,7 @@ test("ending hints contain only result axes that missed their standards", () => 
 
   const guardedGrowth = makeStableFoundation();
   guardedGrowth.purchaseTrust = 70;
-  setUserRatio(guardedGrowth, 1.2);
+  setUserRatio(guardedGrowth, 1.3);
   assert.deepEqual(
     getCampaignEndingHints(evaluateCampaignEnding(guardedGrowth)).map(
       (hint) => hint.id,
@@ -230,7 +239,9 @@ test("ending hints contain only result axes that missed their standards", () => 
     ["trust"],
   );
 
-  assert.deepEqual(getCampaignEndingHints(evaluateCampaignEnding(makeStableFoundation())), []);
+  const complete = makeStableFoundation();
+  setUserRatio(complete, 1.25);
+  assert.deepEqual(getCampaignEndingHints(evaluateCampaignEnding(complete)), []);
 });
 
 test("the former high-growth low-trust result receives a distinct trust ending", () => {

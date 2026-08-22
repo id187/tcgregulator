@@ -3,6 +3,10 @@ import { useState } from "react";
 import { THEME_BY_ID } from "../game/content.ts";
 import { REPRINT_PACK_CANDIDATE_COUNT } from "../game/campaign.ts";
 import { getProspectiveSupportKeyword } from "../game/engine.ts";
+import {
+  getCountForecastRange,
+  getForecastRange,
+} from "../game/forecast-display.ts";
 import { getGenericCard } from "../game/generic-card-catalog.ts";
 import { getPlayKeyword } from "../game/play-keywords.ts";
 import { getReleaseSlateKind } from "../game/release-kind.ts";
@@ -22,6 +26,12 @@ import { RegulatorCardFace } from "./RegulatorCardFace.tsx";
 
 const POWER_ADJUSTMENTS = [-3, -2, -1, 0, 1, 2, 3] as const satisfies
   readonly PowerAdjustment[];
+
+function formatSignedScore(value: number): string {
+  if (value > 0) return `+${value.toFixed(1)}`;
+  if (value < 0) return value.toFixed(1);
+  return "0.0";
+}
 
 function optionName(option: ReleaseOption): string {
   if (option.kind === "generic") {
@@ -322,12 +332,23 @@ export function ReleaseDecisionPanel({
         <section className="release-power-adjustments release-reprint-impact" aria-label="재판 영향 안내">
           <header>
             <strong>재판 영향</strong>
-            <span>접근성은 오르지만 초판 보유가치와 구매 신뢰가 흔들릴 수 있습니다.</span>
+            <span>관측 자료로 계산한 예상 범위입니다 · 분석 신뢰도 중간</span>
           </header>
           <div>
             {selectedDirectOptions.map((option) => {
               if (option.kind !== "reprint") return null;
               const preview = getReprintImpactPreview(game, option.cardId);
+              const accessForecast = preview
+                ? getCountForecastRange(preview.accessibilityUserGain)
+                : null;
+              const trustForecast = preview
+                ? getForecastRange(preview.trustDelta, {
+                    relativeMargin: 0.25,
+                    minimumMargin: 0.5,
+                    step: 0.5,
+                    maximum: 0,
+                  })
+                : null;
               return preview ? (
                 <div className="release-power-adjustment-row" key={option.id}>
                   <span>
@@ -335,7 +356,7 @@ export function ReleaseDecisionPanel({
                     <strong>{preview.cardName}</strong>
                   </span>
                   <span>
-                    접근 +{preview.accessibilityUserGain.toLocaleString("ko-KR")}명 · 신뢰 {preview.trustDelta.toFixed(1)}
+                    접근 +{accessForecast!.lower.toLocaleString("ko-KR")}~{accessForecast!.upper.toLocaleString("ko-KR")}명 · 신뢰 {formatSignedScore(trustForecast!.lower)}~{formatSignedScore(trustForecast!.upper)} 전망
                   </span>
                 </div>
               ) : null;

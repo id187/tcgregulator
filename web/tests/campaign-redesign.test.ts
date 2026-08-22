@@ -110,6 +110,15 @@ test("DAY 0 exposes fourteen inherited rows and stops at DAY 7 and each D+9 repo
   assert.equal(reports[0].kind, "restriction");
   assert.equal(reports[0].decisionDay, 0);
   assert.equal(reports[0].reportDay, 9);
+  assert.ok(reports[0].decision.headline.length > 0);
+  assert.ok(Number.isFinite(reports[0].growth.index));
+  assert.match(reports[0].growth.comparison, /첫 보고서.*DAY 0 100/);
+  assert.match(reports[0].growth.basis, /활성 유저.*일평균 매출/);
+  assert.ok(
+    reports[0].metrics.every(
+      (metric) => metric.before !== undefined && metric.after !== undefined,
+    ),
+  );
 });
 
 test("the inherited market ledger has distinct deterministic paths anchored to DAY 0", () => {
@@ -209,6 +218,21 @@ test("a settled DAY 0 snapshot becomes the inherited chart's exact landing point
   assert.ok(Math.abs((inheritedDayBeforeStart.communitySentiment ?? 0) - 38) < 1);
   assert.ok(Math.abs((inheritedDayBeforeStart.communityPositive ?? 0) - 5) <= 1);
   assert.ok(Math.abs((inheritedDayBeforeStart.communityNegative ?? 0) - 11) <= 1);
+});
+
+test("settled DAY 0 freezes inherited users, shares, and win rates", () => {
+  const state = startMandate(407);
+  const inherited = getPreCampaignHistory(state);
+
+  state.users.tier = 90_000;
+  state.users.casual = 70_000;
+  state.users.collector = 40_000;
+  for (const [index, themeId] of state.activeThemeIds.entries()) {
+    state.themes[themeId].share = index === 0 ? 0.96 : 0.01;
+    state.themes[themeId].winRate = index === 0 ? 0.95 : 0.05;
+  }
+
+  assert.deepEqual(getPreCampaignHistory(state), inherited);
 });
 
 test("DAY 50 is a nine-candidate, three-card, zero-adjustment reprint pack", () => {

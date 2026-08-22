@@ -128,11 +128,11 @@ const OUTCOME_EFFECTS = {
   },
   "global-launch": {
     success: {
-      userMultipliers: { tier: 0.04, casual: 0.1, collector: 0.24 },
+      userMultipliers: { tier: 0.2, casual: 0.7, collector: 1.4 },
       trustDelta: 8,
     },
     backlash: {
-      userMultipliers: { tier: -0.03, casual: -0.08, collector: -0.18 },
+      userMultipliers: { tier: -0.12, casual: -0.3, collector: -0.5 },
       trustDelta: -14,
     },
   },

@@ -885,14 +885,20 @@ function setNoChangeMetaHealth(state: GameState, unhealthy: boolean): void {
   decisionHistory.shares = Object.fromEntries(
     decisionThemeIds.map((themeId) => [themeId, state.themes[themeId].share]),
   );
-  if (decisionHistory.topCutPlacements) {
-    decisionHistory.topCutPlacements = Object.fromEntries(
-      decisionThemeIds.map((themeId) => [
-        themeId,
-        decisionHistory.topCutPlacements?.[themeId] ?? 0,
-      ]),
-    );
-  }
+  decisionHistory.winRates = Object.fromEntries(
+    decisionThemeIds.map((themeId) => [
+      themeId,
+      unhealthy && themeId === "cycle" ? 0.64 : unhealthy ? 0.46 : 0.5,
+    ]),
+  );
+  decisionHistory.topCutPlacements = Object.fromEntries(
+    decisionThemeIds.map((themeId, index) => [
+      themeId,
+      unhealthy
+        ? themeId === "cycle" ? 20 : 3
+        : index < 2 ? 7 : 6,
+    ]),
+  );
   decisionHistory.topThemeId = "cycle";
 }
 
@@ -3199,9 +3205,9 @@ test("generic-only restrictions burn hotter and fill the board with multi-deck f
 
   const before = JSON.stringify(state);
   for (const [day, expectedCount, expectedHeat] of [
-    [FIRST_RESTRICTION_REACTION_DAY, 18, 98],
-    [FIRST_RESTRICTION_REACTION_DAY + 1, 16, 90],
-    [FIRST_RESTRICTION_REACTION_DAY + 2, 14, 80],
+    [FIRST_RESTRICTION_REACTION_DAY, 18, 99],
+    [FIRST_RESTRICTION_REACTION_DAY + 1, 16, 91],
+    [FIRST_RESTRICTION_REACTION_DAY + 2, 14, 81],
   ] as const) {
     const posts = getDailyCommunityPosts(state, day);
     const genericFallout = posts.filter(
@@ -3306,7 +3312,7 @@ test("a no-change restriction announcement also creates a delayed debate", () =>
   }
 });
 
-test("no-change debate condemns a stuck meta but defends a healthy one", () => {
+test("no-change debate condemns a stuck meta but stays skeptical in a healthy one", () => {
   const healthy = makeNoChangeRestrictionState(3309);
   const unhealthy = structuredClone(healthy);
   setNoChangeMetaHealth(healthy, false);
@@ -3335,7 +3341,46 @@ test("no-change debate condemns a stuck meta but defends a healthy one", () => {
       /현행 유지|한 사이클 더|과잉 대응|지켜보자|관찰|금제보다 연구|변경 없음도 선택|유지는 납득|건드리지 않은|건드릴 이유/.test(
         post.body,
       ),
-    ).length >= 8,
+    ).length >= 3,
+  );
+  assert.ok(
+    healthyPosts.filter((post) =>
+      /설명|근거|결과|책임|논쟁|다음 대회|다음 금제/.test(post.body)
+    ).length >= 5,
+  );
+});
+
+test("no-change targets the tournament leader and condemns a forty-percent top-cut share", () => {
+  const state = makeNoChangeRestrictionState(3311);
+  const decisionHistory = state.history.find(
+    (entry) => entry.day === FIRST_BAN_DAY,
+  );
+  assert.ok(decisionHistory);
+  decisionHistory.topCutPlacements = {
+    cycle: 5,
+    "white-night": 3,
+    "machine-revolution": 14,
+    ironblood: 4,
+    abyss: 6,
+  };
+
+  const posts = getDailyCommunityPosts(
+    state,
+    FIRST_RESTRICTION_REACTION_DAY,
+  ).filter((post) =>
+    post.id.startsWith(`daily-restriction-${FIRST_BAN_DAY}-`)
+  );
+
+  assert.equal(posts.length, 16);
+  assert.ok(posts.filter((post) => post.themeId === "machine-revolution").length >= 14);
+  assert.ok(posts.some((post) => /기계혁명/.test(post.body)));
+  assert.ok(posts.some((post) => /입상 .*%/.test(post.body)));
+  assert.ok(
+    posts.filter((post) =>
+      /방치|납득이 안|숨 쉴 틈|책임|고착|경고등|아무것도|현행 유지|무금제|금제 기준|상위권 집중/.test(
+        post.body,
+      )
+    ).length >= 10,
   );
 });
 

@@ -49,6 +49,7 @@ import {
   getRecentPlacementReport,
   PLACEMENT_WINDOW_DAYS,
 } from "./placement-meta.ts";
+import { getCampaignAnalysisHistory } from "./pre-campaign-history.ts";
 import type {
   RecentPlacementReport,
   ThemePlacementReport,
@@ -1819,10 +1820,12 @@ const NO_CHANGE_HEALTHY_COPY = [
 ] as const;
 
 const NO_CHANGE_CRITICAL_COPY = [
+  "최근 {placementDays}일 입상 {placementShare}인 {theme}를 그대로 둔다고? 이건 관찰이 아니라 방치에 가깝다",
+  "입상표의 {placementShare}를 한 테마가 먹었는데 무금제면 대체 어느 수치부터 개입할 건데",
   "이 환경을 보고도 아무것도 안 자르냐? 운영이 문제를 방치하네",
   "솜방망이도 아니고 손을 아예 놨네. 다음 금제까지 또 버티라고?",
   "현행 유지가 아니라 고착된 메타를 다음 금제로 미룬 거지",
-  "점유율과 피로도에 경고등이 켜졌는데 변경 없음은 납득이 안 됨",
+  "점유율과 플레이 체감에 경고등이 켜졌는데 변경 없음은 납득이 안 됨",
   "카운터 연구 핑계로 환경 개선 책임을 유저에게 떠넘기는 느낌",
   "다른 테마가 숨 쉴 틈이 없는데 {theme} 덱을 그대로 둔다고?",
   "변경 없음이 가장 강한 메시지네. 운영은 지금 환경이 괜찮다는 거잖아",
@@ -1838,7 +1841,7 @@ const NO_CHANGE_CRITICAL_COPY = [
   "상위권 집중 수치가 이렇게 뻔한데 현행 유지라니 보고 싶은 것만 본 거 아님?",
   "다른 덱이 숨 쉴 틈도 없는데 또 카운터 카드로 알아서 버티라는 거네",
   "{part} 검토 결과가 아무 조치 없음이면 금제 기준부터 다시 설명해야 함",
-  "쌓인 피로가 수치로 보이는데 다음 금제로 미룬 건 책임 회피에 가깝다",
+  "커뮤니티에 쌓인 피로가 계속 보이는데 다음 금제로 미룬 건 책임 회피에 가깝다",
   "환경 개선보다 발표 때 욕 덜 먹는 선택을 한 것처럼 보여서 더 답답함",
   "이 상황에서 관찰을 더 하자는 건 신중함이 아니라 방치라는 말이 맞음",
 ] as const;
@@ -3749,14 +3752,54 @@ function recentRestrictionDecision(
         `${left.themeId}:${left.partId}:${left.id}`.localeCompare(
           `${right.themeId}:${right.partId}:${right.id}`,
         ),
-      );
+    );
     if (raw.length === 0) continue;
 
+    const placementReport = getRecentPlacementReport(
+      getCampaignAnalysisHistory(state),
+      state.seed,
+      decisionDay,
+    );
+    const placementLeader = Object.entries(placementReport.themes)
+      .filter(([themeId]) => Boolean(THEME_BY_ID[themeId]))
+      .sort(
+        ([leftId, left], [rightId, right]) =>
+          right.placementShare - left.placementShare ||
+          leftId.localeCompare(rightId),
+      )[0];
     const provisional = raw.flatMap((event) => {
-      const content = THEME_BY_ID[event.themeId];
-      const part = content?.parts.find((candidate) => candidate.id === event.partId);
-      const oldLimit = event.previousValue;
-      const newLimit = event.value;
+      const announcedContent = THEME_BY_ID[event.themeId];
+      const announcedPart = announcedContent?.parts.find(
+        (candidate) => candidate.id === event.partId,
+      );
+      const shouldAnchorPlacementLeader =
+        event.type === "restriction-no-change" &&
+        (placementLeader?.[1].placementShare ?? 0) >= 0.3;
+      const content = shouldAnchorPlacementLeader
+        ? THEME_BY_ID[placementLeader![0]] ?? announcedContent
+        : announcedContent;
+      const part = shouldAnchorPlacementLeader && content
+        ? [...partsAvailableByDay(state, content.id, decisionDay + 1)]
+            .sort(
+              (left, right) =>
+                right.powerWeight * right.inclusion -
+                  left.powerWeight * left.inclusion,
+            )[0] ?? announcedPart
+        : announcedPart;
+      const historicalLimit = content && part
+        ? historicalRestrictionState(
+            state,
+            content.id,
+            part.id,
+            decisionDay + 1,
+          ).limit
+        : undefined;
+      const oldLimit = shouldAnchorPlacementLeader
+        ? historicalLimit
+        : event.previousValue;
+      const newLimit = shouldAnchorPlacementLeader
+        ? historicalLimit
+        : event.value;
       if (
         !content ||
         !part ||
@@ -3827,11 +3870,6 @@ function recentRestrictionDecision(
       }
     }
 
-    const placementReport = getRecentPlacementReport(
-      state.history,
-      state.seed,
-      decisionDay,
-    );
     const anchors: RestrictionAnchor[] = provisional.map((anchor) => {
       const totalImpact = totalImpactByTheme.get(anchor.content.id) ?? 0;
       const cutCount = cutsByTheme.get(anchor.content.id) ?? 0;
@@ -3860,9 +3898,12 @@ function recentRestrictionDecision(
         (sum, share) => sum + share ** 2,
         0,
       );
+      const decisionPlacementShare =
+        placementReport.themes[anchor.content.id]?.placementShare ?? 0;
       const noChangeConcern =
         anchor.event.type === "restriction-no-change" &&
-        (decisionShare >= 0.24 ||
+        (decisionPlacementShare >= 0.3 ||
+          decisionShare >= 0.24 ||
           decisionTopShare >= 0.3 ||
           decisionTopThreeShare >= 0.7 ||
           decisionHhi >= 0.24);
@@ -5052,8 +5093,8 @@ function restrictionCopyPool(
           NO_CHANGE_FOLLOWUP_COPY,
         ] as const)
       : ([
-          NO_CHANGE_HEALTHY_COPY,
-          NO_CHANGE_HEALTHY_COPY,
+          NO_CHANGE_FOLLOWUP_COPY,
+          NO_CHANGE_RESTRICTION_COPY,
           NO_CHANGE_HEALTHY_COPY,
           NO_CHANGE_MEME_COPY,
         ] as const);
@@ -5064,7 +5105,7 @@ function restrictionCopyPool(
           NO_CHANGE_FOLLOWUP_COPY,
         ] as const)
       : ([
-          NO_CHANGE_HEALTHY_COPY,
+          NO_CHANGE_FOLLOWUP_COPY,
           NO_CHANGE_HEALTHY_COPY,
           NO_CHANGE_MEME_COPY,
         ] as const);
@@ -5074,7 +5115,7 @@ function restrictionCopyPool(
           NO_CHANGE_CRITICAL_COPY,
           NO_CHANGE_FOLLOWUP_COPY,
         ] as const)
-      : ([NO_CHANGE_HEALTHY_COPY, NO_CHANGE_HEALTHY_COPY] as const);
+      : ([NO_CHANGE_FOLLOWUP_COPY, NO_CHANGE_HEALTHY_COPY] as const);
     const routing = age === 1 ? dayOne : age === 2 ? dayTwo : dayThree;
     return routing[index % routing.length];
   }
@@ -5494,8 +5535,11 @@ function isRestrictionContextEvent(
   if (event.type !== "restriction-demand" || !event.partId) return false;
   return context.anchors.some(
     (anchor) =>
-      anchor.content.id === event.themeId &&
-      anchor.part.id === event.partId,
+      (anchor.content.id === event.themeId &&
+        anchor.part.id === event.partId) ||
+      (anchor.assessment === "no-change" &&
+        anchor.event.themeId === event.themeId &&
+        anchor.event.partId === event.partId),
   );
 }
 
@@ -7421,8 +7465,11 @@ export function getDailyCommunityPosts(
       const event = existingContext[index];
       const anchor = restrictionContext.anchors.find(
         (candidate) =>
-          candidate.content.id === event.themeId &&
-          candidate.part.id === event.partId,
+          (candidate.content.id === event.themeId &&
+            candidate.part.id === event.partId) ||
+          (candidate.assessment === "no-change" &&
+            candidate.event.themeId === event.themeId &&
+            candidate.event.partId === event.partId),
       );
       if (!anchor) continue;
       const contextual = makeRestrictionContextPost(
@@ -7435,6 +7482,9 @@ export function getDailyCommunityPosts(
       );
       output.push({
         ...event,
+        id: contextual.id,
+        themeId: contextual.themeId,
+        partId: contextual.partId,
         body: contextual.body,
         value: contextual.value,
         previousValue: contextual.previousValue,

@@ -33,6 +33,16 @@ const titleScreenSource = readFileSync(
   fileURLToPath(new URL("../app/components/TitleScreen.tsx", import.meta.url)),
   "utf8",
 );
+const businessActionIconSource = readFileSync(
+  fileURLToPath(
+    new URL("../app/components/BusinessActionIcon.tsx", import.meta.url),
+  ),
+  "utf8",
+);
+const releaseDisplaySource = readFileSync(
+  fileURLToPath(new URL("../app/game/release-display.ts", import.meta.url)),
+  "utf8",
+);
 
 function tutorialText(tab: TabTutorialTabId): string {
   return getTabTutorialPages(tab)
@@ -47,6 +57,7 @@ function tutorialText(tab: TabTutorialTabId): string {
 test("new mandates retain player-wide first-visit completion", () => {
   assert.doesNotMatch(pageSource, /tabTutorial\.reset\(\)/);
   assert.match(pageSource, /Onboarding is player-wide/);
+  assert.match(pageSource, /skipHandover: tutorialSeriesComplete/);
 });
 
 test("settings offer an explicit tutorial replay instead of an on-off switch", () => {
@@ -55,6 +66,62 @@ test("settings offer an explicit tutorial replay instead of an on-off switch", (
   assert.match(pageSource, /onTutorialReset=\{tabTutorial\.reset\}/);
   assert.match(pageSource, /안내 처음부터 다시 보기/);
   assert.match(titleScreenSource, /안내 처음부터 다시 보기/);
+});
+
+test("card actions leave reprints to the dedicated reprint review", () => {
+  assert.doesNotMatch(pageSource, /release-request-reprint/);
+  assert.doesNotMatch(pageSource, /onRequestThemeRelease\("reprint"/);
+});
+
+test("the card list header keeps the theme and generic restriction switch visible", () => {
+  assert.match(pageSource, /className="panel-heading catalog-panel-heading"/);
+  assert.match(pageSource, /<h2>카드 리스트<\/h2>/);
+  assert.match(pageSource, />\s*테마\s*<\/button>/);
+  assert.match(pageSource, />\s*범용\s*<\/button>/);
+  assert.equal(
+    pageSource.match(/card-catalog-switch card-catalog-switch--inline/g)?.length,
+    1,
+    "both catalog modes must reuse one fixed switch",
+  );
+  assert.match(pageSource, /className="theme-detail generic-card-detail"/);
+  assert.doesNotMatch(pageSource, /<span className="data-stamp">DAY \{game\.day\}<\/span>/);
+});
+
+test("operations do not expose an unavailable-action visibility toggle", () => {
+  assert.doesNotMatch(pageSource, /showUnavailableActions/);
+  assert.doesNotMatch(pageSource, /사용 불가 숨기기/);
+});
+
+test("operations prioritize the four starter actions and give every action an SVG", () => {
+  assert.match(pageSource, /isHandoverStarterBusinessAction\(right\.type\)/);
+  assert.match(pageSource, /<BusinessActionIcon type=\{action\.type\} \/>/);
+  for (const actionType of [
+    "tv-cm",
+    "animation-promotion",
+    "championship",
+    "store-tour",
+    "beginner-camp",
+    "local-league",
+    "lending-exchange-network",
+    "collector-fair",
+    "pack-odds",
+    "season-overhaul",
+    "global-launch",
+    "organized-play-platform",
+  ]) {
+    assert.match(businessActionIconSource, new RegExp(`case "${actionType}"`));
+  }
+});
+
+test("baseline theme cards are labeled as pre-mandate releases", () => {
+  assert.match(releaseDisplaySource, /"취임 전 출시"/);
+  assert.doesNotMatch(releaseDisplaySource, /: "DAY 0"/);
+});
+
+test("unpleasantness stays hidden outside community interpretation", () => {
+  assert.doesNotMatch(pageSource, /피로도|피로 확산|반감 폭발/);
+  assert.match(tutorialText("distribution"), /불쾌감.*커뮤니티 글.*통해서만/);
+  assert.match(tutorialText("community"), /불쾌감.*커뮤니티 글.*통해서만/);
 });
 
 test("tab tutorials cover every primary game tab in navigation order", () => {
@@ -136,6 +203,7 @@ test("the first distribution tutorial explains the shared shell and distribution
     "상위 3개 집중",
     "구매 신뢰",
     "커뮤니티 여론",
+    "불쾌감",
     "최근 30일 매출",
   ]) {
     assert.match(text, new RegExp(phrase.replace(/[+]/g, "\\+")), phrase);
@@ -153,6 +221,7 @@ test("each tab tutorial names the information and controls visible in that tab",
     cards: [
       "테마 리스트",
       "범용 리스트",
+      "채용률이 높은 순서",
       "유저 비율",
       "입상 점유율",
       "승률",
@@ -163,6 +232,8 @@ test("each tab tutorial names the information and controls visible in that tab",
       "채용률",
       "시세",
       "금제 일정",
+      "3장 유지",
+      "0장 금지",
     ],
     releases: [
       "발매 기록",
@@ -188,6 +259,7 @@ test("each tab tutorial names the information and controls visible in that tab",
       "게시글",
       "좋아요 / 인기",
       "열기",
+      "불쾌감",
       "← 이전 날 / 다음 날 →",
       "오늘",
       "반응 띠",
@@ -362,7 +434,7 @@ test("restriction, regular release, and reprint help are separate contextual top
       tutorial.tab,
       topic === "first-restriction" ? "distribution" : "releases",
     );
-    assert.ok(tutorial.pages.length >= (topic === "first-restriction" ? 3 : 2));
+    assert.ok(tutorial.pages.length >= 2);
     for (const page of tutorial.pages) {
       assert.match(page.id, new RegExp(`^${topic}-`));
       assert.equal(contextualPageIds.has(page.id), false);
@@ -381,21 +453,15 @@ test("restriction, regular release, and reprint help are separate contextual top
     getContextualTutorialPages("first-restriction").map(
       (page) => page.targetTab,
     ),
-    ["distribution", "distribution", "cards"],
+    ["distribution", "distribution"],
   );
   for (const phrase of [
     "긴급 투입",
     "오늘 안에 첫 금제안",
     "입상 점유율",
     "조사 신호",
-    "채용률",
-    "평균 매수",
-    "시세",
-    "단독 증거",
-    "3은 유지",
-    "2는 준제한",
-    "1은 제한",
-    "0은 금지",
+    "카드 ! 탭",
+    "평균 투입 매수",
   ]) {
     assert.ok(restrictionText.includes(phrase), phrase);
   }
@@ -542,8 +608,8 @@ test("a live decision suppresses the ordinary tab overview and takes priority", 
     getPendingTutorialPopups("cards", freshTabs, freshContexts, banContext).map(
       (popup) => [popup.kind, popup.id],
     ),
-    [["contextual", "first-restriction"]],
-    "the emergency popup must stay mounted when its final page reveals Cards",
+    [["tab", "cards"]],
+    "Cards must explain itself only after the player manually opens the tab",
   );
 
   const distributionRead = markTabTutorialVisited(freshTabs, "distribution");

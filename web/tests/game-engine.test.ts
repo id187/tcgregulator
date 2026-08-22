@@ -551,6 +551,23 @@ test("DAY 7 handover requires the emergency restriction and observation week", (
   );
 });
 
+test("completed player guidance starts a free handover and advances past DAY 7", () => {
+  const review = createCampaignStart(1_003, { skipHandover: true });
+  assert.equal(review.handoverComplete, true);
+
+  let running = reduceGame(review, {
+    type: "SUBMIT_BAN",
+    changes: {},
+    campaignSeed: 9_001,
+  });
+  running = reduceGame(running, { type: "ADVANCE_DAYS", days: 9 });
+
+  assert.equal(running.day, 9);
+  assert.equal(running.phase, "running");
+  assert.equal(running.handoverComplete, true);
+  assert.equal(running.seed, 9_001);
+});
+
 test("soft restriction reviews preserve purchase trust until severe neglect persists", () => {
   const state = createCampaignStart(60_225);
   state.day = 120;

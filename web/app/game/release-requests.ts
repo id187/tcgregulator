@@ -3,10 +3,16 @@ import {
   SUPPORT_PARTS_PER_RELEASE,
   THEME_BY_ID,
 } from "./content.ts";
+import {
+  getNextRegularReleaseDay,
+  LAST_RELEASE_DAY,
+} from "./campaign.ts";
 import { getCollectorCardProfile } from "./card-collectibles.ts";
 import {
   getGenericCardMarketQuote,
+  getGenericCardMarketQuoteAtDay,
   getThemeCardMarketQuote,
+  getThemeCardMarketQuoteAtDay,
 } from "./card-market.ts";
 import {
   GENERIC_CARD_CATALOG,
@@ -29,8 +35,7 @@ import type {
 export type ReleaseRequestInput =
   | { kind: "support"; themeId: ThemeId; direction: SupportDirection }
   | { kind: "indirect-support"; themeId: ThemeId }
-  | { kind: "environment-target"; themeId: ThemeId }
-  | { kind: "reprint"; cardId: string };
+  | { kind: "environment-target"; themeId: ThemeId };
 
 export type ReprintCardKind = "theme-part" | "generic";
 
@@ -50,6 +55,18 @@ export type ReprintImpactPreview = {
   collectorUserLoss: number;
   releaseRevenueBoost: number;
 };
+
+export function canQueueRegularReleaseRequest(
+  state: Pick<GameState, "day" | "phase" | "operations">,
+  releasePlanningUnlocked: boolean,
+): boolean {
+  return (
+    releasePlanningUnlocked &&
+    state.phase === "running" &&
+    !state.operations.pendingEvent &&
+    getNextRegularReleaseDay(state.day) <= LAST_RELEASE_DAY
+  );
+}
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
@@ -72,9 +89,8 @@ export function getReleaseRequestLane(
   const kind = typeof requestOrKind === "string"
     ? requestOrKind
     : getReleaseRequestKind(requestOrKind);
-  if (kind === "support") return "support";
   if (kind === "reprint") return "reprint";
-  return "generic";
+  return "regular";
 }
 
 export function getPendingReleaseRequest(
@@ -107,7 +123,8 @@ function sortGenericPool(
   return [...cards].sort(
     (left, right) =>
       score(right) - score(left) ||
-      right.basePower - left.basePower ||
+      (left.basePower + left.unpleasantness * 0.4) -
+        (right.basePower + right.unpleasantness * 0.4) ||
       left.id.localeCompare(right.id),
   );
 }
@@ -233,6 +250,7 @@ function findThemePart(
 export function getReprintImpactPreview(
   state: GameState,
   cardId: string,
+  observationDay = state.day,
 ): ReprintImpactPreview | null {
   const themePart = findThemePart(state, cardId);
   const generic = getGenericCard(cardId);
@@ -242,9 +260,27 @@ export function getReprintImpactPreview(
   const cardKind: ReprintCardKind = themePart ? "theme-part" : "generic";
   const themeId = themePart?.themeId ?? null;
   const originalReleaseDay = themePart?.releaseDay ?? genericReleaseDay!;
+  const isCurrentDay = observationDay === state.day;
   const quote = themePart
-    ? getThemeCardMarketQuote(state, themePart.themeId, cardId, 1)
-    : getGenericCardMarketQuote(state, generic!, originalReleaseDay, null, 1);
+    ? isCurrentDay
+      ? getThemeCardMarketQuote(state, themePart.themeId, cardId, 1)
+      : getThemeCardMarketQuoteAtDay(
+          state,
+          themePart.themeId,
+          cardId,
+          observationDay,
+          1,
+        )
+    : isCurrentDay
+      ? getGenericCardMarketQuote(state, generic!, originalReleaseDay, null, 1)
+      : getGenericCardMarketQuoteAtDay(
+          state,
+          generic!,
+          originalReleaseDay,
+          null,
+          observationDay,
+          1,
+        );
   if (!quote) return null;
 
   const profile = getCollectorCardProfile(cardId);
@@ -255,7 +291,7 @@ export function getReprintImpactPreview(
       ).length,
     0,
   );
-  const ageDays = Math.max(0, state.day - originalReleaseDay);
+  const ageDays = Math.max(0, observationDay - originalReleaseDay);
   const recencyPenalty = clamp((120 - ageDays) / 120, 0, 1) * 3.2;
   const highPricePenalty = clamp((quote.price - 15_000) / 100_000, 0, 1) * 2.4;
   const repeatedPenalty = Math.min(3.6, previousReprintCount * 1.2);

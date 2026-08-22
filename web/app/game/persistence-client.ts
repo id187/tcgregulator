@@ -1,10 +1,11 @@
 import { MAX_SAVE_BYTES, parseGameState } from "./save-schema.ts";
+import { parseSaveTransfer } from "./save-transfer.ts";
 import type { GameState } from "./types";
 
 const STORAGE_KEY = "tcg-regulator-save-v2";
 const LEGACY_STORAGE_KEY = "tcg-regulator-save-v1";
 const INCOMPATIBLE_SAVE_WARNING =
-  "호환되지 않는 개발 저장 데이터를 삭제했습니다. 새 임기를 시작해 주세요.";
+  "현재 버전에서 이어갈 수 없는 저장을 삭제하지 않고 보존했습니다. 새 게임을 확정하면 기존 저장이 교체됩니다.";
 
 export type PersistenceBackend =
   | { kind: "local" }
@@ -14,6 +15,8 @@ export type PersistenceLoadResult = {
   backend: PersistenceBackend;
   game: GameState | null;
   warning?: string;
+  /** Raw incompatible data retained so it is not silently overwritten. */
+  recoverySave?: string;
 };
 
 function byteLength(value: string) {
@@ -34,16 +37,18 @@ function getLocalStorage(): Storage {
   return window.localStorage;
 }
 
-type PersistenceReader = Pick<Storage, "getItem" | "removeItem">;
+type PersistenceReader = Pick<Storage, "getItem">;
 
 function withWarning(
   game: GameState | null,
   warning?: string,
+  recoverySave?: string,
 ): PersistenceLoadResult {
   return {
     backend: { kind: "local" },
     game,
     ...(warning ? { warning } : {}),
+    ...(recoverySave ? { recoverySave } : {}),
   };
 }
 
@@ -65,43 +70,36 @@ export function loadPersistedGameFromStorage(
   if (current !== null) {
     if (byteLength(current) <= MAX_SAVE_BYTES) {
       try {
-        const game = parseGameState(JSON.parse(current) as unknown);
-        if (legacy !== null) {
-          try {
-            storage.removeItem(LEGACY_STORAGE_KEY);
-          } catch {
-            return unavailable(
-              "이전 개발 저장 데이터를 정리할 수 없습니다. 저장소 권한을 확인해 주세요.",
-            );
-          }
-        }
-        return withWarning(game);
+        const { game, migratedFrom } = parseSaveTransfer(current);
+        return withWarning(
+          game,
+          migratedFrom === null
+            ? undefined
+            : `스키마 ${migratedFrom} 저장을 현재 형식으로 안전하게 변환했습니다.`,
+        );
       } catch {
-        // Development saves from older schemas are intentionally incompatible.
+        return withWarning(null, INCOMPATIBLE_SAVE_WARNING, current);
       }
     }
-
-    try {
-      storage.removeItem(STORAGE_KEY);
-      if (legacy !== null) storage.removeItem(LEGACY_STORAGE_KEY);
-    } catch {
-      return unavailable(
-        "호환되지 않는 개발 저장 데이터를 정리할 수 없습니다. 저장소 권한을 확인해 주세요.",
-      );
-    }
-    return withWarning(null, INCOMPATIBLE_SAVE_WARNING);
+    return withWarning(null, INCOMPATIBLE_SAVE_WARNING, current);
   }
 
   if (legacy === null) return withWarning(null);
 
-  try {
-    storage.removeItem(LEGACY_STORAGE_KEY);
-  } catch {
-    return unavailable(
-      "이전 개발 저장 데이터를 정리할 수 없습니다. 저장소 권한을 확인해 주세요.",
-    );
+  if (byteLength(legacy) <= MAX_SAVE_BYTES) {
+    try {
+      const { game, migratedFrom } = parseSaveTransfer(legacy);
+      return withWarning(
+        game,
+        migratedFrom === null
+          ? "이전 저장 위치의 임기를 불러왔습니다. 다음 자동 저장부터 현재 위치를 사용합니다."
+          : `이전 저장 위치의 스키마 ${migratedFrom} 임기를 현재 형식으로 변환했습니다.`,
+      );
+    } catch {
+      // The original string remains untouched and is offered for export.
+    }
   }
-  return withWarning(null, INCOMPATIBLE_SAVE_WARNING);
+  return withWarning(null, INCOMPATIBLE_SAVE_WARNING, legacy);
 }
 
 /** Loads the campaign from the fixed-origin WebView/browser localStorage. */

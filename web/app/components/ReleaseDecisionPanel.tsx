@@ -8,6 +8,7 @@ import {
   getForecastRange,
 } from "../game/forecast-display.ts";
 import { getGenericCard } from "../game/generic-card-catalog.ts";
+import { withKoreanParticle } from "../game/korean-particles.ts";
 import { getPlayKeyword } from "../game/play-keywords.ts";
 import { getReleaseSlateKind } from "../game/release-kind.ts";
 import { getReprintImpactPreview } from "../game/release-requests.ts";
@@ -73,7 +74,19 @@ function optionKeywordLabels(
   }
   if (option.kind === "generic") {
     const card = getGenericCard(option.genericCardId);
-    return card ? [getPlayKeyword(card.keyword).label] : [];
+    if (!card) return [];
+    const target = option.requestThemeId
+      ? THEME_BY_ID[option.requestThemeId]
+      : null;
+    const requestLabel = option.requested && target
+      ? option.requestKind === "environment-target"
+        ? `${target.shortName} 저격`
+        : `${target.shortName} 지원`
+      : null;
+    return [
+      getPlayKeyword(card.keyword).label,
+      ...(requestLabel ? [requestLabel] : []),
+    ];
   }
   return [];
 }
@@ -81,16 +94,29 @@ function optionKeywordLabels(
 function optionRole(option: ReleaseOption): string {
   if (option.kind === "new-theme") return "신테마";
   if (option.kind === "support") return "지원";
-  if (option.kind === "generic") return "범용";
+  if (option.kind === "generic") {
+    if (!option.requested) return "범용";
+    return option.requestKind === "environment-target"
+      ? "요청 · 환경 저격"
+      : "요청 · 간접 지원";
+  }
   return option.requested ? "요청 재판" : "재판 후보";
 }
 
 function optionEffect(game: GameState, option: ReleaseOption): string {
   if (option.kind === "generic") {
-    return (
+    const description =
       getGenericCard(option.genericCardId)?.description ??
-      "여러 테마가 공유할 수 있는 범용 선택지를 추가합니다."
-    );
+      "여러 테마가 공유할 수 있는 범용 선택지를 추가합니다.";
+    const target = option.requestThemeId
+      ? THEME_BY_ID[option.requestThemeId]
+      : null;
+    if (!option.requested || !target) return description;
+    const targetObject = withKoreanParticle(target.shortName, "을/를");
+    const purpose = option.requestKind === "environment-target"
+      ? `${targetObject} 겨냥한 환경 저격 요청`
+      : `${targetObject} 위한 간접 지원 요청`;
+    return `${purpose} · ${description}`;
   }
   if (option.kind === "reprint") {
     const preview = getReprintImpactPreview(game, option.cardId);
@@ -245,7 +271,12 @@ export function ReleaseDecisionPanel({
                   return (
                     <button
                       aria-pressed={selected}
-                      className={selected ? "is-selected" : undefined}
+                      className={[
+                        selected ? "is-selected" : "",
+                        option.kind === "generic" && option.requested
+                          ? "is-requested"
+                          : "",
+                      ].filter(Boolean).join(" ") || undefined}
                       data-tutorial-control={`release-core-${group.kind}`}
                       disabled={
                         disabled ||

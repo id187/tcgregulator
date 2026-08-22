@@ -112,6 +112,18 @@ function getTutorialFlow(sectionLabel?: string): readonly SignalFlowNode[] | nul
         { icon: <ReleaseIcon size={18} />, label: "재판", value: "기존 카드 3종 선택", tone: "caution" },
         { icon: <UsersIcon size={18} />, label: "파급", value: "접근성·보유가치", tone: "positive" },
       ];
+    case "첫 기습 이벤트":
+      return [
+        { icon: <MessageIcon size={18} />, label: "도착", value: "돌발 제안 확인" },
+        { icon: <RevenueIcon size={18} />, label: "비교", value: "비용·보상 검토", tone: "caution" },
+        { icon: <TrendIcon size={18} />, label: "선택", value: "장기 노선 기록", tone: "positive" },
+      ];
+    case "발매 요청":
+      return [
+        { icon: <ReleaseIcon size={18} />, label: "지원", value: "전용 카드 3장" },
+        { icon: <TrendIcon size={18} />, label: "간접", value: "키워드 범용 1장", tone: "caution" },
+        { icon: <GavelIcon size={18} />, label: "저격", value: "상성 범용 1장", tone: "positive" },
+      ];
     default:
       return null;
   }
@@ -158,7 +170,7 @@ export function TabTutorialPopup({
   }, [isOpen]);
 
   useEffect(() => {
-    bodyRef.current?.scrollTo({ top: 0 });
+    bodyRef.current?.scrollTo?.({ top: 0 });
     titleRef.current?.focus();
   }, [safeIndex]);
 

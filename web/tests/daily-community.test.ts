@@ -267,7 +267,7 @@ function makeState(seed = 7301): GameState {
   );
 
   return {
-    schemaVersion: 9,
+    schemaVersion: 10,
     seed,
     day: 60,
     phase: "running",
@@ -297,6 +297,10 @@ function makeState(seed = 7301): GameState {
         startedDay: 0,
         boundaries: [],
       },
+    },
+    shareholder: {
+      request: null,
+      releasePlanningUnlocked: true,
     },
     community: [],
     supportRequests: [],
@@ -3239,17 +3243,10 @@ test("generic-only restrictions burn hotter and fill the board with multi-deck f
 
 test("dedicated reprint packs branch into price-crash, access, and collector conversation", () => {
   let state = createInitialGame(91_002);
-  const candidate = getReprintCandidates(state).find(
-    (entry) => entry.cardKind === "theme-part" && entry.collectorLabel === null,
-  );
-  assert.ok(candidate?.themeId);
-  state = reduceGame(state, {
-    type: "SET_RELEASE_REQUEST",
-    request: { kind: "reprint", cardId: candidate.cardId },
-  });
   state = advanceThroughMilestones(state, FIRST_REPRINT_TEST_RELEASE_DAY);
   assert.equal(state.day, FIRST_REPRINT_TEST_RELEASE_DAY);
   assert.equal(state.releaseSlate?.releaseKind, "reprint");
+  const candidates = getReprintCandidates(state);
   state = reduceGame(state, {
     type: "SUBMIT_RELEASE",
     selections: getAutomaticReleaseSelections(state),
@@ -3258,6 +3255,8 @@ test("dedicated reprint packs branch into price-crash, access, and collector con
     (product) => product.kind === "reprint",
   );
   assert.ok(reprint && reprint.kind === "reprint");
+  const candidate = candidates.find((entry) => entry.cardId === reprint.cardId);
+  assert.ok(candidate?.themeId);
   state = advanceThroughMilestones(state, FIRST_REPRINT_TEST_RELEASE_DAY + 4);
 
   const linked = Array.from({ length: 4 }, (_, index) =>

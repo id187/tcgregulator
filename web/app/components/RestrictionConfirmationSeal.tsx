@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 
+import { emitGameSound } from "../game-sound.ts";
+
 export function RestrictionConfirmationSeal({
   changeCount,
   day,
@@ -17,6 +19,17 @@ export function RestrictionConfirmationSeal({
 
   useEffect(() => {
     const timer = window.setTimeout(() => onCompleteRef.current(), 1650);
+    return () => window.clearTimeout(timer);
+  }, [day]);
+
+  useEffect(() => {
+    const reducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    const timer = window.setTimeout(
+      () => emitGameSound("impact"),
+      reducedMotion ? 0 : 710,
+    );
     return () => window.clearTimeout(timer);
   }, [day]);
 

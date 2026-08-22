@@ -26,7 +26,7 @@ class MemoryStorage {
   }
 }
 
-test("clears an incompatible current save without falling back to the legacy key", () => {
+test("preserves an incompatible current save without falling back to the legacy key", () => {
   const storage = new MemoryStorage(new Map([
     [CURRENT_KEY, JSON.stringify({ schemaVersion: 8 })],
     [LEGACY_KEY, JSON.stringify({ schemaVersion: 1 })],
@@ -36,14 +36,15 @@ test("clears an incompatible current save without falling back to the legacy key
 
   assert.equal(loaded.backend.kind, "local");
   assert.equal(loaded.game, null);
-  assert.deepEqual(storage.removed, [CURRENT_KEY, LEGACY_KEY]);
+  assert.deepEqual(storage.removed, []);
+  assert.equal(loaded.recoverySave, JSON.stringify({ schemaVersion: 8 }));
   assert.equal(
     loaded.warning,
-    "호환되지 않는 개발 저장 데이터를 삭제했습니다. 새 임기를 시작해 주세요.",
+    "현재 버전에서 이어갈 수 없는 저장을 삭제하지 않고 보존했습니다. 새 게임을 확정하면 기존 저장이 교체됩니다.",
   );
 });
 
-test("an oversized current save is cleared with the same development warning", () => {
+test("an oversized current save is retained for explicit recovery", () => {
   const storage = new MemoryStorage(new Map([
     [CURRENT_KEY, "x".repeat(MAX_SAVE_BYTES + 1)],
     [LEGACY_KEY, JSON.stringify({ schemaVersion: 1 })],
@@ -52,14 +53,15 @@ test("an oversized current save is cleared with the same development warning", (
   const loaded = loadPersistedGameFromStorage(storage);
 
   assert.equal(loaded.game, null);
-  assert.deepEqual(storage.removed, [CURRENT_KEY, LEGACY_KEY]);
+  assert.deepEqual(storage.removed, []);
+  assert.equal(loaded.recoverySave?.length, MAX_SAVE_BYTES + 1);
   assert.equal(
     loaded.warning,
-    "호환되지 않는 개발 저장 데이터를 삭제했습니다. 새 임기를 시작해 주세요.",
+    "현재 버전에서 이어갈 수 없는 저장을 삭제하지 않고 보존했습니다. 새 게임을 확정하면 기존 저장이 교체됩니다.",
   );
 });
 
-test("a valid current save remains authoritative and discards the legacy key", () => {
+test("a valid current save remains authoritative without destructively clearing backups", () => {
   const current = createInitialGame(79);
   const legacy = createInitialGame(80);
   const storage = new MemoryStorage(new Map([
@@ -70,11 +72,11 @@ test("a valid current save remains authoritative and discards the legacy key", (
   const loaded = loadPersistedGameFromStorage(storage);
 
   assert.equal(loaded.game?.seed, current.seed);
-  assert.deepEqual(storage.removed, [LEGACY_KEY]);
+  assert.deepEqual(storage.removed, []);
   assert.equal(loaded.warning, undefined);
 });
 
-test("a legacy-key save is cleared instead of migrated", () => {
+test("an incompatible legacy-key save is retained for explicit recovery", () => {
   const storage = new MemoryStorage(new Map([
     [LEGACY_KEY, JSON.stringify({ schemaVersion: 1 })],
   ]));
@@ -83,9 +85,35 @@ test("a legacy-key save is cleared instead of migrated", () => {
 
   assert.equal(loaded.backend.kind, "local");
   assert.equal(loaded.game, null);
-  assert.deepEqual(storage.removed, [LEGACY_KEY]);
+  assert.deepEqual(storage.removed, []);
+  assert.equal(loaded.recoverySave, JSON.stringify({ schemaVersion: 1 }));
   assert.equal(
     loaded.warning,
-    "호환되지 않는 개발 저장 데이터를 삭제했습니다. 새 임기를 시작해 주세요.",
+    "현재 버전에서 이어갈 수 없는 저장을 삭제하지 않고 보존했습니다. 새 게임을 확정하면 기존 저장이 교체됩니다.",
+  );
+});
+
+test("a schema 8 save migrates through the compatibility chain", () => {
+  const current = createInitialGame(81);
+  const legacy = structuredClone(current) as unknown as Record<string, unknown>;
+  legacy.schemaVersion = 8;
+  delete legacy.shareholder;
+  const operations = legacy.operations as Record<string, unknown>;
+  delete operations.season;
+  const history = legacy.history as Array<Record<string, unknown>>;
+  for (const entry of history) delete entry.environmentHealthModel;
+  const storage = new MemoryStorage(new Map([
+    [CURRENT_KEY, JSON.stringify(legacy)],
+  ]));
+
+  const loaded = loadPersistedGameFromStorage(storage);
+
+  assert.equal(loaded.game?.schemaVersion, 10);
+  assert.equal(loaded.game?.seed, 81);
+  assert.equal(loaded.game?.operations.season.currentSeasonNumber, 1);
+  assert.equal(loaded.game?.shareholder.releasePlanningUnlocked, true);
+  assert.equal(
+    loaded.warning,
+    "스키마 8 저장을 현재 형식으로 안전하게 변환했습니다.",
   );
 });

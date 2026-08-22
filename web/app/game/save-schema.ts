@@ -71,6 +71,15 @@ import { DAILY_TOP_CUT_SLOTS } from "./placement-meta.ts";
 import { ENVIRONMENT_HEALTH_MODEL } from "./environment-health.ts";
 import { getServiceFailureReason } from "./organization-health.ts";
 import {
+  FIRST_SHAREHOLDER_REQUEST_DAY,
+  FIRST_SHAREHOLDER_REQUEST_REWARD_CASH,
+  SHAREHOLDER_REQUEST_DURATION_DAYS,
+  SHAREHOLDER_REQUEST_INTERVAL_DAYS,
+  createShareholderRequest,
+  getShareholderRequestOrdinal,
+  getShareholderRequestProgress,
+} from "./shareholder-request.ts";
+import {
   getKeywordMatchupEdgeScore,
   PLAY_KEYWORD_IDS,
   type PlayKeyword,
@@ -125,6 +134,7 @@ const TOP_LEVEL_KEYS = [
   "users",
   "finance",
   "operations",
+  "shareholder",
   "community",
   "supportRequests",
   "releaseSlate",
@@ -327,6 +337,17 @@ const RELEASE_BATCH_KIND_VALUES = new Set([
   "regular",
   "reprint",
 ] as const);
+const SHAREHOLDER_REQUEST_KINDS = new Set([
+  "promote-first",
+  "suppress-tier2",
+] as const);
+const SHAREHOLDER_REQUEST_STATUSES = new Set([
+  "pending",
+  "accepted",
+  "declined",
+  "succeeded",
+  "failed",
+] as const);
 
 const EXPECTED_TIERS = new Set<ExpectedTier>([
   "Tier 0",
@@ -495,8 +516,8 @@ function expectCurrentSaveVersion(value: unknown): UnknownRecord {
     fail("$", "must be an object");
   }
   const record = value as UnknownRecord;
-  if (record.schemaVersion !== 9) {
-    fail("$.schemaVersion", "must equal 9");
+  if (record.schemaVersion !== 10) {
+    fail("$.schemaVersion", "must equal 10");
   }
   return record;
 }
@@ -1888,6 +1909,8 @@ function validateReleaseHistory(
           "genericCardId",
           "direction",
           "requestId",
+          "requestKind",
+          "requestThemeId",
           "cardId",
           "referencePrice",
           "trustDelta",
@@ -1990,6 +2013,8 @@ function validateReleaseHistory(
         if (
           product.genericCardId !== undefined ||
           product.direction !== undefined
+          || product.requestKind !== undefined
+          || product.requestThemeId !== undefined
         ) {
           fail(productPath, "reprint products cannot contain support/generic fields");
         }
@@ -2047,6 +2072,12 @@ function validateReleaseHistory(
           if (product.requestId !== undefined) {
             fail(`${productPath}.requestId`, "is not valid for baseline products");
           }
+          if (
+            product.requestKind !== undefined ||
+            product.requestThemeId !== undefined
+          ) {
+            fail(productPath, "baseline products cannot contain request context");
+          }
           if (product.powerAdjustment !== 0) {
             fail(`${productPath}.powerAdjustment`, "must be zero for baseline products");
           }
@@ -2069,6 +2100,15 @@ function validateReleaseHistory(
             128,
           );
           const request = supportRequests.get(requestId);
+          const requestKind = expectEnum(
+            product.requestKind,
+            `${productPath}.requestKind`,
+            new Set(["indirect-support", "environment-target"] as const),
+          );
+          const requestThemeId = expectThemeId(
+            product.requestThemeId,
+            `${productPath}.requestThemeId`,
+          );
           const target = request?.themeId ? THEME_BY_ID[request.themeId] : undefined;
           const card = GENERIC_CARD_CATALOG.find(
             (candidate) => candidate.id === genericCardId,
@@ -2084,6 +2124,8 @@ function validateReleaseHistory(
               : false;
           if (
             !request ||
+            request.kind !== requestKind ||
+            request.themeId !== requestThemeId ||
             !matchesRequest ||
             request.status !== "released" ||
             request.releasedDay !== day
@@ -2094,6 +2136,11 @@ function validateReleaseHistory(
             fail(`${productPath}.requestId`, "cannot be released more than once");
           }
           releasedRequestDays.set(requestId, day);
+        } else if (
+          product.requestKind !== undefined ||
+          product.requestThemeId !== undefined
+        ) {
+          fail(productPath, "unrequested generic products cannot contain request context");
         }
         return;
       }
@@ -2103,6 +2150,12 @@ function validateReleaseHistory(
           `${productPath}.genericCardId`,
           "is only valid for generic products",
         );
+      }
+      if (
+        product.requestKind !== undefined ||
+        product.requestThemeId !== undefined
+      ) {
+        fail(productPath, "request context is only valid for generic products");
       }
       const themeId = expectThemeId(product.themeId, `${productPath}.themeId`);
       const pendingNewTheme = kind === "new-theme" && day === currentDay;
@@ -2953,15 +3006,157 @@ function validateHistory(
           ),
         0,
       );
-      if (placementTotal !== DAILY_TOP_CUT_SLOTS) {
+      if (placementTotal !== 0 && placementTotal !== DAILY_TOP_CUT_SLOTS) {
         fail(
           `${path}.topCutPlacements`,
-          `must add up to ${DAILY_TOP_CUT_SLOTS}`,
+          `must add up to 0 or ${DAILY_TOP_CUT_SLOTS}`,
         );
       }
     }
   });
   return { lastDay: previousDay, lastTotalUsers };
+}
+
+function validateShareholderState(
+  value: unknown,
+  day: number,
+  seed: number,
+  history: GameState["history"],
+): void {
+  const shareholder = expectRecord(value, "$.shareholder", [
+    "request",
+    "releasePlanningUnlocked",
+  ]);
+  expectBoolean(
+    shareholder.releasePlanningUnlocked,
+    "$.shareholder.releasePlanningUnlocked",
+  );
+  if (shareholder.request === null) return;
+
+  const request = expectRecord(shareholder.request, "$.shareholder.request", [
+    "id",
+    "kind",
+    "themeId",
+    "offeredDay",
+    "deadlineDay",
+    "rewardCash",
+    "status",
+    "responseDay",
+    "resolvedDay",
+  ]);
+  if (
+    typeof request.id !== "string" ||
+    !/^shareholder-request-[1-9]\d*$/.test(request.id)
+  ) {
+    fail("$.shareholder.request.id", "must identify a scheduled request");
+  }
+  const requestOrdinal = Number(request.id.slice("shareholder-request-".length));
+  const kind = expectEnum(
+    request.kind,
+    "$.shareholder.request.kind",
+    SHAREHOLDER_REQUEST_KINDS,
+  );
+  const themeId = expectThemeId(
+    request.themeId,
+    "$.shareholder.request.themeId",
+  );
+  const offeredDay = expectNumber(
+    request.offeredDay,
+    "$.shareholder.request.offeredDay",
+    FIRST_SHAREHOLDER_REQUEST_DAY,
+    day,
+    true,
+  );
+  const expectedOfferedDay =
+    FIRST_SHAREHOLDER_REQUEST_DAY +
+    (requestOrdinal - 1) * SHAREHOLDER_REQUEST_INTERVAL_DAYS;
+  if (
+    offeredDay !== expectedOfferedDay ||
+    getShareholderRequestOrdinal(offeredDay) !== requestOrdinal
+  ) {
+    fail("$.shareholder.request.offeredDay", "does not match its request id");
+  }
+  const deadlineDay = expectNumber(
+    request.deadlineDay,
+    "$.shareholder.request.deadlineDay",
+    offeredDay + SHAREHOLDER_REQUEST_DURATION_DAYS,
+    offeredDay + SHAREHOLDER_REQUEST_DURATION_DAYS,
+    true,
+  );
+  expectNumber(
+    request.rewardCash,
+    "$.shareholder.request.rewardCash",
+    FIRST_SHAREHOLDER_REQUEST_REWARD_CASH,
+    FIRST_SHAREHOLDER_REQUEST_REWARD_CASH,
+  );
+  const status = expectEnum(
+    request.status,
+    "$.shareholder.request.status",
+    SHAREHOLDER_REQUEST_STATUSES,
+  );
+  const responseDay = request.responseDay === null
+    ? null
+    : expectNumber(
+        request.responseDay,
+        "$.shareholder.request.responseDay",
+        offeredDay,
+        day,
+        true,
+      );
+  const resolvedDay = request.resolvedDay === null
+    ? null
+    : expectNumber(
+        request.resolvedDay,
+        "$.shareholder.request.resolvedDay",
+        offeredDay,
+        day,
+        true,
+      );
+  const expected = createShareholderRequest(
+    { day, history, seed },
+    offeredDay,
+  );
+  if (!expected || expected.kind !== kind || expected.themeId !== themeId) {
+    fail("$.shareholder.request", "does not match its scheduled offer");
+  }
+
+  if (status === "pending") {
+    if (
+      day >= deadlineDay ||
+      responseDay !== null ||
+      resolvedDay !== null
+    ) {
+      fail("$.shareholder.request.status", "has invalid pending state");
+    }
+    return;
+  }
+  if (responseDay === null || responseDay >= deadlineDay) {
+    fail("$.shareholder.request.responseDay", "must precede the deadline");
+  }
+  if (status === "declined") {
+    if (resolvedDay !== responseDay) {
+      fail("$.shareholder.request.resolvedDay", "must equal the decline day");
+    }
+    return;
+  }
+  if (status === "accepted") {
+    if (day >= deadlineDay || resolvedDay !== null) {
+      fail("$.shareholder.request.status", "cannot remain accepted after its deadline");
+    }
+    return;
+  }
+  if (day < deadlineDay || resolvedDay !== deadlineDay) {
+    fail("$.shareholder.request.resolvedDay", "must equal the completed deadline");
+  }
+  const progress = getShareholderRequestProgress(
+    { history, seed },
+    expected,
+    deadlineDay,
+  );
+  const expectedStatus = progress.succeeded ? "succeeded" : "failed";
+  if (status !== expectedStatus) {
+    fail("$.shareholder.request.status", "does not match the placement result");
+  }
 }
 
 export function parseGameState(value: unknown): GameState {
@@ -3010,6 +3205,12 @@ export function parseGameState(value: unknown): GameState {
     (users.casual as number) +
     (users.collector as number);
   const settledHistory = validateHistory(state.history, day, activeThemeIds);
+  validateShareholderState(
+    state.shareholder,
+    day,
+    seed,
+    state.history as GameState["history"],
+  );
 
   const finance = expectRecord(state.finance, "$.finance", [
     "today",
@@ -3392,7 +3593,7 @@ export function isGameState(value: unknown): value is GameState {
     typeof value !== "object" ||
     value === null ||
     Array.isArray(value) ||
-    (value as UnknownRecord).schemaVersion !== 9
+    (value as UnknownRecord).schemaVersion !== 10
   ) {
     return false;
   }

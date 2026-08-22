@@ -3586,6 +3586,20 @@ input:focus-visible,
   border-color: var(--navy);
 }
 
+.header-reference-buttons > button.is-shareholder {
+  color: #8f2622;
+  background: #fff4f3;
+  border-color: #c8706b;
+}
+
+.header-reference-buttons > button.is-shareholder:hover,
+.header-reference-buttons > button.is-shareholder:focus-visible,
+.header-reference-buttons > button.is-shareholder.is-active {
+  color: #fff;
+  background: #982c27;
+  border-color: #982c27;
+}
+
 .header-reference-panel {
   position: absolute;
   z-index: 110;
@@ -3619,6 +3633,59 @@ input:focus-visible,
 .header-reference-panel .current-banlist-reference-table,
 .header-reference-panel .play-keyword-glossary > div {
   max-height: none;
+}
+
+.shareholder-status-panel {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-top: 5px solid #a92f2a;
+}
+
+.shareholder-status-panel > header {
+  display: grid;
+  gap: 3px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.shareholder-status-panel > header span {
+  color: #982c27;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .1em;
+}
+
+.shareholder-status-panel > header strong { font-size: 20px; }
+.shareholder-status-panel > header p { margin: 0; color: var(--ink-700); }
+
+.shareholder-status-panel > dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  border: 1px solid var(--line);
+}
+
+.shareholder-status-panel > dl > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  background: var(--surface-soft);
+  border-right: 1px solid var(--line);
+}
+
+.shareholder-status-panel > dl > div:last-child { border-right: 0; }
+.shareholder-status-panel dt { color: var(--ink-600); font-size: 9px; }
+.shareholder-status-panel dd { margin: 0; font-size: 14px; font-weight: 900; }
+
+.shareholder-status-panel > footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink-600);
+  font-size: 9px;
+  font-weight: 800;
 }
 
 .guided-target-outline {
@@ -3818,6 +3885,18 @@ input:focus-visible,
   .header-reference-buttons > button {
     padding-inline: 7px;
     font-size: 8px;
+  }
+
+  .shareholder-status-panel > dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .shareholder-status-panel > dl > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .shareholder-status-panel > dl > div:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--line);
   }
 
   .guided-tutorial-bar {
@@ -12243,10 +12322,6 @@ body {
   min-height: 58px;
 }
 
-.operations-workspace.is-action-only {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 .business-action-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
@@ -13736,8 +13811,12 @@ body {
   width: 100%;
   max-width: none;
   align-items: center;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   padding: 7px 10px;
+}
+
+.theme-detail-context .card-release-request-help > span {
+  white-space: nowrap;
 }
 
 .release-option-name {
@@ -13931,6 +14010,10 @@ body {
 
   .theme-detail-context .card-release-request-help {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .theme-detail-context .card-release-request-help > span {
+    white-space: normal;
   }
 }
 

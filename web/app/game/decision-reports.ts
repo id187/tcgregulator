@@ -2,6 +2,7 @@ import {
   RELEASE_REPORT_DELAY_DAYS,
   RESTRICTION_REPORT_DELAY_DAYS,
 } from "./campaign.ts";
+import { getAdministrationProfile } from "./administration-profile.ts";
 import { THEME_BY_ID } from "./content.ts";
 import { isBanDay } from "./engine.ts";
 import { getGenericCard } from "./generic-card-catalog.ts";
@@ -67,7 +68,8 @@ export type CampaignGrowthBand =
 
 export interface CampaignGrowthSignals {
   userRate: number;
-  revenueRate: number;
+  /** DAY 0 대비 7일 일평균 매출의 실금액 변화(억원). */
+  revenueDeltaEok: number;
 }
 
 export type CampaignGrowth = {
@@ -91,6 +93,8 @@ export type DecisionReport = {
   title: string;
   verdict: string;
   summary: string;
+  /** Compact interpretation inferred from committed choices, never selected up front. */
+  marketReading: string;
   recommendation: string;
   tone: DecisionReportTone;
   decision: DecisionReportDecision;
@@ -120,8 +124,6 @@ export interface ReprintReleaseReportSignals {
   trustDelta: number;
 }
 
-const WON_PER_EOK = 100_000_000;
-
 type ReportProfile = {
   title: string;
   verdict: string;
@@ -131,8 +133,9 @@ type ReportProfile = {
 };
 
 function signed(value: number, digits = 1): string {
-  const rounded = value.toFixed(digits);
-  return value > 0 ? `+${rounded}` : rounded;
+  const roundedValue = Number(value.toFixed(digits));
+  const rounded = roundedValue.toFixed(digits);
+  return roundedValue > 0 ? `+${rounded}` : rounded;
 }
 
 function percent(value: number, digits = 1): string {
@@ -149,7 +152,20 @@ function formatUsers(value: number): string {
 
 function won(value: number): string {
   const sign = value < 0 ? "-" : "";
-  return `${sign}₩${Math.abs(value).toFixed(2)}억`;
+  return `${sign}₩${revenueAmount(Math.abs(value))}`;
+}
+
+function revenueAmount(value: number): string {
+  return value >= 1
+    ? `${value.toFixed(1)}억`
+    : `${Math.round(value * 10_000).toLocaleString("ko-KR")}만`;
+}
+
+function eokDelta(value: number): string {
+  const roundedManwon = Math.round(Math.abs(value) * 10_000);
+  return roundedManwon === 0
+    ? "변화 없음"
+    : `${value > 0 ? "+" : "-"}${revenueAmount(Math.abs(value))}`;
 }
 
 function rate(value: number): string {
@@ -161,11 +177,13 @@ export function classifyCampaignGrowth(
 ): CampaignGrowthBand {
   const score = campaignGrowthScore(signals);
   const bothCoreSignalsCollapsed =
-    signals.userRate <= -0.3 && signals.revenueRate <= -0.45;
+    signals.userRate <= -0.3 && signals.revenueDeltaEok <= -0.45;
 
   if (bothCoreSignalsCollapsed || score <= -0.38) return "critical";
   if (score <= -0.14) return "declining";
-  if (score >= 0.48 && signals.userRate > 0 && signals.revenueRate > 0) {
+  if (
+    score >= 0.48 && signals.userRate > 0 && signals.revenueDeltaEok > 0
+  ) {
     return "breakout";
   }
   if (score >= 0.14) return "growing";
@@ -174,7 +192,7 @@ export function classifyCampaignGrowth(
 
 function campaignGrowthScore(signals: CampaignGrowthSignals): number {
   return signals.userRate * 0.55 +
-    Math.max(-1, Math.min(2, signals.revenueRate)) * 0.45;
+    Math.max(-1, Math.min(2, signals.revenueDeltaEok)) * 0.45;
 }
 
 export function getCampaignGrowthIndex(
@@ -183,33 +201,43 @@ export function getCampaignGrowthIndex(
   return Math.max(0, Math.round(100 * (1 + campaignGrowthScore(signals))));
 }
 
-const CAMPAIGN_GROWTH_COPY: Record<
+export function classifyCampaignGrowthChange(
+  indexDelta: number,
+): CampaignGrowthBand {
+  if (indexDelta <= -38) return "critical";
+  if (indexDelta <= -14) return "declining";
+  if (indexDelta >= 48) return "breakout";
+  if (indexDelta >= 14) return "growing";
+  return "holding";
+}
+
+const CAMPAIGN_TRAJECTORY_COPY: Record<
   CampaignGrowthBand,
   Pick<CampaignGrowth, "label" | "summary" | "tone">
 > = {
   breakout: {
-    label: "폭발적 성장",
-    summary: "취임 당시보다 이용자와 매출 기반이 함께 크게 확대됐습니다. 시장이 이 TCG의 부활을 체감하고 있습니다.",
+    label: "성장 가속",
+    summary: "직전 공식 보고보다 회사 성장지수가 크게 올랐습니다. 현재 운영 방향이 사업 확장을 빠르게 끌어올리고 있습니다.",
     tone: "positive",
   },
   growing: {
-    label: "뚜렷한 성장",
-    summary: "DAY 0 대비 사업 규모가 확장되고 있습니다. 현재 운영 방향이 장기 성장으로 연결되는 중입니다.",
+    label: "상승세 지속",
+    summary: "직전 공식 보고보다 회사 성장지수가 올랐습니다. 현재 운영 방향이 추가 성장으로 이어지는 중입니다.",
     tone: "positive",
   },
   holding: {
-    label: "정체 · 관망",
-    summary: "취임 이후 사업 규모가 결정적으로 움직이지 않았습니다. 다음 검토까지 성장 동력이 필요합니다.",
+    label: "성장 정체 · 보합",
+    summary: "직전 공식 보고와 비교해 회사 성장지수가 의미 있게 움직이지 않았습니다. 다음 검토까지 새 성장 동력이 필요합니다.",
     tone: "caution",
   },
   declining: {
-    label: "하락세 진입",
-    summary: "DAY 0보다 이용자·수익 기반이 약해지고 있습니다. 개별 성과와 별개로 회사의 체력이 빠지는 중입니다.",
+    label: "성장세 둔화",
+    summary: "직전 공식 보고보다 회사 성장지수가 낮아졌습니다. 개별 성과와 별개로 사업의 성장 동력이 약해지는 중입니다.",
     tone: "negative",
   },
   critical: {
-    label: "붕괴 위험",
-    summary: "복수의 핵심 사업 지표가 취임 당시보다 크게 악화됐습니다. 다음 의사결정에서 생존을 우선해야 합니다.",
+    label: "급격한 후퇴",
+    summary: "직전 공식 보고보다 회사 성장지수가 크게 떨어졌습니다. 다음 의사결정에서 사업 기반 회복을 우선해야 합니다.",
     tone: "negative",
   },
 };
@@ -217,7 +245,12 @@ const CAMPAIGN_GROWTH_COPY: Record<
 function campaignGrowthPoint(
   state: GameState,
   reportDay: number,
-): CampaignGrowthSignals & { index: number } {
+): CampaignGrowthSignals & {
+  averageRevenue: number;
+  baselineUsers: number;
+  totalUsers: number;
+  index: number;
+} {
   const dayZero = snapshot(state, 0) ?? snapshot(state, reportDay)!;
   const current = snapshot(state, reportDay) ?? dayZero;
   const baselineRows = state.history.filter(
@@ -226,20 +259,20 @@ function campaignGrowthPoint(
   const currentRows = state.history.filter(
     (row) => row.day >= reportDay - 6 && row.day <= reportDay,
   );
-  const baselineRevenueWon = average(baselineRows, (row) => row.revenue) ?? 0;
-  const currentRevenueWon = average(currentRows, (row) => row.revenue) ?? 0;
-  const baselineRevenue = baselineRevenueWon / WON_PER_EOK;
-  const currentRevenue = currentRevenueWon / WON_PER_EOK;
+  // DailyHistory.revenue is the same 억원 value drawn by the finance chart.
+  const baselineRevenue = average(baselineRows, (row) => row.revenue) ?? 0;
+  const currentRevenue = average(currentRows, (row) => row.revenue) ?? 0;
   const userRate = dayZero.totalUsers > 0
     ? (current.totalUsers - dayZero.totalUsers) / dayZero.totalUsers
     : 0;
-  const revenueRate = baselineRevenue > 0
-    ? (currentRevenue - baselineRevenue) / baselineRevenue
-    : 0;
+  const revenueDeltaEok = currentRevenue - baselineRevenue;
   return {
     userRate,
-    revenueRate,
-    index: getCampaignGrowthIndex({ userRate, revenueRate }),
+    revenueDeltaEok,
+    averageRevenue: currentRevenue,
+    baselineUsers: dayZero.totalUsers,
+    totalUsers: current.totalUsers,
+    index: getCampaignGrowthIndex({ userRate, revenueDeltaEok }),
   };
 }
 
@@ -273,12 +306,20 @@ function buildCampaignGrowth(
 ): CampaignGrowth {
   const current = campaignGrowthPoint(state, reportDay);
   const previousReportDay = previousDecisionReportDay(state, reportDay);
-  const previousIndex = previousReportDay === null
-    ? 100
-    : campaignGrowthPoint(state, previousReportDay).index;
-  const band = classifyCampaignGrowth(current);
-  const copy = CAMPAIGN_GROWTH_COPY[band];
+  const previous = previousReportDay === null
+    ? null
+    : campaignGrowthPoint(state, previousReportDay);
+  const previousIndex = previous?.index ?? 100;
   const indexDelta = current.index - previousIndex;
+  const previousRevenue = previous?.averageRevenue ??
+    current.averageRevenue - current.revenueDeltaEok;
+  const previousUsers = previous?.totalUsers ?? current.baselineUsers;
+  const userRateDelta = previousUsers > 0
+    ? (current.totalUsers - previousUsers) / previousUsers
+    : 0;
+  const revenueDelta = current.averageRevenue - previousRevenue;
+  const band = classifyCampaignGrowthChange(indexDelta);
+  const copy = CAMPAIGN_TRAJECTORY_COPY[band];
 
   return {
     band,
@@ -286,9 +327,9 @@ function buildCampaignGrowth(
     index: current.index,
     comparison: previousReportDay === null
       ? "첫 보고서 · DAY 0 100"
-      : `직전 보고서 ${previousIndex}`,
+      : `직전 DAY ${previousReportDay} · ${previousIndex}`,
     change: `${indexDelta > 0 ? "+" : ""}${indexDelta}`,
-    basis: `활성 유저 ${rate(current.userRate)} · 일평균 매출 ${rate(current.revenueRate)}`,
+    basis: `직전 보고 대비 활성 유저 ${rate(userRateDelta)} · 일평균 매출 ${eokDelta(revenueDelta)}`,
   };
 }
 
@@ -588,6 +629,7 @@ function buildRestrictionReport(
     trustDelta,
   });
   const profile = RESTRICTION_REPORT_PROFILES[reportType];
+  const administration = getAdministrationProfile(state, reportDay);
   const targetedNames = outcome.targetedThemeIds
     .map((themeId) => THEME_BY_ID[themeId]?.shortName ?? themeId)
     .join(" · ");
@@ -602,6 +644,7 @@ function buildRestrictionReport(
     title: `DAY ${decisionDay} ${profile.title}`,
     verdict: profile.verdict,
     summary: `${targetedNames ? `${targetedNames} 판정 이후 ` : ""}${profile.summary}`,
+    marketReading: administration.marketReading,
     recommendation: profile.recommendation,
     tone: profile.tone,
     decision: restrictionDecision(state, decisionDay),
@@ -712,7 +755,7 @@ function regularReleaseMetrics(
 ): DecisionReportMetric[] {
   const revenue = {
     label: reportType === "regular-blockbuster" ? "매출 상승폭" : "일평균 매출",
-    value: `${signed(signals.revenueDelta, 2)}억`,
+    value: eokDelta(signals.revenueDelta),
     delta: signals.revenueDelta,
     before: won(before.revenue),
     after: won(after.revenue),
@@ -881,8 +924,8 @@ function buildReleaseReport(
   );
   const beforeRevenue = average(beforeRows, (row) => row.revenue) ?? 0;
   const afterRevenue = average(observationRows, (row) => row.revenue) ?? 0;
-  // History stores won; report thresholds and copy use 억원.
-  const revenueDelta = (afterRevenue - beforeRevenue) / WON_PER_EOK;
+  // Reuse the finance chart's 억원-scale history without converting it again.
+  const revenueDelta = afterRevenue - beforeRevenue;
   const decision = snapshot(state, batch.day);
   const observation = snapshot(state, batch.day + 7)!;
   const trustDelta =
@@ -894,13 +937,13 @@ function buildReleaseReport(
     (observation.environmentHealth ?? 0) -
     (decision?.environmentHealth ?? 0);
   const comparisonBefore = {
-    revenue: beforeRevenue / WON_PER_EOK,
+    revenue: beforeRevenue,
     health: decision?.environmentHealth ?? 0,
     users: decision?.totalUsers ?? observation.totalUsers,
     trust: decision?.purchaseTrust ?? state.purchaseTrust,
   };
   const comparisonAfter = {
-    revenue: afterRevenue / WON_PER_EOK,
+    revenue: afterRevenue,
     health: observation.environmentHealth ?? 0,
     users: observation.totalUsers,
     trust: observation.purchaseTrust ?? state.purchaseTrust,
@@ -921,7 +964,11 @@ function buildReleaseReport(
     );
     const reprintPreviews = reprints.map((product) => ({
       product,
-      preview: getReprintImpactPreview(state, product.cardId),
+      preview: getReprintImpactPreview(
+        state,
+        product.cardId,
+        batch.day + 7,
+      ),
     }));
     const priceRates = reprintPreviews.flatMap(({ product, preview }) => {
       const current = preview?.referencePrice;
@@ -953,6 +1000,7 @@ function buildReleaseReport(
     };
     const reportType = classifyReprintReleaseReport(signals);
     const profile = REPRINT_REPORT_PROFILES[reportType];
+    const administration = getAdministrationProfile(state, reportDay);
     const cardNames = reprintPreviews
       .map(({ product, preview }) => preview?.cardName ?? product.cardId)
       .join(" · ");
@@ -967,6 +1015,7 @@ function buildReleaseReport(
       title: `DAY ${batch.day} ${profile.title}`,
       verdict: profile.verdict,
       summary: `${cardNames} 공급 이후 ${profile.summary}`,
+      marketReading: administration.marketReading,
       recommendation: profile.recommendation,
       tone: profile.tone,
       decision: releaseDecision(batch),
@@ -1001,6 +1050,7 @@ function buildReleaseReport(
   };
   const reportType = classifyRegularReleaseReport(signals);
   const profile = REGULAR_RELEASE_REPORT_PROFILES[reportType];
+  const administration = getAdministrationProfile(state, reportDay);
   const productLead = debutNames.length > 0
     ? `${debutNames.join(" · ")} 데뷔를 포함한 제품군은 `
     : "이번 제품군은 ";
@@ -1015,6 +1065,7 @@ function buildReleaseReport(
     title: `DAY ${batch.day} ${profile.title}`,
     verdict: profile.verdict,
     summary: `${productLead}${profile.summary}`,
+    marketReading: administration.marketReading,
     recommendation: profile.recommendation,
     tone: profile.tone,
     decision: releaseDecision(batch),

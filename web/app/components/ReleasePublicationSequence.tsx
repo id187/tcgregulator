@@ -1,5 +1,6 @@
 import { useEffect, type CSSProperties } from "react";
 
+import { emitGameSound } from "../game-sound.ts";
 import { THEME_BY_ID } from "../game/content.ts";
 import { getGenericCard } from "../game/generic-card-catalog.ts";
 import { getReleaseBatchKind } from "../game/release-kind.ts";
@@ -90,16 +91,21 @@ export function ReleasePublicationSequence({ batch }: { batch: ReleaseBatch }) {
     const reducedMotion = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
     ).matches;
+    const cardTimers = reducedMotion
+      ? []
+      : batch.products.map((_, index) => window.setTimeout(
+          () => emitGameSound("swoosh"),
+          1_050 + index * 180,
+        ));
     const timer = window.setTimeout(
-      () => {
-        window.dispatchEvent(
-          new CustomEvent("tcg-regulator-sound", { detail: "release" }),
-        );
-      },
+      () => emitGameSound("release"),
       reducedMotion ? 120 : 2350,
     );
-    return () => window.clearTimeout(timer);
-  }, [batch.day]);
+    return () => {
+      cardTimers.forEach((cardTimer) => window.clearTimeout(cardTimer));
+      window.clearTimeout(timer);
+    };
+  }, [batch.day, batch.products]);
 
   return (
     <div className="release-publication-sequence">

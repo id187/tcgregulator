@@ -22,6 +22,7 @@ import {
   getRecentPlacementReport,
   getThemeDebutDay,
 } from "./placement-meta.ts";
+import { applyDailyPlacementMicroEvent } from "./placement-micro-events.ts";
 import {
   BUSINESS_ACTION_BY_TYPE,
   getBusinessActionScheduledEndDay,
@@ -94,9 +95,18 @@ import { getEmergentNarrativesForDay } from "./emergent-narratives.ts";
 import { ENVIRONMENT_HEALTH_MODEL } from "./environment-health.ts";
 import { getSupportNeglectPressure } from "./support-continuity.ts";
 import {
+  FIRST_SHAREHOLDER_REQUEST_FAILURE_PENALTY_CASH,
+  SHAREHOLDER_REQUEST_DURATION_DAYS,
+  createShareholderRequest,
+  getShareholderRequestOrdinal,
+  getShareholderRequestProgress,
+} from "./shareholder-request.ts";
+import {
   getOrganizationAudienceRate,
   getServiceFailureReason,
 } from "./organization-health.ts";
+import { cloneGameState } from "./game-state-clone.ts";
+import { getThemeTournamentViability } from "./theme-viability.ts";
 import {
   GENERIC_CARD_CATALOG,
   getGenericCard,
@@ -173,6 +183,8 @@ const INITIAL_OPERATING_CASH = 2.5;
 const CATALOG_DAILY_SPEND_PER_USER = 350;
 const PACK_ODDS_REVENUE_MULTIPLIER = 1.25;
 const BALANCED_RELEASE_TRUST_RECOVERY = 0.18;
+/** A named theme intervention is more visible than requesting the same generic card. */
+const DIRECT_SUPPORT_REQUEST_TRUST_LOSS = 0.35;
 const RESTRICTION_OUTCOME_FOLLOWUP_DAYS = RESTRICTION_REPORT_DELAY_DAYS;
 /** Mandatory reprint packs should hurt confidence without making trust unrecoverable. */
 const REPRINT_PACK_TRUST_LOSS_CAP = 4;
@@ -924,78 +936,6 @@ export function canProposeSupport(
 
 function totalUsers(state: GameState): number {
   return state.users.tier + state.users.casual + state.users.collector;
-}
-
-function cloneState(state: GameState): GameState {
-  return {
-    ...state,
-    themes: Object.fromEntries(
-      Object.entries(state.themes).map(([themeId, theme]) => [
-        themeId,
-        {
-          ...theme,
-          releasedPartIds: [...theme.releasedPartIds],
-          legalLimits: { ...theme.legalLimits },
-          partStats: Object.fromEntries(
-            Object.entries(theme.partStats).map(([partId, stats]) => [
-              partId,
-              { ...stats },
-            ]),
-          ),
-        },
-      ]),
-    ),
-    users: { ...state.users },
-    finance: { ...state.finance },
-    operations: {
-      ...state.operations,
-      records: state.operations.records.map((record) => ({
-        ...record,
-        ...(record.riskContext
-          ? { riskContext: { ...record.riskContext } }
-          : {}),
-        ...(record.challenge
-          ? { challenge: { ...record.challenge } }
-          : {}),
-      })),
-      pendingEvent: state.operations.pendingEvent
-        ? { ...state.operations.pendingEvent }
-        : null,
-      eventRecords: state.operations.eventRecords.map((record) => ({
-        ...record,
-      })),
-      strategy: { ...state.operations.strategy },
-      season: {
-        ...state.operations.season,
-        boundaries: state.operations.season.boundaries.map((boundary) => ({
-          ...boundary,
-        })),
-      },
-    },
-    community: state.community.map((event) => ({ ...event })),
-    activeThemeIds: [...state.activeThemeIds],
-    supportRequests: state.supportRequests.map((request) => ({ ...request })),
-    releaseSlate: state.releaseSlate
-      ? {
-          ...state.releaseSlate,
-          options: state.releaseSlate.options.map((option) => ({ ...option })),
-        }
-      : null,
-    releaseHistory: state.releaseHistory.map((batch) => ({
-      ...batch,
-      products: batch.products.map((product) => ({ ...product })),
-    })),
-    genericLimits: { ...state.genericLimits },
-    history: state.history.map((entry) => ({
-      ...entry,
-      shares: { ...entry.shares },
-      ...(entry.winRates ? { winRates: { ...entry.winRates } } : {}),
-      ...(entry.topCutPlacements
-        ? { topCutPlacements: { ...entry.topCutPlacements } }
-        : {}),
-    })),
-    recentRevenue: [...state.recentRevenue],
-  };
 }
 
 export function isReleaseDay(day: number): boolean {
@@ -2398,29 +2338,17 @@ function makeReleaseOption(
 }
 
 function generateReprintReleaseSlate(state: GameState): void {
-  const queuedRequest = state.supportRequests
-    .filter(
-      (request): request is Extract<SupportRequest, { kind: "reprint" }> =>
-        request.kind === "reprint" &&
-        request.status === "queued" &&
-        request.eligibleReleaseDay <= state.day,
-    )
-    .sort((left, right) => left.proposedDay - right.proposedDay)[0];
   const urgency = (candidate: ReprintImpactPreview): number =>
     candidate.referencePrice *
     (0.55 + candidate.playDemandScore / 100) *
     (1 + Math.min(1, candidate.ageDays / 180) * 0.2);
   const eligible: ReprintImpactPreview[] = getReprintCandidates(state)
     .filter((candidate) => candidate.ageDays >= REPRINT_MINIMUM_AGE_DAYS)
-    .sort((left, right) => {
-      const leftRequested = Number(left.cardId === queuedRequest?.cardId);
-      const rightRequested = Number(right.cardId === queuedRequest?.cardId);
-      return (
-        rightRequested - leftRequested ||
+    .sort(
+      (left, right) =>
         urgency(right) - urgency(left) ||
-        left.cardId.localeCompare(right.cardId)
-      );
-    })
+        left.cardId.localeCompare(right.cardId),
+    )
     .slice(0, REPRINT_PACK_CANDIDATE_COUNT);
 
   if (eligible.length < REPRINT_PACK_CANDIDATE_COUNT) {
@@ -2435,15 +2363,9 @@ function generateReprintReleaseSlate(state: GameState): void {
       cardId: candidate.cardId,
       themeId: candidate.themeId ?? state.currentTopThemeId,
       expectedPower: 50,
-      requested: candidate.cardId === queuedRequest?.cardId,
-      ...(candidate.cardId === queuedRequest?.cardId && queuedRequest
-        ? { requestId: queuedRequest.id }
-        : {}),
+      requested: false,
     })
   );
-  if (queuedRequest && options.some((option) => option.requested)) {
-    queuedRequest.status = "offered";
-  }
   state.releaseSlate = {
     day: state.day,
     releaseKind: "reprint",
@@ -2979,6 +2901,12 @@ function submitRelease(
         expectedTier: getExpectedTier(expectedPower),
         powerAdjustment: selection.powerAdjustment,
         ...(option.requestId ? { requestId: option.requestId } : {}),
+        ...(option.requestKind && option.requestThemeId
+          ? {
+              requestKind: option.requestKind,
+              requestThemeId: option.requestThemeId,
+            }
+          : {}),
       });
     } else if (option.kind === "new-theme") {
       products.push({
@@ -3114,6 +3042,9 @@ function applyReleaseEffectsForCurrentDay(state: GameState): void {
     } else {
       trustDelta += BALANCED_RELEASE_TRUST_RECOVERY;
     }
+    if (product.kind === "support" && product.requestId) {
+      trustDelta -= DIRECT_SUPPORT_REQUEST_TRUST_LOSS;
+    }
   }
   const appliedTrustDelta = batch.products.every(
     (product) => product.kind === "reprint",
@@ -3184,11 +3115,37 @@ function recordHistory(state: GameState): void {
       state.themes[content.id].winRate,
     ]),
   );
-  const topCutPlacements = getDeterministicDailyTopCutPlacements({
+  const tournamentShares = Object.fromEntries(
+    activeContents(state).map((content) => [
+      content.id,
+      getThemeTournamentViability(content, state.themes[content.id]).collapsed
+        ? 0
+        : shares[content.id],
+    ]),
+  );
+  const tournamentShareTotal = Object.values(tournamentShares).reduce(
+    (sum, share) => sum + share,
+    0,
+  );
+  const allocatedTopCutPlacements = tournamentShareTotal > 0
+    ? getDeterministicDailyTopCutPlacements({
+        seed: state.seed,
+        day: state.day,
+        shares: tournamentShares,
+        winRates,
+      })
+    : {};
+  const baseTopCutPlacements = Object.fromEntries(
+    state.activeThemeIds.map((themeId) => [
+      themeId,
+      allocatedTopCutPlacements[themeId] ?? 0,
+    ]),
+  );
+  const topCutPlacements = applyDailyPlacementMicroEvent({
     seed: state.seed,
     day: state.day,
-    shares,
-    winRates,
+    history: state.history,
+    placements: baseTopCutPlacements,
   });
   const historyEntry: DailyHistory = {
     day: state.day,
@@ -3371,7 +3328,7 @@ function assignMandateSeed(state: GameState, campaignSeed: number): void {
 }
 
 function assertState(state: GameState): void {
-  if (state.schemaVersion !== 9) {
+  if (state.schemaVersion !== 10) {
     throw new Error(`Unsupported game-state schema: ${state.schemaVersion}.`);
   }
   if (
@@ -3960,6 +3917,81 @@ function assertState(state: GameState): void {
   }
 }
 
+function updateCurrentHistoryCash(state: GameState): void {
+  const current = state.history.findLast((entry) => entry.day === state.day);
+  if (!current) return;
+  current.cash = state.finance.cash;
+  current.operatingCash = state.finance.todayOperatingCash;
+}
+
+function updateShareholderRequestForCurrentDay(state: GameState): void {
+  const offerOrdinal = getShareholderRequestOrdinal(state.day);
+  if (
+    offerOrdinal !== null &&
+    state.day + SHAREHOLDER_REQUEST_DURATION_DAYS <= CAMPAIGN_END_DAY &&
+    state.shareholder.request?.id !== `shareholder-request-${offerOrdinal}`
+  ) {
+    state.shareholder.request = createShareholderRequest(state, state.day);
+    return;
+  }
+
+  const request = state.shareholder.request;
+  if (
+    !request ||
+    request.status !== "accepted" ||
+    state.day < request.deadlineDay
+  ) {
+    return;
+  }
+  const progress = getShareholderRequestProgress(
+    state,
+    request,
+    request.deadlineDay,
+  );
+  request.status = progress.succeeded ? "succeeded" : "failed";
+  request.resolvedDay = request.deadlineDay;
+  if (progress.succeeded) {
+    state.finance.cash = round(state.finance.cash + request.rewardCash, 4);
+    state.finance.todayOperatingCash = round(
+      state.finance.todayOperatingCash + request.rewardCash,
+      4,
+    );
+    updateCurrentHistoryCash(state);
+  } else {
+    const appliedPenalty = Math.min(
+      FIRST_SHAREHOLDER_REQUEST_FAILURE_PENALTY_CASH,
+      state.finance.cash,
+    );
+    state.finance.cash = round(
+      state.finance.cash - appliedPenalty,
+      4,
+    );
+    state.finance.todayOperatingCash = round(
+      state.finance.todayOperatingCash - appliedPenalty,
+      4,
+    );
+    updateCurrentHistoryCash(state);
+  }
+}
+
+function respondToShareholderRequest(state: GameState, accept: boolean): void {
+  const request = state.shareholder.request;
+  if (!request || request.status !== "pending") {
+    throw new Error("There is no pending shareholder request.");
+  }
+  request.status = accept ? "accepted" : "declined";
+  request.responseDay = state.day;
+  request.resolvedDay = accept ? null : state.day;
+}
+
+function unlockReleasePlanning(state: GameState): void {
+  const request = state.shareholder.request;
+  if (!request || request.status === "pending") {
+    throw new Error("Respond to the shareholder request before unlocking release planning.");
+  }
+  state.shareholder.releasePlanningUnlocked = true;
+}
+
 function settleDecisionDay(state: GameState): void {
   updateBusinessLifecycle(state);
   updateFinance(state);
@@ -3967,6 +3999,7 @@ function settleDecisionDay(state: GameState): void {
   if (state.day >= CAMPAIGN_END_DAY || getServiceFailureReason(state) !== null) {
     state.phase = "ended";
     state.operations.nextEventDay = null;
+    state.operations.pendingEvent = null;
   }
   assertState(state);
 }
@@ -3987,12 +4020,14 @@ function resolveCurrentDay(state: GameState): void {
   updateUsers(state);
   updateFinance(state);
   recordHistory(state);
+  updateShareholderRequestForCurrentDay(state);
   applyRestrictionOutcomeForCurrentDay(state);
   appendEmergentNarrativesForCurrentDay(state);
 
   if (state.day >= CAMPAIGN_END_DAY || getServiceFailureReason(state) !== null) {
     state.phase = "ended";
     state.operations.nextEventDay = null;
+    state.operations.pendingEvent = null;
   }
   assertState(state);
 }
@@ -4018,6 +4053,11 @@ function hasFormalReportArrivingToday(state: GameState): boolean {
 function advanceDays(state: GameState, days: number): void {
   if (!Number.isInteger(days) || days < 0) {
     throw new Error("ADVANCE_DAYS requires a non-negative integer.");
+  }
+  // The UI blocks on this decision. Headless simulations that intentionally
+  // advance without answering treat the optional offer as declined.
+  if (state.shareholder.request?.status === "pending") {
+    respondToShareholderRequest(state, false);
   }
   if (state.phase !== "running" || state.operations.pendingEvent) return;
 
@@ -4046,6 +4086,10 @@ function advanceDays(state: GameState, days: number): void {
     openBusinessEvent(state);
     resolveCurrentDay(state);
     if (state.operations.pendingEvent) break;
+    // An optional shareholder offer is still a player-facing decision. Stop
+    // on its exact arrival day so large ADVANCE_DAYS chunks cannot defer the
+    // recorded response day to the next scheduled gate.
+    if (state.shareholder.request?.status === "pending") break;
     // The emergency handover is a real campaign gate. Stop on DAY 7 so the
     // UI and API callers can acknowledge it before the first DAY 10 product
     // review instead of silently skipping straight into release-edit.
@@ -4331,15 +4375,13 @@ function setReleaseRequest(
     if (getIndirectSupportGenericPool(state, input.themeId).length === 0) {
       throw new Error("No unreleased generic card shares a keyword with that theme.");
     }
-  } else if (input.kind === "environment-target") {
+  } else {
     if (!state.themes[input.themeId]) {
       throw new Error(`Inactive theme: ${input.themeId}`);
     }
     if (getEnvironmentTargetGenericPool(state, input.themeId).length === 0) {
       throw new Error("No unreleased generic card has a counter edge into that theme.");
     }
-  } else if (!getReprintImpactPreview(state, input.cardId)) {
-    throw new Error(`Only a currently released card can be reprinted: ${input.cardId}`);
   }
 
   if (existing) {
@@ -4358,9 +4400,7 @@ function setReleaseRequest(
     ? { ...base, kind: "support", themeId: input.themeId, direction: input.direction }
     : input.kind === "indirect-support"
       ? { ...base, kind: "indirect-support", themeId: input.themeId }
-      : input.kind === "environment-target"
-        ? { ...base, kind: "environment-target", themeId: input.themeId }
-        : { ...base, kind: "reprint", cardId: input.cardId };
+      : { ...base, kind: "environment-target", themeId: input.themeId };
   state.nextSupportRequestId += 1;
   state.supportRequests.push(request);
   if (input.kind === "support") {
@@ -4523,7 +4563,7 @@ export function createCampaignStart(
   themes[currentTopThemeId].topStreakDays = 1;
 
   const state: GameState = {
-    schemaVersion: 9,
+    schemaVersion: 10,
     seed: seed >>> 0,
     day: FIRST_BAN_DAY,
     phase: "ban-edit",
@@ -4555,6 +4595,10 @@ export function createCampaignStart(
         startedDay: FIRST_BAN_DAY,
         boundaries: [],
       },
+    },
+    shareholder: {
+      request: null,
+      releasePlanningUnlocked: false,
     },
     community: [],
     supportRequests: [],
@@ -4614,7 +4658,7 @@ export function createInitialGame(seed = 0x5eed1234): GameState {
 }
 
 export function reduceGame(state: GameState, command: GameCommand): GameState {
-  const next = cloneState(state);
+  const next = cloneGameState(state);
   switch (command.type) {
     case "ADVANCE_DAYS":
       advanceDays(next, command.days);
@@ -4642,6 +4686,12 @@ export function reduceGame(state: GameState, command: GameCommand): GameState {
       break;
     case "CHOOSE_BUSINESS_EVENT":
       chooseBusinessEvent(next, command.eventId, command.choice);
+      break;
+    case "RESPOND_SHAREHOLDER_REQUEST":
+      respondToShareholderRequest(next, command.accept);
+      break;
+    case "UNLOCK_RELEASE_PLANNING":
+      unlockReleasePlanning(next);
       break;
     case "COMPLETE_HANDOVER":
       {

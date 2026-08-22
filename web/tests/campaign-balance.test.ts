@@ -417,7 +417,7 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       startedDay: record.startedDay,
       outcome: record.outcome,
     })),
-    [{ type: "season-overhaul", startedDay: 160, outcome: "success" }],
+    [{ type: "season-overhaul", startedDay: 150, outcome: "success" }],
   );
 
   const ending = evaluateCampaignEnding(state);
@@ -462,11 +462,11 @@ test("seed 1000 can earn the fully qualified best ending through the real reduce
       title: ending.title,
     },
     {
-      cash: 38.6598,
-      endingCash: 38.7,
-      environmentHealth: 77.6,
+      cash: 40.5359,
+      endingCash: 40.5,
+      environmentHealth: 79.5,
       purchaseTrust: 95.8,
-      userRatio: 5.2934,
+      userRatio: 5.5674,
       bands: {
         cash: "reserve",
         environment: "stable",
@@ -501,12 +501,12 @@ test("a successful global launch creates a visibly higher commercial ceiling", (
       title: ending.title,
     },
     {
-      cash: 73.0158,
-      cumulativeRevenue: 331.4247,
-      environmentHealth: 78.4,
+      cash: 72.2943,
+      cumulativeRevenue: 328.8589,
+      environmentHealth: 81,
       purchaseTrust: 89.9,
-      userRatio: 8.834,
-      totalUsers: 87_995.87,
+      userRatio: 8.9398,
+      totalUsers: 89_049.09,
       title: "시대를 만든 TCG",
     },
   );

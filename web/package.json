@@ -1,6 +1,6 @@
 {
   "name": "tcg-regulator",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -12,7 +12,9 @@
     "start": "vite preview",
     "typecheck": "tsc --noEmit --incremental false",
     "test:redesign": "node --experimental-strip-types --test tests/campaign-redesign.test.ts tests/handover.test.ts",
-    "test": "npm run build && node --experimental-strip-types --test tests/campaign-milestone.test.ts tests/campaign-redesign.test.ts tests/decision-reports.test.ts tests/handover.test.ts tests/primary-navigation.test.ts tests/game-engine.test.ts tests/guided-release.test.ts tests/tab-tutorial.test.ts tests/initial-generic-cards.test.ts tests/automatic-release.test.ts tests/release-requests.test.ts tests/release-pack-name.test.ts tests/business-actions.test.ts tests/business-challenges.test.ts tests/business-result-overlay.test.ts tests/strategy-diversity.test.ts tests/organization-health.test.ts tests/save-schema.test.ts tests/restriction-cap.test.ts tests/daily-community.test.ts tests/community-sentiment.test.ts tests/community-engagement.test.ts tests/daily-news.test.ts tests/card-market.test.ts tests/distribution-model.test.ts tests/campaign-ending.test.ts tests/campaign-balance.test.ts tests/persistence-client.test.ts tests/content-originality.test.ts tests/restriction-considerations.test.ts tests/theme-emblem.test.ts tests/korean-particles.test.ts tests/meta-tiers.test.ts tests/placement-meta.test.ts tests/environment-health.test.ts tests/play-keywords.test.ts tests/keyword-community.test.ts tests/optimization-support-tools.test.ts tests/support-continuity.test.ts tests/generic-card-catalog.test.ts tests/generic-card-meta.test.ts tests/generic-cards.test.ts tests/emergent-narratives.test.ts",
+    "test:ui": "vitest run --config vitest.config.ts",
+    "analyze:balance": "node --experimental-strip-types scripts/balance-lab.ts",
+    "test": "npm run build && node --experimental-strip-types --test tests/campaign-milestone.test.ts tests/campaign-redesign.test.ts tests/decision-reports.test.ts tests/handover.test.ts tests/game-engine.test.ts tests/guided-release.test.ts tests/tab-tutorial.test.ts tests/initial-generic-cards.test.ts tests/automatic-release.test.ts tests/release-requests.test.ts tests/release-pack-name.test.ts tests/shareholder-request.test.ts tests/business-actions.test.ts tests/business-challenges.test.ts tests/business-result-overlay.test.ts tests/strategy-diversity.test.ts tests/organization-health.test.ts tests/save-schema.test.ts tests/save-transfer.test.ts tests/restriction-cap.test.ts tests/daily-community.test.ts tests/community-sentiment.test.ts tests/community-engagement.test.ts tests/daily-news.test.ts tests/card-market.test.ts tests/distribution-model.test.ts tests/campaign-ending.test.ts tests/campaign-balance.test.ts tests/campaign-policy-matrix.test.ts tests/administration-profile.test.ts tests/persistence-client.test.ts tests/content-originality.test.ts tests/restriction-considerations.test.ts tests/theme-emblem.test.ts tests/korean-particles.test.ts tests/meta-tiers.test.ts tests/placement-meta.test.ts tests/environment-health.test.ts tests/play-keywords.test.ts tests/keyword-community.test.ts tests/optimization-support-tools.test.ts tests/support-continuity.test.ts tests/generic-card-catalog.test.ts tests/generic-card-meta.test.ts tests/generic-cards.test.ts tests/emergent-narratives.test.ts && npm run test:ui",
     "lint": "eslint . --ignore-pattern dist"
   },
   "dependencies": {
@@ -21,6 +23,8 @@
   },
   "devDependencies": {
     "@eslint/js": "9.39.4",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.6",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
@@ -30,9 +34,11 @@
     "eslint-plugin-react": "7.37.5",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "16.4.0",
+    "jsdom": "^29.1.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.59.3",
-    "vite": "8.0.13"
+    "vite": "8.0.13",
+    "vitest": "^4.1.11"
   },
   "type": "module"
 }

@@ -139,7 +139,8 @@ export type ReleaseRequestKind =
   | "environment-target"
   | "reprint";
 
-export type ReleaseRequestLane = "support" | "generic" | "reprint";
+/** One request slot for each upcoming regular or reprint release cycle. */
+export type ReleaseRequestLane = "regular" | "reprint";
 
 export type ReleaseRequestStatus =
   | "queued"
@@ -271,6 +272,10 @@ export interface ReleasedGenericProduct extends ReleasedProductBase {
   kind: "generic";
   genericCardId: GenericCardId;
   requestId?: string;
+  /** The softer strategic route that placed this card on the release slate. */
+  requestKind?: "indirect-support" | "environment-target";
+  /** Theme the request intended to help or pressure. */
+  requestThemeId?: ThemeId;
 }
 
 export interface ReleasedReprintProduct extends ReleasedProductBase {
@@ -503,6 +508,33 @@ export interface OperationsState {
   season: CompetitiveSeasonState;
 }
 
+export type ShareholderRequestKind = "promote-first" | "suppress-tier2";
+
+export type ShareholderRequestStatus =
+  | "pending"
+  | "accepted"
+  | "declined"
+  | "succeeded"
+  | "failed";
+
+export interface ShareholderRequest {
+  id: `shareholder-request-${number}`;
+  kind: ShareholderRequestKind;
+  themeId: ThemeId;
+  offeredDay: number;
+  deadlineDay: number;
+  rewardCash: number;
+  status: ShareholderRequestStatus;
+  responseDay: number | null;
+  resolvedDay: number | null;
+}
+
+export interface ShareholderState {
+  request: ShareholderRequest | null;
+  /** Unlocked only when the player follows the request alert into the Cards tab. */
+  releasePlanningUnlocked: boolean;
+}
+
 export type EnvironmentHealthModel = "placement-v1";
 
 export interface DailyHistory {
@@ -534,7 +566,7 @@ export interface DailyHistory {
 }
 
 export interface GameState {
-  schemaVersion: 9;
+  schemaVersion: 10;
   seed: number;
   day: number;
   phase: "running" | "release-edit" | "ban-edit" | "ended";
@@ -543,6 +575,7 @@ export interface GameState {
   users: UserState;
   finance: FinanceState;
   operations: OperationsState;
+  shareholder: ShareholderState;
   community: CommunityEvent[];
   supportRequests: SupportRequest[];
   releaseSlate: ReleaseSlate | null;
@@ -585,8 +618,7 @@ export type GameCommand =
       request:
         | { kind: "support"; themeId: ThemeId; direction: SupportDirection }
         | { kind: "indirect-support"; themeId: ThemeId }
-        | { kind: "environment-target"; themeId: ThemeId }
-        | { kind: "reprint"; cardId: string };
+        | { kind: "environment-target"; themeId: ThemeId };
     }
   | {
       type: "CANCEL_RELEASE_REQUEST";
@@ -602,4 +634,6 @@ export type GameCommand =
       eventId: string;
       choice: BusinessEventChoice;
     }
+  | { type: "RESPOND_SHAREHOLDER_REQUEST"; accept: boolean }
+  | { type: "UNLOCK_RELEASE_PLANNING" }
   | { type: "COMPLETE_HANDOVER" };

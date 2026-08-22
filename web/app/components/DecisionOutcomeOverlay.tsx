@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 
+import { emitGameSound } from "../game-sound.ts";
 import { RESTRICTION_REPORT_DELAY_DAYS } from "../game/campaign.ts";
 import type { RestrictionCardDisplay } from "../game/restriction-display.ts";
 import type {
@@ -88,6 +89,29 @@ export function DecisionOutcomeOverlay({
     if (!revealReady) return;
     continueRef.current?.focus({ preventScroll: true });
   }, [revealReady]);
+
+  useEffect(() => {
+    if (outcome.kind !== "restriction") return;
+    const firstStampedIndex = outcome.currentRestrictions.findIndex(
+      (card) => card.previousLimit !== undefined,
+    );
+    if (firstStampedIndex < 0) return;
+    const firstStamp = outcome.currentRestrictions[firstStampedIndex];
+    const duration = firstStamp.limit === 0
+      ? 720
+      : firstStamp.limit === 1
+        ? 600
+        : 520;
+    const reducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    const contactDelay = 260 + firstStampedIndex * 130 + duration * 0.64;
+    const timer = window.setTimeout(
+      () => emitGameSound("impact"),
+      reducedMotion ? 0 : contactDelay,
+    );
+    return () => window.clearTimeout(timer);
+  }, [outcome]);
 
   const isRelease = outcome.kind === "release";
   const publicationDay = outcome.day + 1;

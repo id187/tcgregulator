@@ -42,13 +42,17 @@ import {
   LAST_DECISION_DAY,
   PROLOGUE_SEED,
 } from "./campaign.ts";
-import { interpolateKorean } from "./korean-particles.ts";
+import {
+  correctKoreanParticles,
+  interpolateKorean,
+} from "./korean-particles.ts";
 import { getStableThemeRandomIdentifier } from "./future-theme-id-migration.ts";
 import { getKeywordCommunitySignal } from "./keyword-community.ts";
 import {
   getRecentPlacementReport,
   PLACEMENT_WINDOW_DAYS,
 } from "./placement-meta.ts";
+import { getDailyPlacementMicroEvent } from "./placement-micro-events.ts";
 import { getCampaignAnalysisHistory } from "./pre-campaign-history.ts";
 import type {
   RecentPlacementReport,
@@ -7340,6 +7344,130 @@ function fatiguePost(
   };
 }
 
+function placementMicroEventPosts(
+  state: GameState,
+  day: number,
+): CommunityEvent[] {
+  const event = getDailyPlacementMicroEvent(state.history, state.seed, day);
+  if (!event) return [];
+  const themeName = THEME_BY_ID[event.targetThemeId]?.shortName ?? event.targetThemeId;
+  const counterSettlement = event.previousTier === event.currentTier
+    ? `${themeName}의 7일 티어는 ${event.currentTier}를 유지했지만, 입상 감소가 닷새째 굳어졌다.`
+    : `${themeName} 결국 ${event.previousTier}에서 ${event.currentTier}로 내려갔다. 카운터가 완전히 정착했네.`;
+  const researchSettlement = event.previousTier === event.currentTier
+    ? `${themeName}의 7일 티어는 아직 ${event.currentTier}지만, 연구 리스트의 입상 증가는 닷새째 이어졌다.`
+    : `${themeName}이 연구 끝에 ${event.previousTier}에서 ${event.currentTier}로 올라왔다. 이제 정식 경쟁자다.`;
+  let bodies: string[];
+  if (event.kind === "counter-breakthrough" && event.phase === "shock") {
+    bodies = [
+      `${themeName} 오늘 입상 왜 갑자기 ${event.currentCount}석까지 떨어졌나 했더니 카운터 플랜이 통째로 공유됐네.`,
+      `대회장 절반이 ${themeName}만 보고 사이드를 짜온 느낌이다. 하루 만에 이렇게 막힐 수가 있나.`,
+      `${themeName} 전개 핵심 타이밍이 완전히 읽혔다. 어제까지 통하던 루트가 오늘은 그대로 끊긴다.`,
+      `표본 하루라고 넘기기엔 ${event.previousCount}석 → ${event.currentCount}석은 너무 크다. 다음 대회 대응 리스트를 봐야 한다.`,
+      `금제 없이도 환경이 스스로 답을 찾는 장면이긴 한데, 이 카운터가 정착할지는 아직 모르겠다.`,
+    ];
+  } else if (
+    event.kind === "counter-breakthrough" && event.phase === "recovery"
+  ) {
+    bodies = [
+      `${themeName} 벌써 카운터 우회 루트 찾았네. 오늘 ${event.currentCount}석으로 바로 복구했다.`,
+      `어제 막혔던 구간을 전부 갈아엎은 ${themeName} 수정 리스트가 상위 테이블을 다시 잡았다.`,
+      `카운터가 발견되면 끝인 줄 알았는데 ${themeName} 쪽 연구 속도도 만만치 않다.`,
+      `사이드전 플랜을 바꾸니까 어제의 저격 카드가 오히려 빈 패가 되는 구도가 나왔다.`,
+      `하루 급락 뒤 하루 반등이라니, 지금은 파워보다 연구전이 메타를 흔드는 중이다.`,
+    ];
+  } else if (
+    event.kind === "counter-breakthrough" && event.phase === "pressure"
+  ) {
+    bodies = [
+      `${themeName} 급락이 하루짜리가 아니네. 카운터 플랜이 지역 대회까지 그대로 퍼지고 있다.`,
+      `발발 전 ${event.previousCount}석이던 ${themeName}이 오늘도 ${event.currentCount}석. 이 정도면 구조적인 문제다.`,
+      `${themeName} 대응 리스트가 아직 안 보인다. 같은 약점을 며칠째 찔리고 있다.`,
+      `이 추세가 주간 집계에 다 들어가면 ${themeName} 티어도 실제로 내려갈 듯.`,
+      `유행 저격이라기보다 메타 표준이 되어가는 분위기다. 다음 대회의 채용률도 봐야 한다.`,
+    ];
+  } else if (event.kind === "counter-breakthrough") {
+    bodies = [
+      counterSettlement,
+      `하루 이변이 아니라 닷새 누적 성적이다. 이제 ${themeName}은 예전 위치로 바로 돌아가기 어렵겠다.`,
+      `${themeName} 유저들이 우회안을 계속 찾았지만 입상 수복에는 실패했다.`,
+      `금제 없이도 연구와 대응만으로 티어가 움직이는 사례가 나왔다.`,
+      `다음 반등은 새 리스트나 환경 변화가 있어야 가능할 것 같다.`,
+    ];
+  } else if (event.kind === "lab-breakthrough" && event.phase === "surge") {
+    bodies = [
+      `${themeName}이 오늘 ${event.currentCount}석? 연구팀이 완전히 새로운 전개선을 찾아냈다는데.`,
+      `창고 카드 취급받던 파츠가 ${themeName}의 핵심 초동으로 재평가되고 있다.`,
+      `${themeName} 검증 영상 보니까 운으로 오른 게 아니다. 기존 약점을 실제로 메웠다.`,
+      `${event.previousCount}석 → ${event.currentCount}석은 너무 크다. 리스트 공개되면 바로 복제될 듯.`,
+      `약한 테마도 연구 한 번 제대로 터지면 환경을 뒤집을 수 있다는 사례가 나왔다.`,
+    ];
+  } else if (event.kind === "lab-breakthrough" && event.phase === "pressure") {
+    bodies = [
+      `${themeName} 연구 리스트가 며칠째 성적을 내고 있다. 첫날 기습 효과만은 아니네.`,
+      `매치업 가이드까지 퍼지면서 ${themeName} 숙련도가 전체적으로 올라가는 중이다.`,
+      `처음엔 로그 덱인 줄 알았는데 상위 테이블 리스트가 빠르게 같은 형태로 수렴했다.`,
+      `발발 전 ${event.previousCount}석이던 덱이 오늘도 ${event.currentCount}석. 주간 티어가 바뀔 수 있겠다.`,
+      `상대 쪽도 이제 ${themeName} 전용 대응을 준비해야 한다.`,
+    ];
+  } else if (event.kind === "lab-breakthrough") {
+    bodies = [
+      researchSettlement,
+      `닷새 누적 입상이라 우연으로 치부하기 어렵다. ${themeName}의 평가 자체가 달라졌다.`,
+      `신규 지원 없이 구축과 플레이 연구만으로 주류권에 진입한 게 인상적이다.`,
+      `${themeName} 카드 가격과 온라인 사용률도 뒤따라 오를 것 같다.`,
+      `다음 메타는 기존 강자 대 새 연구 덱의 대응전으로 넘어가겠네.`,
+    ];
+  } else if (event.kind === "rogue-run") {
+    bodies = [
+      `${themeName} 무명 구축이 오늘 ${event.currentCount}석이라고? 리스트 공개되면 바로 확인해봐야겠다.`,
+      `연습방에서도 못 보던 ${themeName} 빌드가 상위 테이블을 연속으로 뚫었다. 완전 기습이다.`,
+      `이건 덱 파워가 갑자기 오른 게 아니라 다들 대응법을 몰라서 맞은 느낌도 있다.`,
+      `${themeName} 입상 ${event.previousCount}석 → ${event.currentCount}석. 하루 표본이어도 덱리스트 연구 가치는 충분하다.`,
+      `다음 대회에도 남으면 발견이고, 바로 사라지면 오늘만의 로그 덱 전설이겠네.`,
+    ];
+  } else if (event.kind === "list-refinement") {
+    bodies = [
+      `${themeName} 최적화 리스트 나오자마자 입상이 ${event.previousCount}석에서 ${event.currentCount}석으로 뛰었다.`,
+      `핵심 카드 매수 두 장 바꾼 게 이렇게 큰가. ${themeName} 패 말림이 눈에 띄게 줄었다.`,
+      `오늘 상위권 ${themeName} 리스트들이 거의 같은 형태다. 정답 구축이 퍼진 듯.`,
+      `새 카드가 아니라 플레이와 구축 연구만으로 결과가 움직이는 날도 있어야 메타지.`,
+      `${themeName} 상대하는 쪽도 이제 최적화 리스트 기준으로 다시 계산해야 한다.`,
+    ];
+  } else if (event.kind === "side-deck-wave") {
+    bodies = [
+      `${themeName} 전용 저격 사이드가 유행하자 입상이 ${event.previousCount}석에서 ${event.currentCount}석으로 밀렸다.`,
+      `오늘은 ${themeName} 만나기만 기다린 사이드 덱들이 너무 많았다.`,
+      `메인전은 여전히 강한데 사이드 이후 승률이 완전히 무너지는 그림이다.`,
+      `이 저격 카드가 다른 덱 상대로 너무 약해서 유행이 며칠이나 갈지는 모르겠다.`,
+      `${themeName} 쪽이 사이드 플랜을 비틀면 다시 원상복구될 수도 있는 일시적 출렁임 같다.`,
+    ];
+  } else {
+    bodies = [
+      `${themeName}에 유리한 대진이 연달아 잡히면서 오늘 입상이 ${event.currentCount}석까지 치솟았다.`,
+      `상위권에 ${themeName}이 많길래 신기했는데 오늘 대진표가 정말 잘 맞아떨어졌다.`,
+      `덱이 갑자기 세진 것보다 잡아먹기 좋은 상대가 한쪽에 몰린 결과에 가깝다.`,
+      `${event.previousCount}석 → ${event.currentCount}석은 크지만 대진이 바뀌면 바로 되돌아갈 수도 있다.`,
+      `그래도 이런 날 결과를 챙기는 것도 메타 선택 실력이지. ${themeName} 픽이 제대로 적중했다.`,
+    ];
+  }
+  return bodies.map((body, index) => ({
+    id: `daily-placement-micro-${day}-${event.kind}-${index + 1}`,
+    day,
+    category: event.kind === "counter-breakthrough" ? "counter" : "meta",
+    type:
+      event.kind === "counter-breakthrough"
+        ? event.phase === "shock"
+          ? "counter-found"
+          : "counter-adopted"
+        : "meta-analysis",
+    themeId: event.targetThemeId,
+    value: event.currentCount,
+    previousValue: event.previousCount,
+    body: correctKoreanParticles(body, [themeName]),
+  }));
+}
+
 /**
  * Builds a read-only twenty-post board snapshot for a historical campaign day.
  * Business crises and event reactions take priority, followed by engine-authored
@@ -7374,6 +7502,7 @@ export function getDailyCommunityPosts(
     : narrowRestrictionFollowup(state, day);
   const emergingThemePosts = makeEmergingThemeContextPosts(state, day);
   const keywordCommunitySignal = getKeywordCommunitySignal(state, day);
+  const placementEventPosts = placementMicroEventPosts(state, day);
   const output: CommunityEvent[] = [];
   const usedBodies = new Set<string>();
   const finalize = (): CommunityEvent[] => {
@@ -7381,6 +7510,14 @@ export function getDailyCommunityPosts(
     const finalized = emergingThemePosts.length === 0
       ? [...output]
       : [...output.slice(0, regularLimit), ...emergingThemePosts];
+    const generatedIndexes = finalized.flatMap((event, index) =>
+      event.id.startsWith("daily-generated-") ? [index] : [],
+    );
+    placementEventPosts
+      .slice(0, generatedIndexes.length)
+      .forEach((event, index) => {
+        finalized[generatedIndexes[index]] = event;
+      });
     if (!keywordCommunitySignal) return finalized;
     // Replace one synthetic voice after selection so special-event quotas,
     // post count, and the deterministic template walk all stay unchanged.

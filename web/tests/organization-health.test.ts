@@ -225,7 +225,7 @@ test("a reckless live campaign visibly loses its recovery challenge before DAY 5
     {
       day: 371,
       users: 0,
-      cash: 2.2487,
+      cash: 2.3495,
       trust: 0,
       failureReason: "audience-collapse",
     },

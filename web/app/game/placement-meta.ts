@@ -185,9 +185,9 @@ function assertStoredPlacements(
     }
     return sum + count;
   }, 0);
-  if (total !== DAILY_TOP_CUT_SLOTS) {
+  if (total !== 0 && total !== DAILY_TOP_CUT_SLOTS) {
     throw new Error(
-      `DAY ${entry.day} top-cut placements must add up to ${DAILY_TOP_CUT_SLOTS}.`,
+      `DAY ${entry.day} top-cut placements must add up to 0 or ${DAILY_TOP_CUT_SLOTS}.`,
     );
   }
 }

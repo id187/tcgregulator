@@ -13,6 +13,7 @@ import {
   UsersIcon,
 } from "./components/MetricGlyphs";
 import { HeaderReferenceTools } from "./components/HeaderReferenceTools";
+import { ShareholderRequestStatus } from "./components/ShareholderRequestStatus";
 import { BusinessActionIcon } from "./components/BusinessActionIcon";
 import { CurrentBanList } from "./components/CurrentBanList";
 import { GameBackgroundMusic } from "./components/GameBackgroundMusic";
@@ -30,7 +31,9 @@ import {
   CardMarketQuote,
 } from "./components/CardMarketQuote";
 import { CampaignTimeDock } from "./components/CampaignTimeDock";
+import { CampaignEndPanel } from "./components/CampaignEndPanel";
 import { DecisionEventHero } from "./components/DecisionEventHero";
+import { DailyPlacementTransitionOverlay } from "./components/DailyPlacementTransitionOverlay.tsx";
 import {
   DecisionOutcomeOverlay,
   type DecisionOutcome,
@@ -49,10 +52,13 @@ import { ReleasesView } from "./components/ReleasesView";
 import {
   BusinessEventResultOverlay,
   FormalDecisionReportOverlay,
+  ShareholderRequestOverlay,
+  ShareholderRequestResultOverlay,
 } from "./components/ReportArrivalOverlay";
 import { ThemeEmblem } from "./components/ThemeEmblem";
 import { TitleScreen } from "./components/TitleScreen";
 import { ServiceRecoveryChallengeOverlay } from "./components/ServiceRecoveryChallengeOverlay";
+import { emitGameSound, type GameSoundKind } from "./game-sound.ts";
 import {
   THEME_BY_ID,
   THEMES,
@@ -65,7 +71,6 @@ import {
   LAST_BAN_DAY,
   LAST_DECISION_DAY,
   LAST_RELEASE_DAY,
-  PLAYER_START_DAY,
   PROLOGUE_SEED,
   RESTRICTION_REPORT_DELAY_DAYS,
   SETTLEMENT_START_DAY,
@@ -74,13 +79,6 @@ import {
 import { getNextCampaignMilestone } from "./game/campaign-milestone.ts";
 import {
   CAMPAIGN_ENVIRONMENT_STABLE_MIN,
-  evaluateCampaignEnding,
-  getCampaignEndingHints,
-  type CampaignCashBand,
-  type CampaignEndingEvaluation,
-  type CampaignEnvironmentBand,
-  type CampaignTrustBand,
-  type CampaignUserBand,
 } from "./game/campaign-ending";
 import {
   getActiveServiceRecoveryChallenge,
@@ -112,6 +110,7 @@ import {
   type DistributionMode,
 } from "./game/distribution-model";
 import {
+  canQueueRegularReleaseRequest,
   getEnvironmentTargetGenericPool,
   getIndirectSupportGenericPool,
 } from "./game/release-requests";
@@ -122,6 +121,7 @@ import {
   createContextualTutorialVisitState,
   createTabTutorialVisitState,
   getPendingTutorialPopups,
+  isFirstBusinessEventTutorial,
   isTabTutorialSeriesComplete,
   markContextualTutorialVisited,
   markTabTutorialVisited,
@@ -150,6 +150,11 @@ import {
   type RecentPlacementReport,
   type ThemePlacementReport,
 } from "./game/placement-meta";
+import {
+  getDailyPlacementMicroEvent,
+  getNextPlacementMicroEventDay,
+  type DailyPlacementMicroEvent,
+} from "./game/placement-micro-events.ts";
 import { getCampaignAnalysisHistory } from "./game/pre-campaign-history";
 import {
   getForecastRange,
@@ -203,6 +208,7 @@ import {
   getProspectiveSupportKeyword,
   isHandoverReady,
   isBanDay,
+  isReleaseDay,
   reduceGame,
 } from "./game/engine";
 import {
@@ -228,6 +234,7 @@ import type {
   PartRole,
   ReleaseSelection,
   RestrictionLimit,
+  ShareholderRequest,
   SupportDirection,
   ThemeContent,
   ThemeId,
@@ -236,7 +243,6 @@ import type {
 type TabId = TabTutorialTabId;
 
 type MotionPreference = "system" | "reduced";
-type GameSoundKind = "click" | "release" | "restriction" | "event" | "impact";
 
 type RestrictionDecisionOutcome = Extract<
   DecisionOutcome,
@@ -268,20 +274,125 @@ function mintCampaignSeed(previousSeed: number): number {
     : candidate;
 }
 
-function emitGameSound(kind: GameSoundKind) {
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent<GameSoundKind>("tcg-regulator-sound", {
-    detail: kind,
-  }));
-}
-
 function playSynthTone(context: AudioContext, kind: GameSoundKind) {
   const now = context.currentTime;
   const master = context.createGain();
   master.gain.setValueAtTime(0.0001, now);
-  master.gain.exponentialRampToValueAtTime(kind === "click" ? 0.12 : 0.11, now + 0.006);
-  master.gain.exponentialRampToValueAtTime(0.0001, now + (kind === "click" ? 0.11 : 0.42));
+  master.gain.exponentialRampToValueAtTime(
+    kind === "impact"
+      ? 0.32
+      : kind === "swoosh"
+        ? 0.14
+      : kind === "message"
+        ? 0.08
+        : kind === "click"
+          ? 0.12
+          : 0.11,
+    now + 0.006,
+  );
+  master.gain.exponentialRampToValueAtTime(
+    0.0001,
+    now +
+      (kind === "impact"
+        ? 0.34
+        : kind === "swoosh"
+          ? 0.18
+        : kind === "message"
+          ? 0.09
+          : kind === "click"
+            ? 0.11
+            : 0.42),
+  );
   master.connect(context.destination);
+
+  if (kind === "impact") {
+    const thump = context.createOscillator();
+    const thumpGain = context.createGain();
+    thump.type = "sine";
+    thump.frequency.setValueAtTime(145, now);
+    thump.frequency.exponentialRampToValueAtTime(52, now + 0.24);
+    thumpGain.gain.setValueAtTime(1, now);
+    thumpGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+    thump.connect(thumpGain);
+    thumpGain.connect(master);
+    thump.start(now);
+    thump.stop(now + 0.3);
+
+    const punch = context.createOscillator();
+    const punchGain = context.createGain();
+    punch.type = "triangle";
+    punch.frequency.setValueAtTime(260, now);
+    punch.frequency.exponentialRampToValueAtTime(88, now + 0.12);
+    punchGain.gain.setValueAtTime(0.42, now);
+    punchGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
+    punch.connect(punchGain);
+    punchGain.connect(master);
+    punch.start(now);
+    punch.stop(now + 0.14);
+
+    const crackLength = Math.ceil(context.sampleRate * 0.14);
+    const crackBuffer = context.createBuffer(1, crackLength, context.sampleRate);
+    const crackData = crackBuffer.getChannelData(0);
+    for (let index = 0; index < crackLength; index += 1) {
+      const decay = 1 - index / crackLength;
+      crackData[index] = (Math.random() * 2 - 1) * decay;
+    }
+    const crack = context.createBufferSource();
+    const crackFilter = context.createBiquadFilter();
+    const crackGain = context.createGain();
+    crack.buffer = crackBuffer;
+    crackFilter.type = "lowpass";
+    crackFilter.frequency.setValueAtTime(1_800, now);
+    crackFilter.frequency.exponentialRampToValueAtTime(420, now + 0.14);
+    crackGain.gain.setValueAtTime(0.58, now);
+    crackGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+    crack.connect(crackFilter);
+    crackFilter.connect(crackGain);
+    crackGain.connect(master);
+    crack.start(now);
+    crack.stop(now + 0.15);
+    return;
+  }
+
+  if (kind === "swoosh") {
+    const sweepLength = Math.ceil(context.sampleRate * 0.17);
+    const sweepBuffer = context.createBuffer(1, sweepLength, context.sampleRate);
+    const sweepData = sweepBuffer.getChannelData(0);
+    for (let index = 0; index < sweepLength; index += 1) {
+      const position = index / sweepLength;
+      const envelope = Math.sin(Math.PI * position) * (1 - position * 0.35);
+      sweepData[index] = (Math.random() * 2 - 1) * envelope;
+    }
+    const sweep = context.createBufferSource();
+    const sweepFilter = context.createBiquadFilter();
+    const sweepGain = context.createGain();
+    sweep.buffer = sweepBuffer;
+    sweepFilter.type = "bandpass";
+    sweepFilter.Q.setValueAtTime(0.75, now);
+    sweepFilter.frequency.setValueAtTime(3_200, now);
+    sweepFilter.frequency.exponentialRampToValueAtTime(720, now + 0.17);
+    sweepGain.gain.setValueAtTime(0.0001, now);
+    sweepGain.gain.exponentialRampToValueAtTime(0.95, now + 0.018);
+    sweepGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.17);
+    sweep.connect(sweepFilter);
+    sweepFilter.connect(sweepGain);
+    sweepGain.connect(master);
+    sweep.start(now);
+    sweep.stop(now + 0.18);
+
+    const glide = context.createOscillator();
+    const glideGain = context.createGain();
+    glide.type = "triangle";
+    glide.frequency.setValueAtTime(980, now);
+    glide.frequency.exponentialRampToValueAtTime(360, now + 0.14);
+    glideGain.gain.setValueAtTime(0.2, now);
+    glideGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+    glide.connect(glideGain);
+    glideGain.connect(master);
+    glide.start(now);
+    glide.stop(now + 0.15);
+    return;
+  }
 
   const notes: Array<{ frequency: number; offset: number; duration: number; type: OscillatorType }> =
     kind === "release"
@@ -295,20 +406,20 @@ function playSynthTone(context: AudioContext, kind: GameSoundKind) {
             { frequency: 270, offset: 0, duration: 0.16, type: "square" },
             { frequency: 170, offset: 0.12, duration: 0.2, type: "triangle" },
           ]
-        : kind === "event"
+      : kind === "event"
+        ? [
+            { frequency: 185, offset: 0, duration: 0.11, type: "sawtooth" },
+            { frequency: 245, offset: 0.11, duration: 0.16, type: "triangle" },
+          ]
+        : kind === "message"
           ? [
-              { frequency: 185, offset: 0, duration: 0.11, type: "sawtooth" },
-              { frequency: 245, offset: 0.11, duration: 0.16, type: "triangle" },
+              { frequency: 390, offset: 0, duration: 0.04, type: "sawtooth" },
+              { frequency: 210, offset: 0.014, duration: 0.055, type: "triangle" },
             ]
-          : kind === "impact"
-            ? [
-                { frequency: 392, offset: 0, duration: 0.16, type: "sine" },
-                { frequency: 587, offset: 0.1, duration: 0.22, type: "triangle" },
-              ]
-            : [
-                { frequency: 760, offset: 0, duration: 0.075, type: "triangle" },
-                { frequency: 1120, offset: 0.012, duration: 0.045, type: "sine" },
-              ];
+          : [
+              { frequency: 760, offset: 0, duration: 0.075, type: "triangle" },
+              { frequency: 1120, offset: 0.012, duration: 0.045, type: "sine" },
+            ];
 
   notes.forEach((note) => {
     const oscillator = context.createOscillator();
@@ -1104,6 +1215,7 @@ type BootState =
       status: "title";
       backend: PersistenceBackend;
       savedGame: GameState | null;
+      recoverySave?: string;
     }
   | {
       status: "playing";
@@ -1132,6 +1244,7 @@ export default function Home() {
           status: "title",
           backend: result.backend,
           savedGame: result.game,
+          recoverySave: result.recoverySave,
         });
         setTitleMessage(
           result.backend.kind === "unavailable"
@@ -1156,7 +1269,7 @@ export default function Home() {
 
   async function beginNewGame(confirmed = false) {
     if (boot.status !== "title") return;
-    if (boot.savedGame && !confirmed) {
+    if ((boot.savedGame || boot.recoverySave) && !confirmed) {
       setConfirmNewGame(true);
       return;
     }
@@ -1336,8 +1449,16 @@ function GameSession({
         : null,
     );
   const [decisionReports, setDecisionReports] = useState<DecisionReport[]>([]);
+  const [dailyPlacementTransition, setDailyPlacementTransition] = useState<{
+    current: DailyHistory;
+    event: DailyPlacementMicroEvent | null;
+    impactStartDay: number;
+    previous: DailyHistory;
+  } | null>(null);
   const [businessEventResult, setBusinessEventResult] =
     useState<BusinessEventRecord | null>(null);
+  const [shareholderResult, setShareholderResult] =
+    useState<ShareholderRequest | null>(null);
   const [attentionTabs, setAttentionTabs] = useState<TabId[]>([]);
   const [pendingDecisionAftermath, setPendingDecisionAftermath] =
     useState<PendingDecisionAftermath | null>(initialDecisionAftermath);
@@ -1670,21 +1791,30 @@ function GameSession({
       handoverComplete: game.handoverComplete,
       tutorialSeriesComplete,
       phase: game.phase,
+      hasBusinessEvent: Boolean(game.operations.pendingEvent),
+      releasePlanningUnlocked: game.shareholder.releasePlanningUnlocked,
     },
   );
+  const pendingTutorialPopup = pendingTutorialPopups[0] ?? null;
+  const firstBusinessEventTutorial = isFirstBusinessEventTutorial(
+    pendingTutorialPopup,
+  );
   const tutorialPopupBlocked = Boolean(
-    game.operations.pendingEvent ||
+    (game.operations.pendingEvent && !firstBusinessEventTutorial) ||
       supportTarget ||
       packOddsConfirmOpen ||
       strategicConfirmAction ||
       decisionOutcome ||
       decisionReports.length > 0 ||
       businessEventResult ||
-      restrictionConfirmation,
+      game.shareholder.request?.status === "pending" ||
+      shareholderResult ||
+      restrictionConfirmation ||
+      dailyPlacementTransition,
   );
   const tutorialPopup = tutorialPopupBlocked
     ? null
-    : (pendingTutorialPopups[0] ?? null);
+    : pendingTutorialPopup;
   const tutorialPopupKey = tutorialPopup
     ? `${tutorialPopup.kind}-${tutorialPopup.id}`
     : null;
@@ -1701,6 +1831,14 @@ function GameSession({
     accessContext = handoverContext,
   ) {
     const resolvedTab = resolveHandoverTab(nextTab, accessContext);
+    if (
+      resolvedTab === "cards" &&
+      game.shareholder.request &&
+      game.shareholder.request.status !== "pending" &&
+      !game.shareholder.releasePlanningUnlocked
+    ) {
+      setGame(reduceGame(game, { type: "UNLOCK_RELEASE_PLANNING" }));
+    }
     if (important || !seenAdvisorTabsRef.current.has(resolvedTab)) {
       seenAdvisorTabsRef.current.add(resolvedTab);
     }
@@ -1741,6 +1879,7 @@ function GameSession({
       const arrivalTimer = window.setTimeout(() => {
         setImpactItems((current) => [...current, item].slice(-6));
         emitGameSound("impact");
+        emitGameSound("message");
         if (
           interfaceSettings.impactEffectsEnabled &&
           interfaceSettings.motionPreference !== "reduced"
@@ -1764,6 +1903,11 @@ function GameSession({
 
   function advance(days: number) {
     if (game.phase === "ended") return null;
+    if (dailyPlacementTransition) return null;
+    if (game.shareholder.request?.status === "pending") {
+      setToast("도착한 대주주 특별 요청에 먼저 응답해야 합니다.");
+      return null;
+    }
     if (game.operations.pendingEvent) {
       setToast("도착한 돌발 경영 이벤트의 사업 방향을 먼저 선택해야 합니다.");
       activateTab("operations", true);
@@ -1778,7 +1922,15 @@ function GameSession({
       if (game.phase === "release-edit") activateTab("releases", true);
       return null;
     }
-    const allowedDays = pendingDecisionAftermath ? Math.min(days, 1) : days;
+    let allowedDays = pendingDecisionAftermath ? Math.min(days, 1) : days;
+    const interruptDay = getNextPlacementMicroEventDay(
+      game.seed,
+      game.day,
+      game.day + allowedDays,
+    );
+    if (interruptDay !== null) {
+      allowedDays = Math.max(1, interruptDay - game.day);
+    }
     let next = reduceGame(game, { type: "ADVANCE_DAYS", days: allowedDays });
     if (!next.handoverComplete && isHandoverReady(next)) {
       next = reduceGame(next, { type: "COMPLETE_HANDOVER" });
@@ -1822,10 +1974,49 @@ function GameSession({
     const businessToast = getBusinessTransitionToast(game, next);
     const eventResultToast = getBusinessEventTransitionToast(game, next);
     const resolvedBusinessEvent = getResolvedBusinessEventTransition(game, next);
+    const resolvedShareholderRequest =
+      game.shareholder.request?.status === "accepted" &&
+      (next.shareholder.request?.status === "succeeded" ||
+        next.shareholder.request?.status === "failed")
+        ? next.shareholder.request
+        : null;
     const arrivingReports = getDecisionReportsArriving(game, next);
     const eventArrived =
       !game.operations.pendingEvent && next.operations.pendingEvent;
-    if (!aftermathToReveal) showImpact(game.day, next);
+    const currentPlacementDay = next.history.at(-1);
+    const previousPlacementDay = next.history.at(-2);
+    const shouldShowPlacementTransition = Boolean(
+      !aftermathToReveal &&
+      !eventArrived &&
+      !resolvedBusinessEvent &&
+      !resolvedShareholderRequest &&
+      arrivingReports.length === 0 &&
+      next.phase === "running" &&
+      !isBanDay(next.day) &&
+      !isReleaseDay(next.day) &&
+      next.shareholder.request?.status !== "pending" &&
+      currentPlacementDay &&
+      previousPlacementDay &&
+      currentPlacementDay.day === next.day &&
+      previousPlacementDay.day < currentPlacementDay.day,
+    );
+    const placementEvent = shouldShowPlacementTransition
+      ? getDailyPlacementMicroEvent(next.history, next.seed, next.day)
+      : null;
+    const placementTransition =
+      shouldShowPlacementTransition && currentPlacementDay && previousPlacementDay
+        ? {
+            current: currentPlacementDay,
+            event: placementEvent,
+            impactStartDay: game.day,
+            previous: previousPlacementDay,
+          }
+        : null;
+    if (placementTransition) {
+      setDailyPlacementTransition(placementTransition);
+    } else if (!aftermathToReveal) {
+      showImpact(game.day, next);
+    }
     if (!aftermathToReveal && reactionFlashDay === next.day) {
       triggerImpactObservation(next.day, "caution");
     }
@@ -1833,6 +2024,9 @@ function GameSession({
       triggerImpactObservation(next.day, "caution");
     }
     if (resolvedBusinessEvent) setBusinessEventResult(resolvedBusinessEvent);
+    if (resolvedShareholderRequest) {
+      setShareholderResult({ ...resolvedShareholderRequest });
+    }
     if (arrivingReports.length > 0) {
       setDecisionReports((current) => [...current, ...arrivingReports]);
       emitGameSound("impact");
@@ -1930,6 +2124,20 @@ function GameSession({
     activateTab("operations", true);
   }
 
+  function respondToShareholderRequest(accept: boolean) {
+    const request = game.shareholder.request;
+    if (!request || request.status !== "pending") return;
+    dispatch({ type: "RESPOND_SHAREHOLDER_REQUEST", accept });
+    setAttentionTabs((current) =>
+      current.includes("cards") ? current : [...current, "cards"]
+    );
+    setToast(
+      accept
+        ? `대주주 요청을 수락했습니다. DAY ${request.deadlineDay}에 판정합니다. 카드 탭에 새 발매 요청 도구가 도착했습니다.`
+        : "대주주 요청을 거부했습니다. 카드 탭에 새 발매 요청 도구가 도착했습니다.",
+    );
+  }
+
   function selectTheme(themeId: ThemeId, partId?: string) {
     setSelectedThemeId(themeId);
     activateTab("cards");
@@ -1997,26 +2205,34 @@ function GameSession({
     themeId: ThemeId,
   ) {
     if (kind === "indirect-support") {
-      if (getIndirectSupportGenericPool(game, themeId).length === 0) {
+      const candidate = getIndirectSupportGenericPool(game, themeId)[0];
+      if (!candidate) {
         setToast("이 테마에 맞는 간접 지원 후보가 없습니다.");
         return;
       }
-      dispatch({
+      const next = dispatch({
         type: "SET_RELEASE_REQUEST",
         request: { kind, themeId },
       });
-      setToast(`${THEME_BY_ID[themeId].shortName} 간접 지원을 다음 일반팩에 요청했습니다.`);
+      const request = next.supportRequests.at(-1);
+      setToast(
+        `${THEME_BY_ID[themeId].shortName} 간접 지원 · ${candidate.name}을 DAY ${request?.eligibleReleaseDay ?? getNextRegularReleaseDay(game.day)} 일반팩 후보로 요청했습니다.`,
+      );
       return;
     }
-    if (getEnvironmentTargetGenericPool(game, themeId).length === 0) {
+    const candidate = getEnvironmentTargetGenericPool(game, themeId)[0];
+    if (!candidate) {
       setToast("이 테마를 겨냥할 범용 후보가 없습니다.");
       return;
     }
-    dispatch({
+    const next = dispatch({
       type: "SET_RELEASE_REQUEST",
       request: { kind, themeId },
     });
-    setToast(`${THEME_BY_ID[themeId].shortName} 환경 저격을 다음 일반팩에 요청했습니다.`);
+    const request = next.supportRequests.at(-1);
+    setToast(
+      `${THEME_BY_ID[themeId].shortName} 환경 저격 · ${candidate.name}을 DAY ${request?.eligibleReleaseDay ?? getNextRegularReleaseDay(game.day)} 일반팩 후보로 요청했습니다.`,
+    );
   }
 
   function runBusinessAction(
@@ -2179,6 +2395,19 @@ function GameSession({
         <HeaderReferenceTools
           banList={<CurrentBanList expanded game={game} />}
           keywordGlossary={<PlayKeywordGlossary expanded />}
+          shareholderRequest={
+            game.shareholder.request?.status === "accepted" ? (
+              <ShareholderRequestStatus
+                game={game}
+                request={game.shareholder.request}
+              />
+            ) : null
+          }
+          shareholderRequestLabel={
+            game.shareholder.request?.status === "accepted"
+              ? `대주주 요청 · D-${Math.max(0, game.shareholder.request.deadlineDay - game.day)}`
+              : "대주주 요청"
+          }
         />
 
         <div className="header-metrics" aria-label="캠페인 핵심 지표">
@@ -2369,6 +2598,7 @@ function GameSession({
               }}
               onOpenSupport={openSupport}
               onRequestThemeRelease={requestThemeRelease}
+              releasePlanningUnlocked={game.shareholder.releasePlanningUnlocked}
               onResetDraft={() => setBanDraft(makeRestrictionDraft(game))}
               onSelectTheme={selectTheme}
               onSubmitRestriction={submitRestriction}
@@ -2429,13 +2659,21 @@ function GameSession({
       </main>
 
       <CampaignTimeDock
+        advisor={
+          !gameOver && !campaignComplete ? (
+            <LotusBrief brief={advisorBrief} />
+          ) : null
+        }
         disabled={
           game.phase !== "running" ||
           Boolean(game.operations.pendingEvent)
+          || game.shareholder.request?.status === "pending" ||
+          Boolean(dailyPlacementTransition)
         }
         fastForwardLocked={Boolean(
           pendingDecisionAftermath ||
           decisionReports.length > 0 ||
+          shareholderResult ||
           businessEventResult
         )}
         milestone={nextCampaignMilestone}
@@ -2445,10 +2683,6 @@ function GameSession({
         progress={displayedProgress}
         progressLabel={progressLabel}
       />
-
-      {!gameOver && !campaignComplete ? (
-        <LotusBrief brief={advisorBrief} />
-      ) : null}
 
       {organizationTrajectory.challenge &&
       acknowledgedRecoveryChallengeId !== organizationTrajectory.challenge.id &&
@@ -2528,6 +2762,22 @@ function GameSession({
         }
       />
 
+      {dailyPlacementTransition ? (
+        <DailyPlacementTransitionOverlay
+          current={dailyPlacementTransition.current}
+          event={dailyPlacementTransition.event}
+          key={dailyPlacementTransition.current.day}
+          onComplete={() => {
+            const transition = dailyPlacementTransition;
+            setDailyPlacementTransition(null);
+            showImpact(transition.impactStartDay, game);
+          }}
+          previous={dailyPlacementTransition.previous}
+          reducedMotion={interfaceSettings.motionPreference === "reduced"}
+          seed={game.seed}
+        />
+      ) : null}
+
       {restrictionConfirmation ? (
         <RestrictionConfirmationSeal
           changeCount={restrictionConfirmation.changeCount}
@@ -2572,7 +2822,30 @@ function GameSession({
         />
       ) : null}
 
-      {!decisionOutcome && decisionReports.length === 0 && businessEventResult ? (
+      {!decisionOutcome &&
+      decisionReports.length === 0 &&
+      game.shareholder.request?.status === "pending" ? (
+        <ShareholderRequestOverlay
+          onRespond={respondToShareholderRequest}
+          request={game.shareholder.request}
+        />
+      ) : null}
+
+      {!decisionOutcome &&
+      decisionReports.length === 0 &&
+      game.shareholder.request?.status !== "pending" &&
+      shareholderResult ? (
+        <ShareholderRequestResultOverlay
+          onContinue={() => setShareholderResult(null)}
+          request={shareholderResult}
+        />
+      ) : null}
+
+      {!decisionOutcome &&
+      decisionReports.length === 0 &&
+      game.shareholder.request?.status !== "pending" &&
+      !shareholderResult &&
+      businessEventResult ? (
         <BusinessEventResultOverlay
           onContinue={() => {
             setBusinessEventResult(null);
@@ -2739,172 +3012,6 @@ function GameOverPanel({
   );
 }
 
-const CAMPAIGN_CASH_LABEL: Record<CampaignCashBand, string> = {
-  crisis: "자금 위기",
-  tight: "자금 빠듯",
-  reserve: "자금 여력",
-  prosperous: "사업 대성공",
-};
-
-const CAMPAIGN_ENVIRONMENT_LABEL: Record<CampaignEnvironmentBand, string> = {
-  danger: "환경 위험",
-  caution: "환경 주의",
-  stable: "환경 안정",
-};
-
-const CAMPAIGN_TRUST_LABEL: Record<CampaignTrustBand, string> = {
-  low: "신뢰 낮음",
-  guarded: "신뢰 경계",
-  trusted: "신뢰 견고",
-};
-
-const CAMPAIGN_USER_LABEL: Record<CampaignUserBand, string> = {
-  collapsed: "유저 붕괴",
-  contracted: "유저 축소",
-  steady: "유저 유지",
-  grown: "유저 성장",
-  breakout: "전국적 흥행",
-};
-
-function CampaignEndingHints({
-  ending,
-}: {
-  ending: CampaignEndingEvaluation;
-}) {
-  const hints = getCampaignEndingHints(ending);
-  const complete = ending.qualifiedForBestEnding;
-  return (
-    <section
-      aria-labelledby="campaign-ending-hints-title"
-      className={`campaign-ending-hints${complete ? " is-complete" : ""}`}
-    >
-      <div className="campaign-ending-hints-heading">
-        <div>
-          <span>LOTUS · POST-MANDATE REVIEW</span>
-          <strong id="campaign-ending-hints-title">결산 핵심 관측</strong>
-          <small>최종 결과와 임기 전체의 누적 운영 기록을 함께 심사했습니다.</small>
-        </div>
-      </div>
-      {complete ? (
-        <p className="campaign-ending-hints-complete">
-          자금 여력과 환경 안정, 견고한 구매 신뢰, 뚜렷한 활성 유저 성장이 함께 다음 시즌으로 인계됐습니다.
-        </p>
-      ) : (
-        <ul>
-          {hints.map((hint) => (
-            <li key={hint.id}>
-              <span>최종 결과</span>
-              <strong>{hint.title}</strong>
-              <p>{hint.body}</p>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-function CampaignEndPanel({
-  game,
-  onReturnToPlay,
-}: {
-  game: GameState;
-  onReturnToPlay: () => void;
-}) {
-  const ending = evaluateCampaignEnding(game);
-  const runwayMonths = getOperatingRunwayMonths(
-    ending.scores.cash,
-    ending.totalUsers,
-  );
-  const endingTone = ending.qualifiedForBestEnding
-    ? "stable"
-    : ending.bands.environment === "danger" ||
-        ending.bands.cash === "crisis" ||
-        ending.bands.users === "collapsed" ||
-        (ending.bands.trust === "low" && ending.bands.users === "contracted")
-      ? "danger"
-      : "caution";
-  const tone =
-    endingTone === "stable"
-      ? "calm"
-      : endingTone === "caution"
-        ? "caution"
-        : "critical";
-
-  return (
-    <section
-      aria-labelledby="campaign-end-title"
-      className={`game-over-panel campaign-end-panel ending-${endingTone}`}
-    >
-      <LotusSymbol tone={tone} />
-      <span className="game-over-kicker">MANDATE COMPLETE · FINAL AUDIT</span>
-      <h1 id="campaign-end-title">{ending.title}</h1>
-      <strong>
-        {CAMPAIGN_CASH_LABEL[ending.bands.cash]} ·{" "}
-        {CAMPAIGN_ENVIRONMENT_LABEL[ending.bands.environment]} ·{" "}
-        {CAMPAIGN_TRUST_LABEL[ending.bands.trust]} ·{" "}
-        {CAMPAIGN_USER_LABEL[ending.bands.users]}
-      </strong>
-      <p>{ending.body}</p>
-      <dl className="campaign-end-metrics">
-        <div>
-          <dt>최종 운영자금</dt>
-          <dd>₩{formatRevenue(ending.scores.cash)}</dd>
-          <small>현 규모 기준 약 {runwayMonths.toFixed(1)}개월</small>
-        </div>
-        <div>
-          <dt>환경 안정률</dt>
-          <dd>{ending.scores.environmentHealth.toFixed(1)}%</dd>
-        </div>
-        <div>
-          <dt>활성 유저</dt>
-          <dd>{formatUsers(ending.totalUsers)}명</dd>
-          <small>
-            인수 대비 {ending.scores.userDelta >= 0 ? "+" : ""}
-            {formatUsers(ending.scores.userDelta)}명 ·{" "}
-            {CAMPAIGN_USER_LABEL[ending.bands.users]}
-          </small>
-        </div>
-        <div>
-          <dt>구매 신뢰</dt>
-          <dd>{Math.round(ending.scores.purchaseTrust)} / 100</dd>
-          <small>{CAMPAIGN_TRUST_LABEL[ending.bands.trust]}</small>
-        </div>
-      </dl>
-      <section
-        aria-labelledby="campaign-stewardship-title"
-        className="campaign-stewardship-record"
-      >
-        <header>
-          <span>FULL MANDATE LEDGER</span>
-          <h2 id="campaign-stewardship-title">누적 운영 기록</h2>
-          <p>마지막 날의 스냅샷이 아니라 DAY {PLAYER_START_DAY} 이후 전 기간을 집계했습니다.</p>
-        </header>
-        <dl>
-          <div><dt>평균 환경</dt><dd>{ending.stewardship.averageEnvironmentHealth}</dd></div>
-          <div><dt>평균 구매 신뢰</dt><dd>{ending.stewardship.averagePurchaseTrust}</dd></div>
-          <div><dt>안정 환경 비율</dt><dd>{Math.round(ending.stewardship.healthyDayRate * 100)}%</dd></div>
-          <div><dt>심각한 Tier 0</dt><dd>{ending.stewardship.severeTierZeroDays}일</dd></div>
-          <div><dt>최장 위험 연속</dt><dd>{ending.stewardship.longestUnhealthyStreak}일</dd></div>
-          <div><dt>평균 유효 테마</dt><dd>{ending.stewardship.averageEffectiveThemeCount}종</dd></div>
-          <div><dt>최대 금제 규모</dt><dd>{ending.stewardship.largestRestrictionList}건</dd></div>
-          <div><dt>DAY 0 긴급 강도</dt><dd>{ending.stewardship.emergencyRestrictionMagnitude}</dd></div>
-          <div><dt>평균 파워 조정</dt><dd>{ending.stewardship.averageReleasePowerAdjustment > 0 ? "+" : ""}{ending.stewardship.averageReleasePowerAdjustment}</dd></div>
-          <div><dt>재판 카드</dt><dd>{ending.stewardship.reprintedCards}종</dd></div>
-        </dl>
-      </section>
-      <CampaignEndingHints ending={ending} />
-      <small className="campaign-end-note">
-        DAY {LAST_DECISION_DAY} 최종 발매 이후 {SETTLEMENT_DAYS}일의 관측
-        결과로 확정된 공식 기록입니다.
-      </small>
-      <button className="primary-action" onClick={onReturnToPlay} type="button">
-        PLAY 화면으로 돌아가기
-      </button>
-    </section>
-  );
-}
-
 function ConfirmNewGameDialog({
   onCancel,
   onConfirm,
@@ -2922,7 +3029,7 @@ function ConfirmNewGameDialog({
       >
         <div className="confirm-icon" aria-hidden="true">!</div>
         <h2 id="new-game-dialog-title">기존 임기를 덮어쓸까요?</h2>
-        <p>새 임기를 시작하면 기존 저장을 DAY 0 긴급 투입 상태로 교체하며 되돌릴 수 없습니다. 진행한 날짜와 확정한 결정은 자동 저장됩니다.</p>
+        <p>새 임기를 시작하면 기존 저장을 DAY 0 긴급 투입 상태로 교체합니다. 진행한 날짜와 확정한 결정은 이후 자동 저장됩니다.</p>
         <div className="dialog-actions">
           <button className="text-action" onClick={onCancel} type="button">취소</button>
           <button className="primary-action" onClick={onConfirm} type="button">DAY 0 긴급 투입</button>
@@ -3135,6 +3242,7 @@ type MetaWorkspaceProps = {
   restrictionChanges: [string, RestrictionLimit][];
   highlightedPartId: string | null;
   mobileDetail: boolean;
+  releasePlanningUnlocked: boolean;
   detailHeadingRef: React.RefObject<HTMLHeadingElement | null>;
   onSelectTheme: (themeId: ThemeId, partId?: string) => void;
   onOpenSupport: (themeId: ThemeId) => void;
@@ -3159,6 +3267,7 @@ function MetaWorkspace({
   restrictionChanges,
   highlightedPartId,
   mobileDetail,
+  releasePlanningUnlocked,
   detailHeadingRef,
   onSelectTheme,
   onOpenSupport,
@@ -3208,11 +3317,25 @@ function MetaWorkspace({
   const selectedPlacement =
     placementReport.themes[selectedTheme.id] ?? EMPTY_PLACEMENT_METRICS;
   const committedSupportCount = getCommittedSupportCount(game, selectedTheme.id);
-  const supportProposalAvailable = canProposeSupport(game, selectedTheme.id);
+  const releaseRequestWindowOpen = canQueueRegularReleaseRequest(
+    game,
+    releasePlanningUnlocked,
+  );
+  const supportProposalAvailable =
+    releaseRequestWindowOpen && canProposeSupport(game, selectedTheme.id);
   const indirectRequestAvailable =
+    releaseRequestWindowOpen &&
     getIndirectSupportGenericPool(game, selectedTheme.id).length > 0;
   const targetRequestAvailable =
+    releaseRequestWindowOpen &&
     getEnvironmentTargetGenericPool(game, selectedTheme.id).length > 0;
+  const releaseRequestUnavailableTitle = !releasePlanningUnlocked
+    ? "대주주 특별 요청에 응답한 뒤 카드 탭에서 해금됩니다."
+    : game.phase === "release-edit"
+      ? "현재 신팩 구성을 확정한 뒤 다음 일반팩 요청을 등록할 수 있습니다."
+      : game.operations.pendingEvent
+        ? "진행 중인 기습 이벤트를 먼저 처리해야 합니다."
+        : "등록할 수 있는 다음 일반팩 요청 슬롯이 없습니다.";
   const catalogSwitch = (
     <div
       aria-label="카드 목록 종류"
@@ -3503,8 +3626,13 @@ function MetaWorkspace({
                     aria-expanded={requestHelpOpen}
                     aria-label="발매 요청 종류 설명"
                     className="card-release-request-info"
+                    disabled={!releasePlanningUnlocked}
                     onClick={() => setRequestHelpOpen((current) => !current)}
-                    title="지원·간접·저격의 차이"
+                    title={
+                      releasePlanningUnlocked
+                        ? "지원·간접·저격의 차이"
+                        : "대주주 특별 요청에 응답한 뒤 카드 탭에서 해금됩니다."
+                    }
                     type="button"
                   >
                     <span aria-hidden="true">ⓘ</span>
@@ -3516,7 +3644,9 @@ function MetaWorkspace({
                     title={
                       committedSupportCount >= 3
                           ? "세 차례 지원이 모두 확정되었습니다."
-                          : "기존 테마의 보강 방향을 요청합니다."
+                          : supportProposalAvailable
+                            ? "기존 테마의 보강 방향을 요청합니다."
+                            : releaseRequestUnavailableTitle
                     }
                     type="button"
                   >
@@ -3526,7 +3656,11 @@ function MetaWorkspace({
                     data-tutorial-control="release-request-indirect"
                     disabled={!indirectRequestAvailable}
                     onClick={() => onRequestThemeRelease("indirect-support", selectedTheme.id)}
-                    title="키워드가 맞는 범용 카드 후보를 요청합니다."
+                    title={
+                      indirectRequestAvailable
+                        ? "효과와 반발이 비교적 완만한 키워드 범용 후보를 요청합니다."
+                        : releaseRequestUnavailableTitle
+                    }
                     type="button"
                   >
                     간접
@@ -3535,7 +3669,11 @@ function MetaWorkspace({
                     data-tutorial-control="release-request-target"
                     disabled={!targetRequestAvailable}
                     onClick={() => onRequestThemeRelease("environment-target", selectedTheme.id)}
-                    title="선택한 테마를 견제할 범용 카드 후보를 요청합니다."
+                    title={
+                      targetRequestAvailable
+                        ? "효과와 반발이 비교적 완만한 상성 범용 후보를 요청합니다."
+                        : releaseRequestUnavailableTitle
+                    }
                     type="button"
                   >
                     저격
@@ -3556,9 +3694,9 @@ function MetaWorkspace({
                       id="release-request-help"
                       role="region"
                     >
-                      <span><strong>지원</strong> 선택 테마 전용 보강</span>
-                      <span><strong>간접</strong> 키워드가 맞는 범용 카드</span>
-                      <span><strong>저격</strong> 선택 테마를 견제하는 범용 카드</span>
+                      <span><strong>지원</strong> 전용 카드 3장 · 직접 효과 / 큰 반발 가능</span>
+                      <span><strong>간접</strong> 키워드 범용 1장 · 완만한 효과 / 낮은 반발</span>
+                      <span><strong>저격</strong> 상성 범용 1장 · 완만한 견제 / 낮은 반발</span>
                     </div>
                   ) : null}
                 </div>
@@ -5380,8 +5518,6 @@ function OperationsView({
   ]
     .sort((left, right) => right.day - left.day)
     .slice(0, 8);
-  const hasLedgerData =
-    activeRecords.length + pendingEventResults.length + recentDecisions.length > 0;
   const unlockedBusinessActions = BUSINESS_ACTIONS
     .filter((action) => {
       const minimumDay = BUSINESS_ACTION_BY_TYPE[action.type].minimumDay;
@@ -5445,11 +5581,7 @@ function OperationsView({
         />
       </div>
 
-      <div
-        className={`operations-workspace ${
-          hasLedgerData ? "has-ledger" : "is-action-only"
-        }`}
-      >
+      <div className="operations-workspace">
         <section className="operations-action-panel" aria-labelledby="business-actions-title">
           <div className="operations-section-heading">
             <div>
@@ -5693,7 +5825,6 @@ function OperationsView({
           </div>
         </section>
 
-        {hasLedgerData ? (
         <aside className="operations-ledger" aria-label="사업 액션 진행 및 최근 기록">
           <section className="operations-active-records">
             <div className="operations-section-heading compact">
@@ -5823,7 +5954,6 @@ function OperationsView({
             )}
           </section>
         </aside>
-        ) : null}
       </div>
     </section>
   );

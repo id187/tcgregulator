@@ -214,14 +214,39 @@ body,
   color: #07111d;
 }
 
-/* LOTUS now behaves like an optional cockpit terminal. It floats above the
-   time controls and never takes height away from the active game surface. */
+.time-actions > .time-major-action:hover:not(:disabled),
+.time-actions > .time-major-action:focus-visible {
+  color: #fff;
+}
+
+.time-actions > .time-major-action:hover:not(:disabled) > span,
+.time-actions > .time-major-action:hover:not(:disabled) > strong,
+.time-actions > .time-major-action:hover:not(:disabled) > small,
+.time-actions > .time-major-action:focus-visible > span,
+.time-actions > .time-major-action:focus-visible > strong,
+.time-actions > .time-major-action:focus-visible > small {
+  color: #fff;
+}
+
+.time-dock {
+  overflow: visible;
+}
+
+.time-dock-advisor {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  margin-left: auto;
+}
+
+/* LOTUS owns a fixed slot in the campaign dock. Its panel opens upward while
+   the trigger stays on the same rail on ordinary and decision days alike. */
 .lotus-advisor-terminal {
   --lotus-terminal-accent: #7eb8c5;
-  position: fixed;
-  z-index: 150;
-  right: max(16px, env(safe-area-inset-right));
-  bottom: calc(92px + env(safe-area-inset-bottom));
+  position: relative;
+  z-index: 1;
   display: grid;
   justify-items: end;
   pointer-events: none;
@@ -237,13 +262,6 @@ body,
 
 .lotus-advisor-terminal.critical {
   --lotus-terminal-accent: #ef756c;
-}
-
-/* Decision screens keep their primary submit action in the lower-right.
-   Lift LOTUS above that action instead of letting a helper cover the verdict. */
-.app-shell[data-phase="release-edit"] .lotus-advisor-terminal,
-.app-shell[data-phase="ban-edit"] .lotus-advisor-terminal {
-  bottom: calc(152px + env(safe-area-inset-bottom));
 }
 
 .lotus-advisor-trigger,
@@ -421,26 +439,17 @@ body,
 }
 
 @media (max-width: 620px) {
-  .lotus-advisor-terminal {
-    right: max(8px, env(safe-area-inset-right));
-    bottom: calc(80px + env(safe-area-inset-bottom));
-  }
-
-  .app-shell[data-phase="release-edit"] .lotus-advisor-terminal,
-  .app-shell[data-phase="ban-edit"] .lotus-advisor-terminal {
-    bottom: calc(132px + env(safe-area-inset-bottom));
-  }
-
   .lotus-advisor-trigger {
-    width: 48px;
-    height: 48px;
-    padding: 6px;
+    width: 36px;
+    height: 36px;
+    padding: 4px;
+    border-radius: 9px;
   }
 
   .lotus-advisor-trigger-symbol,
   .lotus-advisor-trigger-symbol > .lotus-symbol {
-    width: 34px;
-    height: 34px;
+    width: 28px;
+    height: 28px;
   }
 
   .lotus-advisor-panel {

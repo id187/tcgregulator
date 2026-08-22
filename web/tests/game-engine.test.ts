@@ -50,7 +50,11 @@ import { META_ADOPTION_SHARE_FLOOR } from "../app/game/meta-tiers.ts";
 import {
   DAILY_TOP_CUT_SLOTS,
   PLACEMENT_WINDOW_DAYS,
+  getDailyTopCutPlacements,
+  getPlacementTier,
+  getRecentPlacementReport,
 } from "../app/game/placement-meta.ts";
+import { getThemeTournamentViability } from "../app/game/theme-viability.ts";
 import {
   getDailyOperatingCost,
   getMarketDivergenceLag,
@@ -566,6 +570,86 @@ test("completed player guidance starts a free handover and advances past DAY 7",
   assert.equal(running.phase, "running");
   assert.equal(running.handoverComplete, true);
   assert.equal(running.seed, 9_001);
+});
+
+test("a mostly forbidden theme records zero new placements while its rolling tier remains", () => {
+  const state = createInitialGame(80_823);
+  const themeId = state.currentTopThemeId;
+  const content = THEMES.find((theme) => theme.id === themeId);
+  assert.ok(content);
+  const runtime = state.themes[themeId];
+  const releasedParts = content.parts.filter((part) =>
+    runtime.releasedPartIds.includes(part.id)
+  );
+  assert.equal(releasedParts.length, 5);
+
+  for (const part of releasedParts.slice(0, 2)) {
+    runtime.legalLimits[part.id] = 0;
+  }
+  assert.equal(
+    getThemeTournamentViability(content, runtime).collapsed,
+    false,
+  );
+  runtime.legalLimits[releasedParts[2].id] = 0;
+  assert.deepEqual(getThemeTournamentViability(content, runtime), {
+    bannedPartCount: 3,
+    collapsed: true,
+    releasedPartCount: 5,
+  });
+
+  const next = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+  const today = next.history.at(-1);
+  assert.ok(today);
+  assert.equal(today.day, state.day + 1);
+  const todayPlacements = getDailyTopCutPlacements(today, next.seed);
+  assert.equal(todayPlacements[themeId], 0);
+  assert.equal(
+    Object.values(todayPlacements).reduce((sum, count) => sum + count, 0),
+    DAILY_TOP_CUT_SLOTS,
+  );
+
+  const rollingReport = getRecentPlacementReport(
+    next.history,
+    next.seed,
+    next.day,
+  );
+  assert.notEqual(
+    getPlacementTier(
+      rollingReport.themes[themeId]?.placementShare ?? 0,
+    ).tier,
+    "Tier Out",
+  );
+
+  next.themes[themeId].legalLimits[releasedParts[2].id] = 3;
+  assert.equal(
+    getThemeTournamentViability(content, next.themes[themeId]).collapsed,
+    false,
+  );
+});
+
+test("an impossible all-collapsed field records an empty named top cut without crashing", () => {
+  const state = createInitialGame(80_824);
+  for (const themeId of state.activeThemeIds) {
+    const content = THEMES.find((theme) => theme.id === themeId);
+    assert.ok(content);
+    const runtime = state.themes[themeId];
+    const releasedParts = content.parts.filter((part) =>
+      runtime.releasedPartIds.includes(part.id)
+    );
+    for (const part of releasedParts.slice(0, 3)) {
+      runtime.legalLimits[part.id] = 0;
+    }
+  }
+
+  const next = reduceGame(state, { type: "ADVANCE_DAYS", days: 1 });
+  const today = next.history.at(-1);
+  assert.ok(today);
+  const placements = getDailyTopCutPlacements(today, next.seed);
+  assert.equal(
+    Object.values(placements).reduce((sum, count) => sum + count, 0),
+    0,
+  );
+  assert.ok(Object.values(placements).every((count) => count === 0));
 });
 
 test("soft restriction reviews preserve purchase trust until severe neglect persists", () => {

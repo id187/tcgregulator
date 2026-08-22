@@ -1,6 +1,9 @@
+import type { ReactNode } from "react";
+
 import type { CampaignMilestone } from "../game/campaign-milestone.ts";
 
 export function CampaignTimeDock({
+  advisor,
   disabled,
   fastForwardLocked = false,
   milestone,
@@ -8,6 +11,7 @@ export function CampaignTimeDock({
   progress,
   progressLabel,
 }: {
+  advisor?: ReactNode;
   disabled: boolean;
   fastForwardLocked?: boolean;
   milestone: CampaignMilestone | null;
@@ -35,6 +39,8 @@ export function CampaignTimeDock({
           <span style={{ width: `${progress}%` }} />
         </div>
       </div>
+
+      {advisor ? <div className="time-dock-advisor">{advisor}</div> : null}
 
       <div className="time-actions">
         <button

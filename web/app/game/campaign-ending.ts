@@ -1,5 +1,9 @@
 import { getBusinessEnvironmentHealth } from "./business-actions.ts";
 import { PLAYER_START_DAY } from "./campaign.ts";
+import {
+  getAdministrationProfile,
+  type AdministrationProfile,
+} from "./administration-profile.ts";
 import type { GameState } from "./types.ts";
 
 /** Monetary values are in eok won (KRW 100,000,000). */
@@ -47,6 +51,8 @@ export type CampaignEndingEvaluation = {
   /** DAY 7 active users used as the audience-growth baseline. */
   handoverUsers: number;
   totalUsers: number;
+  /** Identity inferred from the player's committed choices across the mandate. */
+  administration: AdministrationProfile;
   stewardship: {
     observedDays: number;
     averageEnvironmentHealth: number;
@@ -408,6 +414,7 @@ export function evaluateCampaignEnding(
   const trustBand = getCampaignTrustBand(purchaseTrust);
   const userBand = getCampaignUserBand(userRatio);
   const stewardship = getStewardshipRecord(state);
+  const administration = getAdministrationProfile(state);
   const finalAxesQualified =
     (cashBand === "reserve" || cashBand === "prosperous") &&
     environmentBand === "stable" &&
@@ -436,12 +443,13 @@ export function evaluateCampaignEnding(
     },
     handoverUsers,
     totalUsers,
+    administration,
     stewardship,
     qualifiedForBestEnding,
     title: finalAxesQualified && !stewardship.historicallySustainable
       ? "마지막 날만의 안정"
       : copy.title,
-    body: `${copy.body} ${historyCopy}`,
+    body: `${copy.body} ${historyCopy} ${administration.label}로 기록된 이번 임기는 ${administration.endingSummary}`,
   };
 }
 

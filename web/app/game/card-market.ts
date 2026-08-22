@@ -400,11 +400,12 @@ function genericSnapshot(
   return { price, demand };
 }
 
-export function getGenericCardMarketQuote(
+export function getGenericCardMarketQuoteAtDay(
   state: GameState,
   card: GenericCardCatalogEntry,
   releaseDay: number,
   meta: GenericCardMetaEntry | null,
+  observationDay: number,
   lookbackDays = 7,
 ): CardMarketQuote {
   const currentLimit = state.genericLimits[card.id as GenericCardId] ?? 3;
@@ -414,9 +415,13 @@ export function getGenericCardMarketQuote(
       isInitialGenericCardId(card.id)
       ? INITIAL_GENERIC_RELEASE_DAY
       : releaseDay + 1;
-  const comparisonDay = Math.min(
-    state.day,
-    Math.max(firstMarketDay, state.day - Math.max(1, lookbackDays)),
+  const asOfDay = Math.max(
+    firstMarketDay,
+    Math.min(state.day, Math.floor(observationDay)),
+  );
+  const comparisonDay = Math.max(
+    firstMarketDay,
+    asOfDay - Math.max(1, lookbackDays),
   );
   const current = genericSnapshot(
     state,
@@ -424,7 +429,7 @@ export function getGenericCardMarketQuote(
     releaseDay,
     currentLimit,
     marketReach,
-    state.day,
+    asOfDay,
   );
   const previous = genericSnapshot(
     state,
@@ -436,7 +441,7 @@ export function getGenericCardMarketQuote(
   );
   return makeQuote(
     card.id,
-    state.day,
+    asOfDay,
     comparisonDay,
     current,
     previous,
@@ -446,6 +451,23 @@ export function getGenericCardMarketQuote(
       `화제성 ${card.appeal}`,
       `${["금지", "제한", "준제한", "무제한"][currentLimit]}`,
     ],
+  );
+}
+
+export function getGenericCardMarketQuote(
+  state: GameState,
+  card: GenericCardCatalogEntry,
+  releaseDay: number,
+  meta: GenericCardMetaEntry | null,
+  lookbackDays = 7,
+): CardMarketQuote {
+  return getGenericCardMarketQuoteAtDay(
+    state,
+    card,
+    releaseDay,
+    meta,
+    state.day,
+    lookbackDays,
   );
 }
 

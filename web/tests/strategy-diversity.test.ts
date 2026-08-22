@@ -399,13 +399,13 @@ test("cash-maximizing low-risk full campaign remains viable without using the st
       cumulativeRevenue: result.cumulativeRevenue,
     },
     {
-      cash: 51.0529,
-      users: 76_187.36,
+      cash: 49.2074,
+      users: 75_990.47,
       trust: 97.509,
-      environmentHealth: 72.2,
-      userRatio: 7.649,
+      environmentHealth: 72.5,
+      userRatio: 7.6292,
       endingTitle: "함께 커진 리그",
-      cumulativeRevenue: 303.4497,
+      cumulativeRevenue: 299.8041,
     },
   );
 });

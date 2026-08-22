@@ -81,6 +81,24 @@ test("round-trips decimal comparison values on non-restriction community stories
   assert.throws(() => parseGameState(forgedRestriction), SaveSchemaError);
 });
 
+test("accepts an empty named top cut when every represented theme is nonviable", () => {
+  const state = createInitialGame(80_825);
+  const entry = state.history.at(-1);
+  assert.ok(entry?.topCutPlacements);
+  entry.topCutPlacements = Object.fromEntries(
+    Object.keys(entry.topCutPlacements).map((themeId) => [themeId, 0]),
+  );
+
+  const parsed = parseGameState(jsonRoundTrip(state));
+  assert.equal(
+    Object.values(parsed.history.at(-1)?.topCutPlacements ?? {}).reduce(
+      (sum, count) => sum + count,
+      0,
+    ),
+    0,
+  );
+});
+
 function choosePendingBusinessEvent(state: GameState): GameState {
   const pending = state.operations.pendingEvent;
   if (!pending) return state;
@@ -332,10 +350,6 @@ test("rejects legacy mixed locked-reprint packs", () => {
   let state = createInitialGame(7_303);
   const themeId = state.activeThemeIds[0];
   const cardId = state.themes[themeId].releasedPartIds[0];
-  state = reduceGame(state, {
-    type: "SET_RELEASE_REQUEST",
-    request: { kind: "reprint", cardId },
-  });
   state = advanceToNextRelease(state);
   state = submitThree(state);
   state = advanceToNextRelease(state);
@@ -354,12 +368,6 @@ test("rejects legacy mixed locked-reprint packs", () => {
       status: string;
     }>;
   };
-  const request = mixed.supportRequests.find(
-    (candidate) => candidate.kind === "reprint",
-  );
-  assert.ok(request);
-  request.eligibleReleaseDay = 30;
-  request.status = "offered";
   delete mixed.releaseSlate.releaseKind;
   mixed.releaseSlate.options.push({
     id: "legacy-locked-reprint",
@@ -369,16 +377,15 @@ test("rejects legacy mixed locked-reprint packs", () => {
     expectedPower: 50,
     expectedTier: "Tier 3",
     requested: true,
-    requestId: request.id,
     locked: true,
   });
 
   assert.throws(() => parseGameState(mixed), SaveSchemaError);
 });
-test("round-trips schema v9 and rejects every earlier schema", () => {
+test("round-trips schema v10 and rejects every earlier schema", () => {
   const initial = createInitialGame(7301);
   const restored = parseGameState(jsonRoundTrip(initial));
-  assert.equal(restored.schemaVersion, 9);
+  assert.equal(restored.schemaVersion, 10);
   assert.deepEqual(restored, initial);
   assert.ok(Buffer.byteLength(JSON.stringify(restored), "utf8") < MAX_SAVE_BYTES);
 
@@ -396,14 +403,14 @@ test("round-trips schema v9 and rejects every earlier schema", () => {
     reduceGame(originalAtGate, command),
   );
 
-  for (const schemaVersion of [3, 4, 5, 6, 7, 8]) {
+  for (const schemaVersion of [3, 4, 5, 6, 7, 8, 9]) {
     const incompatible = jsonRoundTrip(initial) as Record<string, unknown>;
     incompatible.schemaVersion = schemaVersion;
     assert.throws(
       () => parseGameState(incompatible),
       (error: unknown) =>
         error instanceof SaveSchemaError &&
-        /schemaVersion: must equal 9/.test(error.message),
+        /schemaVersion: must equal 10/.test(error.message),
     );
     assert.equal(isGameState(incompatible), false);
   }

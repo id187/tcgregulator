@@ -25,6 +25,7 @@ import {
   getPreCampaignHistory,
 } from "../app/game/pre-campaign-history.ts";
 import { getReleaseSlateKind } from "../app/game/release-kind.ts";
+import { getReprintImpactPreview } from "../app/game/release-requests.ts";
 import type { GameState } from "../app/game/types.ts";
 
 function startMandate(seed = 404): GameState {
@@ -251,4 +252,34 @@ test("DAY 50 is a nine-candidate, three-card, zero-adjustment reprint pack", () 
   assert.equal(batch?.products.length, 3);
   assert.ok(batch?.products.every((product) =>
     product.kind === "reprint" && product.powerAdjustment === 0));
+
+  const laterReview = progressToReview(submitted, 70);
+  const report = getDecisionReportsArriving(submitted, laterReview).find(
+    (candidate) =>
+      candidate.kind === "reprint-release" && candidate.decisionDay === 50,
+  );
+  assert.ok(report);
+  assert.ok(batch);
+  const observedPrices = batch.products.map((product) => {
+    assert.equal(product.kind, "reprint");
+    const preview = getReprintImpactPreview(
+      laterReview,
+      product.cardId,
+      57,
+    );
+    assert.ok(preview);
+    return preview.referencePrice;
+  });
+  const expectedAveragePrice = observedPrices.reduce(
+    (sum, price) => sum + price,
+    0,
+  ) / observedPrices.length;
+  const priceMetric = report.metrics.find((metric) =>
+    metric.label.includes("시세")
+  );
+  assert.ok(priceMetric);
+  assert.equal(
+    priceMetric.after,
+    `₩${Math.round(expectedAveragePrice).toLocaleString("ko-KR")}`,
+  );
 });

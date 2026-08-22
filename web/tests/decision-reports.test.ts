@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   classifyCampaignGrowth,
+  classifyCampaignGrowthChange,
   classifyRegularReleaseReport,
   classifyReprintReleaseReport,
   classifyRestrictionReport,
@@ -14,21 +13,29 @@ import {
   type RestrictionReportSignals,
 } from "../app/game/decision-reports.ts";
 
-test("company growth uses users and revenue without treating investment cash drawdown as decline", () => {
+test("company growth uses users and actual average revenue without amplifying a near-zero denominator", () => {
   assert.deepEqual(
     [
-      { userRate: 0.4, revenueRate: 0.8 },
-      { userRate: 0.2, revenueRate: 0.2 },
-      { userRate: 0.03, revenueRate: -0.03 },
-      { userRate: -0.2, revenueRate: -0.25 },
-      { userRate: -0.4, revenueRate: -0.55 },
+      { userRate: 0.4, revenueDeltaEok: 0.8 },
+      { userRate: 0.2, revenueDeltaEok: 0.2 },
+      { userRate: 0.03, revenueDeltaEok: -0.03 },
+      { userRate: -0.2, revenueDeltaEok: -0.25 },
+      { userRate: -0.4, revenueDeltaEok: -0.55 },
     ].map(classifyCampaignGrowth),
     ["breakout", "growing", "holding", "declining", "critical"],
   );
   assert.equal(
-    getCampaignGrowthIndex({ userRate: 0.2, revenueRate: 0.2 }),
+    getCampaignGrowthIndex({ userRate: 0.2, revenueDeltaEok: 0.2 }),
     120,
   );
+  assert.equal(
+    getCampaignGrowthIndex({ userRate: -0.006, revenueDeltaEok: 0.004 }),
+    100,
+  );
+  assert.equal(classifyCampaignGrowthChange(0), "holding");
+  assert.equal(classifyCampaignGrowthChange(14), "growing");
+  assert.equal(classifyCampaignGrowthChange(-14), "declining");
+  assert.equal(classifyCampaignGrowthChange(-41), "critical");
 });
 
 test("restriction reports branch across stable, costly, failed, replacement, and mixed outcomes", () => {
@@ -153,21 +160,4 @@ test("reprint reports distinguish crash, confidence shock, supply miss, access w
     cases.map(([signals]) => classifyReprintReleaseReport(signals)),
     cases.map(([, expected]) => expected),
   );
-});
-
-test("formal report UI renders the branch id and a follow-up recommendation", () => {
-  const overlaySource = readFileSync(
-    fileURLToPath(
-      new URL("../app/components/ReportArrivalOverlay.tsx", import.meta.url),
-    ),
-    "utf8",
-  );
-  assert.match(overlaySource, /data-report-type=\{report\.reportType\}/);
-  assert.match(overlaySource, /report-arrival-recommendation/);
-  assert.match(overlaySource, /\{report\.recommendation\}/);
-  assert.match(overlaySource, /회사 성장지수/);
-  assert.match(overlaySource, /report\.growth\.index/);
-  assert.match(overlaySource, /report\.growth\.comparison/);
-  assert.match(overlaySource, /report\.decision\.headline/);
-  assert.match(overlaySource, /ReportMetricValue/);
 });

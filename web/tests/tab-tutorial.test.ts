@@ -16,6 +16,7 @@ import {
   getPendingTutorialPopups,
   getTabTutorial,
   getTabTutorialPages,
+  isFirstBusinessEventTutorial,
   isTabTutorialSeriesComplete,
   isContextualTutorialTriggered,
   markContextualTutorialVisited,
@@ -338,7 +339,7 @@ test("first-visit state is immutable and tracked independently for each tab", ()
   assert.equal(restored.finance, false);
 });
 
-test("the help series completes only after seven tabs and all three first decisions", () => {
+test("the handover series completes after seven tabs and the three scheduled decisions", () => {
   const allTabs = createTabTutorialVisitState(TAB_TUTORIAL_TAB_IDS);
   const allDecisions = createContextualTutorialVisitState([
     "first-restriction",
@@ -348,7 +349,7 @@ test("the help series completes only after seven tabs and all three first decisi
 
   assert.equal(
     TAB_TUTORIAL_TAB_IDS.length + CONTEXTUAL_TUTORIAL_TOPIC_IDS.length,
-    10,
+    12,
   );
 
   for (const missingTab of TAB_TUTORIAL_TAB_IDS) {
@@ -362,7 +363,11 @@ test("the help series completes only after seven tabs and all three first decisi
     );
   }
 
-  for (const missingTopic of CONTEXTUAL_TUTORIAL_TOPIC_IDS) {
+  for (const missingTopic of [
+    "first-restriction",
+    "first-release",
+    "first-reprint",
+  ] as const) {
     const decisionsExceptOne = createContextualTutorialVisitState(
       CONTEXTUAL_TUTORIAL_TOPIC_IDS.filter(
         (topic) => topic !== missingTopic,
@@ -414,15 +419,19 @@ test("tab help follows visit progress and campaign unlock days", () => {
   );
 });
 
-test("restriction, regular release, and reprint help are separate contextual topics", () => {
+test("scheduled decisions, the first surprise event, and release tools have separate contextual topics", () => {
   assert.deepEqual(CONTEXTUAL_TUTORIAL_TOPIC_IDS, [
     "first-restriction",
     "first-release",
+    "first-business-event",
+    "release-planning-tools",
     "first-reprint",
   ]);
   assert.deepEqual(Object.keys(CONTEXTUAL_TUTORIALS), [
     "first-restriction",
     "first-release",
+    "first-business-event",
+    "release-planning-tools",
     "first-reprint",
   ]);
 
@@ -432,7 +441,13 @@ test("restriction, regular release, and reprint help are separate contextual top
     assert.equal(tutorial.topic, topic);
     assert.equal(
       tutorial.tab,
-      topic === "first-restriction" ? "distribution" : "releases",
+      topic === "first-restriction"
+        ? "distribution"
+        : topic === "first-business-event"
+          ? "operations"
+          : topic === "release-planning-tools"
+            ? "cards"
+          : "releases",
     );
     assert.ok(tutorial.pages.length >= 2);
     for (const page of tutorial.pages) {
@@ -491,6 +506,45 @@ test("restriction, regular release, and reprint help are separate contextual top
   assert.equal(releaseText.includes("예약 재판"), false);
   assert.equal(releaseText.includes("이미 결정"), false);
 
+  const businessEventText = getContextualTutorialPages("first-business-event")
+    .flatMap((page) => [
+      page.title,
+      page.body,
+      ...(page.terms ?? []).flatMap((term) => [term.label, term.description]),
+    ])
+    .join("\n");
+  for (const phrase of [
+    "돌발 경영 제안",
+    "DAY 20",
+    "날짜가 멈추며",
+    "두 방향",
+    "집행 비용",
+    "결과 발표일",
+    "성공",
+    "역풍",
+    "장기 사업 노선",
+  ]) {
+    assert.ok(businessEventText.includes(phrase), phrase);
+  }
+
+  const releasePlanningText = getContextualTutorialPages("release-planning-tools")
+    .flatMap((page) => [
+      page.title,
+      page.body,
+      ...(page.terms ?? []).flatMap((term) => [term.label, term.description]),
+    ])
+    .join(" ");
+  for (const phrase of [
+    "지원·간접·저격",
+    "한 발매주기에 합쳐서 한 건",
+    "효과가 약하거나 예상과 다르게",
+    "반발이 적습니다",
+    "다른 버튼을 누르면",
+    "40일",
+  ]) {
+    assert.ok(releasePlanningText.includes(phrase), phrase);
+  }
+
   const reprintText = getContextualTutorialPages("first-reprint")
     .flatMap((page) => [
       page.title,
@@ -520,6 +574,8 @@ test("contextual topics trigger once at their decision states", () => {
   assert.deepEqual(initial, {
     "first-restriction": false,
     "first-release": false,
+    "first-business-event": false,
+    "release-planning-tools": false,
     "first-reprint": false,
   });
 
@@ -548,6 +604,33 @@ test("contextual topics trigger once at their decision states", () => {
     shouldOpenContextualTutorial("first-release", initial, releaseContext),
     true,
   );
+  const businessEventContext = {
+    day: 20,
+    phase: "running",
+    hasBusinessEvent: true,
+  } as const;
+  assert.equal(
+    isContextualTutorialTriggered(
+      "first-business-event",
+      businessEventContext,
+    ),
+    true,
+  );
+  assert.equal(
+    shouldOpenContextualTutorial(
+      "first-business-event",
+      initial,
+      businessEventContext,
+    ),
+    true,
+  );
+  assert.equal(
+    isContextualTutorialTriggered("first-business-event", {
+      ...businessEventContext,
+      hasBusinessEvent: false,
+    }),
+    false,
+  );
   const reprintContext = {
     day: FIRST_REPRINT_TUTORIAL_DAY,
     phase: "release-edit",
@@ -560,6 +643,28 @@ test("contextual topics trigger once at their decision states", () => {
   assert.equal(
     shouldOpenContextualTutorial("first-reprint", initial, reprintContext),
     true,
+  );
+
+  const releasePlanningContext = {
+    day: 25,
+    handoverComplete: true,
+    tutorialSeriesComplete: false,
+    phase: "running",
+    releasePlanningUnlocked: true,
+  } as const;
+  assert.equal(
+    isContextualTutorialTriggered(
+      "release-planning-tools",
+      releasePlanningContext,
+    ),
+    true,
+  );
+  assert.equal(
+    isContextualTutorialTriggered("release-planning-tools", {
+      ...releasePlanningContext,
+      releasePlanningUnlocked: false,
+    }),
+    false,
   );
 
   assert.equal(
@@ -674,4 +779,21 @@ test("a live decision suppresses the ordinary tab overview and takes priority", 
     [],
     "a locked tab must not queue either ordinary or contextual help",
   );
+
+  const businessEventPopup = getPendingTutorialPopups(
+    "operations",
+    freshTabs,
+    freshContexts,
+    {
+      day: 20,
+      phase: "running",
+      hasBusinessEvent: true,
+    },
+  )[0];
+  assert.equal(isFirstBusinessEventTutorial(businessEventPopup), true);
+  assert.deepEqual(
+    businessEventPopup && [businessEventPopup.kind, businessEventPopup.id],
+    ["contextual", "first-business-event"],
+  );
+  assert.equal(isFirstBusinessEventTutorial(null), false);
 });

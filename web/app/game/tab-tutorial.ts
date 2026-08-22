@@ -5,6 +5,7 @@ import {
   isRegularReleaseDay,
   isReprintReleaseDay,
 } from "./campaign.ts";
+import { FIRST_BUSINESS_EVENT_DAY } from "./business-events.ts";
 import { getHandoverTabAvailability } from "./handover.ts";
 
 export const TAB_TUTORIAL_TAB_IDS = [
@@ -54,8 +55,16 @@ export type TabTutorialContext = Readonly<{
 export const CONTEXTUAL_TUTORIAL_TOPIC_IDS = [
   "first-restriction",
   "first-release",
+  "first-business-event",
+  "release-planning-tools",
   "first-reprint",
 ] as const;
+
+const ONBOARDING_COMPLETION_TOPIC_IDS: readonly ContextualTutorialTopicId[] = [
+  "first-restriction",
+  "first-release",
+  "first-reprint",
+];
 
 export const FIRST_REPRINT_TUTORIAL_DAY =
   getNextReprintReleaseDay(FIRST_BAN_DAY);
@@ -78,6 +87,8 @@ export type ContextualTutorialContext = TabTutorialContext &
   Readonly<{
     day: number;
     phase: "running" | "release-edit" | "ban-edit" | "ended";
+    hasBusinessEvent?: boolean;
+    releasePlanningUnlocked?: boolean;
   }>;
 
 export type PendingTutorialPopup =
@@ -696,6 +707,112 @@ const FIRST_RELEASE_TUTORIAL = {
   ],
 } as const satisfies ContextualTutorialDefinition;
 
+const FIRST_BUSINESS_EVENT_TUTORIAL = {
+  topic: "first-business-event",
+  tab: "operations",
+  label: "첫 기습 이벤트",
+  pages: [
+    {
+      id: "first-business-event-arrival",
+      sectionLabel: "첫 기습 이벤트",
+      targetTab: "operations",
+      title: "돌발 경영 제안이 도착했습니다",
+      body:
+        "정해진 발매·금제 일정과 별개로 회사 안팎의 돌발 제안이 도착할 수 있습니다. 이벤트가 열린 동안에는 날짜가 멈추며, 두 방향 가운데 하나를 선택해야 다시 임기를 진행할 수 있습니다.",
+      terms: [
+        {
+          label: "기습 이벤트",
+          description:
+            "첫 이벤트는 DAY 20에 도착하고, 이후 이벤트는 일정 간격을 두고 예고 없이 발생합니다.",
+        },
+        {
+          label: "두 가지 방향",
+          description:
+            "어느 쪽도 단순한 정답은 아닙니다. 비용·성공 가능성·이용자와 신뢰·장기 사업 노선이 서로 다르게 움직입니다.",
+        },
+      ],
+    },
+    {
+      id: "first-business-event-resolution",
+      sectionLabel: "첫 기습 이벤트",
+      targetTab: "operations",
+      title: "성공과 역풍을 함께 읽고 결정하십시오",
+      body:
+        "이 안내를 닫으면 실제 제안서가 나타납니다. 각 선택지의 집행 비용과 결과 발표일, 성공했을 때의 보상과 실패했을 때의 역풍을 비교한 뒤 방향을 고르십시오.",
+      terms: [
+        {
+          label: "결과 발표",
+          description:
+            "선택 즉시 결과가 확정되지 않습니다. 표시된 DAY에 성공 또는 역풍 보고서가 도착합니다.",
+        },
+        {
+          label: "장기 사업 노선",
+          description:
+            "선택의 누적은 대중·핵심 고객, 성장·보존, 공격·안정 가운데 회사가 어느 방향으로 운영됐는지 기록합니다.",
+        },
+      ],
+    },
+  ],
+} as const satisfies ContextualTutorialDefinition;
+
+const RELEASE_PLANNING_TOOLS_TUTORIAL = {
+  topic: "release-planning-tools",
+  tab: "cards",
+  label: "발매 요청",
+  pages: [
+    {
+      id: "release-planning-tools-location",
+      sectionLabel: "발매 요청",
+      targetTab: "cards",
+      title: "테마 위쪽의 세 버튼이 해금되었습니다",
+      body:
+        "카드 탭에서 테마를 선택하면 상세 화면 위쪽에 지원·간접·저격 버튼이 나타납니다. 세 기능은 다음 일반팩에 반영할 전략 요청이며, 한 발매주기에 합쳐서 한 건만 유지됩니다.",
+      terms: [
+        {
+          label: "지원",
+          description:
+            "선택한 테마의 전용 카드 3장을 보강합니다. 효과가 직접적이고 큰 대신 환경 개입이 눈에 띄어 반발도 커질 수 있습니다.",
+        },
+        {
+          label: "간접",
+          description:
+            "선택한 테마와 플레이 키워드가 맞는 범용 카드 1장을 일반팩 후보로 요청합니다.",
+        },
+        {
+          label: "저격",
+          description:
+            "선택한 테마에 상성 우위를 가진 범용 카드 1장을 일반팩 후보로 요청합니다.",
+        },
+      ],
+    },
+    {
+      id: "release-planning-tools-tradeoff",
+      sectionLabel: "발매 요청",
+      targetTab: "cards",
+      title: "간접 개입은 효과와 반발이 모두 완만합니다",
+      body:
+        "간접과 저격은 전용 지원이나 직접 제재보다 목표 효과가 약하거나 예상과 다르게 퍼질 수도 있습니다. 대신 노골적인 개입이 아니어서 대체로 구매 신뢰와 커뮤니티 반발이 적습니다. 항상 같은 결과가 보장되지는 않으므로 후보 카드와 실제 환경을 함께 확인하세요.",
+      terms: [
+        {
+          label: "요청 교체",
+          description:
+            "같은 일반팩 주기에 다른 버튼을 누르면 이전 지원·간접·저격 요청은 새 요청으로 교체됩니다.",
+        },
+        {
+          label: "후보 표식",
+          description:
+            "간접·저격 요청 카드가 발매 후보에 오르면 요청 종류와 대상 테마가 카드에 표시됩니다.",
+        },
+        {
+          label: "재판팩 구간",
+          description:
+            "재판팩이 중간에 끼는 구간에는 다음 일반팩까지 40일이 걸리며, 요청은 그 일반팩까지 유지됩니다.",
+        },
+      ],
+    },
+  ],
+} as const satisfies ContextualTutorialDefinition;
+
 const FIRST_REPRINT_TUTORIAL = {
   topic: "first-reprint",
   tab: "releases",
@@ -755,6 +872,8 @@ export const CONTEXTUAL_TUTORIALS: Readonly<
 > = {
   "first-restriction": FIRST_RESTRICTION_TUTORIAL,
   "first-release": FIRST_RELEASE_TUTORIAL,
+  "first-business-event": FIRST_BUSINESS_EVENT_TUTORIAL,
+  "release-planning-tools": RELEASE_PLANNING_TOOLS_TUTORIAL,
   "first-reprint": FIRST_REPRINT_TUTORIAL,
 };
 
@@ -855,6 +974,19 @@ export function isContextualTutorialTriggered(
       isRegularReleaseDay(context.day)
     );
   }
+  if (topic === "first-business-event") {
+    return (
+      context.day === FIRST_BUSINESS_EVENT_DAY &&
+      context.phase === "running" &&
+      context.hasBusinessEvent === true
+    );
+  }
+  if (topic === "release-planning-tools") {
+    return (
+      context.phase === "running" &&
+      context.releasePlanningUnlocked === true
+    );
+  }
   return (
     context.day === FIRST_REPRINT_TUTORIAL_DAY &&
     context.phase === "release-edit" &&
@@ -884,8 +1016,14 @@ export function isTabTutorialSeriesComplete(
 ): boolean {
   return (
     TAB_TUTORIAL_TAB_IDS.every((tab) => tabVisits[tab]) &&
-    CONTEXTUAL_TUTORIAL_TOPIC_IDS.every((topic) => contextualVisits[topic])
+    ONBOARDING_COMPLETION_TOPIC_IDS.every((topic) => contextualVisits[topic])
   );
+}
+
+export function isFirstBusinessEventTutorial(
+  popup: PendingTutorialPopup | null | undefined,
+): boolean {
+  return popup?.kind === "contextual" && popup.id === "first-business-event";
 }
 
 export function getPendingTutorialPopups(

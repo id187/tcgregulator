@@ -119,22 +119,24 @@ export function TitleScreen({
           </header>
 
           <nav aria-label="타이틀 메뉴" className="title-screen__actions">
+            {savedGame.available ? (
+              <button
+                aria-describedby={savedGameSummaryId}
+                className="title-screen__action title-screen__action--continue"
+                disabled={busy}
+                onClick={onContinue}
+                type="button"
+              >
+                이어하기{savedGameDayLabel ? ` · ${savedGameDayLabel}` : ""}
+              </button>
+            ) : null}
             <button
               className="title-screen__action title-screen__action--new-game"
               disabled={busy}
               onClick={onNewGame}
               type="button"
             >
-              처음부터
-            </button>
-            <button
-              aria-describedby={savedGameSummaryId}
-              className="title-screen__action title-screen__action--continue"
-              disabled={busy || !savedGame.available}
-              onClick={onContinue}
-              type="button"
-            >
-              이어하기{savedGameDayLabel ? ` · ${savedGameDayLabel}` : ""}
+              {savedGame.available ? "처음부터" : "새 게임"}
             </button>
             <button
               className="title-screen__action title-screen__action--settings"
